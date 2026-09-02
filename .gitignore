@@ -1,0 +1,13 @@
+# Rust
+backend/target/
+**/target/
+Cargo.lock
+
+# Node
+frontend/node_modules/
+**/node_modules/
+frontend/dist/
+**/.env
+**/.env.local
+*.sqlite
+*.gnucash

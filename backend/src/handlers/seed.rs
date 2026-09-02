@@ -1,0 +1,377 @@
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use chrono::NaiveDate;
+use rust_decimal_macros::dec;
+use serde_json::json;
+use sqlx::PgPool;
+use uuid::Uuid;
+
+pub async fn seed_database(
+    State(pool): State<PgPool>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    // Check if accounts already exist
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts")
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Database error: {}", e) })),
+            )
+        })?;
+
+    if count.0 > 0 {
+        return Ok(Json(json!({
+            "message": "Database already contains accounts. Skipping seed.",
+            "account_count": count.0
+        })));
+    }
+
+    run_seed(&pool).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to seed database: {}", e) })),
+        )
+    })?;
+
+    Ok(Json(json!({
+        "message": "Chart of accounts and sample transactions successfully seeded!"
+    })))
+}
+
+pub async fn run_seed(pool: &PgPool) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    // Helper to insert account
+    async fn insert_acc(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        name: &str,
+        code: Option<&str>,
+        account_type: &str,
+        parent_id: Option<Uuid>,
+        placeholder: bool,
+    ) -> Result<Uuid, sqlx::Error> {
+        let row: (Uuid,) = sqlx::query_as(
+            r#"INSERT INTO accounts (name, code, account_type, parent_id, currency, placeholder)
+               VALUES ($1, $2, $3, $4, 'INR', $5)
+               RETURNING id"#
+        )
+        .bind(name)
+        .bind(code)
+        .bind(account_type)
+        .bind(parent_id)
+        .bind(placeholder)
+        .fetch_one(&mut **tx)
+        .await?;
+        Ok(row.0)
+    }
+
+    // 1. Root Accounts
+    let assets_root = insert_acc(&mut tx, "Assets", Some("1000"), "asset", None, true).await?;
+    let liab_root = insert_acc(&mut tx, "Liabilities", Some("2000"), "liability", None, true).await?;
+    let equity_root = insert_acc(&mut tx, "Equity", Some("3000"), "equity", None, true).await?;
+    let income_root = insert_acc(&mut tx, "Income", Some("4000"), "income", None, true).await?;
+    let expense_root = insert_acc(&mut tx, "Expenses", Some("5000"), "expense", None, true).await?;
+
+    // 2. Assets Subaccounts
+    let curr_assets = insert_acc(&mut tx, "Current Assets", Some("1100"), "asset", Some(assets_root), true).await?;
+    let checking = insert_acc(&mut tx, "Checking Account", Some("1110"), "bank", Some(curr_assets), false).await?;
+    let savings = insert_acc(&mut tx, "Savings Account", Some("1120"), "bank", Some(curr_assets), false).await?;
+    let cash = insert_acc(&mut tx, "Cash in Wallet", Some("1130"), "cash", Some(curr_assets), false).await?;
+    let _receivable = insert_acc(&mut tx, "Accounts Receivable", Some("1140"), "receivable", Some(curr_assets), false).await?;
+
+    let fixed_assets = insert_acc(&mut tx, "Fixed Assets", Some("1500"), "asset", Some(assets_root), true).await?;
+    let _computer = insert_acc(&mut tx, "Computer & Tech", Some("1510"), "asset", Some(fixed_assets), false).await?;
+    let _auto_asset = insert_acc(&mut tx, "Automobile", Some("1520"), "asset", Some(fixed_assets), false).await?;
+
+    // 3. Liabilities Subaccounts
+    let credit_cards = insert_acc(&mut tx, "Credit Cards", Some("2100"), "liability", Some(liab_root), true).await?;
+    let visa = insert_acc(&mut tx, "Visa Signature Card", Some("2110"), "credit", Some(credit_cards), false).await?;
+    let mastercard = insert_acc(&mut tx, "Mastercard", Some("2120"), "credit", Some(credit_cards), false).await?;
+    let _payable = insert_acc(&mut tx, "Accounts Payable", Some("2200"), "payable", Some(liab_root), false).await?;
+
+    // 4. Equity Subaccounts
+    let opening_equity = insert_acc(&mut tx, "Opening Balances", Some("3100"), "equity", Some(equity_root), false).await?;
+    let _retained = insert_acc(&mut tx, "Retained Earnings", Some("3200"), "equity", Some(equity_root), false).await?;
+
+    // 5. Income Subaccounts
+    let salary = insert_acc(&mut tx, "Salary & Wages", Some("4100"), "income", Some(income_root), false).await?;
+    let consulting = insert_acc(&mut tx, "Freelance Consulting", Some("4200"), "income", Some(income_root), false).await?;
+    let interest = insert_acc(&mut tx, "Interest Income", Some("4300"), "income", Some(income_root), false).await?;
+
+    // 6. Expenses Subaccounts
+    let housing = insert_acc(&mut tx, "Housing", Some("5100"), "expense", Some(expense_root), true).await?;
+    let rent = insert_acc(&mut tx, "Rent", Some("5110"), "expense", Some(housing), false).await?;
+    let utilities = insert_acc(&mut tx, "Utilities (Electric/Water)", Some("5120"), "expense", Some(housing), false).await?;
+    let internet = insert_acc(&mut tx, "High-Speed Internet", Some("5130"), "expense", Some(housing), false).await?;
+
+    let food = insert_acc(&mut tx, "Food & Dining", Some("5200"), "expense", Some(expense_root), true).await?;
+    let groceries = insert_acc(&mut tx, "Groceries", Some("5210"), "expense", Some(food), false).await?;
+    let dining = insert_acc(&mut tx, "Restaurants & Dining Out", Some("5220"), "expense", Some(food), false).await?;
+
+    let transport = insert_acc(&mut tx, "Transportation", Some("5300"), "expense", Some(expense_root), true).await?;
+    let gas = insert_acc(&mut tx, "Gas & Fuel", Some("5310"), "expense", Some(transport), false).await?;
+    let _transit = insert_acc(&mut tx, "Public Transit", Some("5320"), "expense", Some(transport), false).await?;
+
+    let taxes = insert_acc(&mut tx, "Taxes", Some("5400"), "expense", Some(expense_root), true).await?;
+    let fed_tax = insert_acc(&mut tx, "Federal Income Tax", Some("5410"), "expense", Some(taxes), false).await?;
+    let ss_tax = insert_acc(&mut tx, "Social Security & Medicare", Some("5420"), "expense", Some(taxes), false).await?;
+
+    let entertainment = insert_acc(&mut tx, "Entertainment & Media", Some("5500"), "expense", Some(expense_root), false).await?;
+    let healthcare = insert_acc(&mut tx, "Healthcare & Pharmacy", Some("5600"), "expense", Some(expense_root), false).await?;
+
+    // Sample Transactions
+    // Helper to insert transaction with splits
+    struct SplitDef {
+        account_id: Uuid,
+        amount: rust_decimal::Decimal,
+        memo: Option<&'static str>,
+        rec_state: &'static str,
+    }
+
+    async fn insert_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        post_date: NaiveDate,
+        num: Option<&str>,
+        desc: &str,
+        notes: Option<&str>,
+        splits: Vec<SplitDef>,
+    ) -> Result<(), sqlx::Error> {
+        let tx_row: (Uuid,) = sqlx::query_as(
+            r#"INSERT INTO transactions (post_date, num, description, notes)
+               VALUES ($1, $2, $3, $4)
+               RETURNING id"#
+        )
+        .bind(post_date)
+        .bind(num)
+        .bind(desc)
+        .bind(notes)
+        .fetch_one(&mut **tx)
+        .await?;
+
+        for s in splits {
+            let rec_date = if s.rec_state == "y" {
+                Some(post_date.and_hms_opt(12, 0, 0).unwrap().and_utc())
+            } else {
+                None
+            };
+
+            sqlx::query(
+                r#"INSERT INTO splits (transaction_id, account_id, amount, memo, reconciled_state, reconciled_date)
+                   VALUES ($1, $2, $3, $4, $5, $6)"#
+            )
+            .bind(tx_row.0)
+            .bind(s.account_id)
+            .bind(s.amount)
+            .bind(s.memo)
+            .bind(s.rec_state)
+            .bind(rec_date)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
+
+    // Tx 1: Opening Balances (Reconciled 'y')
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
+        Some("OPEN"),
+        "Opening Balances",
+        Some("Initial balance transfer"),
+        vec![
+            SplitDef { account_id: checking, amount: dec!(5500.00), memo: Some("Checking opening"), rec_state: "y" },
+            SplitDef { account_id: savings, amount: dec!(12000.00), memo: Some("Savings opening"), rec_state: "y" },
+            SplitDef { account_id: cash, amount: dec!(350.00), memo: Some("Cash in pocket"), rec_state: "y" },
+            SplitDef { account_id: opening_equity, amount: dec!(-17850.00), memo: Some("Opening balance equity offset"), rec_state: "n" },
+        ],
+    ).await?;
+
+    // Tx 2: Bi-weekly Salary 1
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 5).unwrap(),
+        Some("DIR-DEP"),
+        "Acme Corp Paycheck",
+        Some("Bi-weekly payroll with tax deductions"),
+        vec![
+            SplitDef { account_id: checking, amount: dec!(2550.00), memo: Some("Net pay deposit"), rec_state: "y" },
+            SplitDef { account_id: fed_tax, amount: dec!(650.00), memo: Some("Federal withholding"), rec_state: "n" },
+            SplitDef { account_id: ss_tax, amount: dec!(300.00), memo: Some("FICA / Medicare"), rec_state: "n" },
+            SplitDef { account_id: salary, amount: dec!(-3500.00), memo: Some("Gross salary earnings"), rec_state: "n" },
+        ],
+    ).await?;
+
+    // Tx 3: Rent
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 6).unwrap(),
+        Some("101"),
+        "Skyline Property Management",
+        Some("Monthly apartment lease"),
+        vec![
+            SplitDef { account_id: rent, amount: dec!(1400.00), memo: Some("October apartment rent"), rec_state: "n" },
+            SplitDef { account_id: checking, amount: dec!(-1400.00), memo: Some("Check #101"), rec_state: "y" },
+        ],
+    ).await?;
+
+    // Tx 4: Supermarket
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 8).unwrap(),
+        None,
+        "Whole Foods Market",
+        Some("Weekly groceries and pantry goods"),
+        vec![
+            SplitDef { account_id: groceries, amount: dec!(164.20), memo: Some("Weekly organic groceries"), rec_state: "n" },
+            SplitDef { account_id: checking, amount: dec!(-164.20), memo: Some("Debit card POS"), rec_state: "y" },
+        ],
+    ).await?;
+
+    // Tx 5: Internet on Visa
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 10).unwrap(),
+        Some("AUTO"),
+        "FiberOptic Gigabit Internet",
+        Some("Monthly internet subscription"),
+        vec![
+            SplitDef { account_id: internet, amount: dec!(79.99), memo: Some("Fiber 1Gbps plan"), rec_state: "n" },
+            SplitDef { account_id: visa, amount: dec!(-79.99), memo: Some("Card charge"), rec_state: "c" },
+        ],
+    ).await?;
+
+    // Tx 6: Dining on Visa
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 12).unwrap(),
+        None,
+        "The Italian Trattoria",
+        Some("Dinner with colleagues"),
+        vec![
+            SplitDef { account_id: dining, amount: dec!(68.50), memo: Some("Dinner pasta and wine"), rec_state: "n" },
+            SplitDef { account_id: visa, amount: dec!(-68.50), memo: Some("Card charge"), rec_state: "c" },
+        ],
+    ).await?;
+
+    // Tx 7: Gas in Cash
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 14).unwrap(),
+        None,
+        "Shell Gas Station",
+        Some("Fuel for vehicle"),
+        vec![
+            SplitDef { account_id: gas, amount: dec!(42.00), memo: Some("Regular unleaded 12 gal"), rec_state: "n" },
+            SplitDef { account_id: cash, amount: dec!(-42.00), memo: Some("Cash payment"), rec_state: "n" },
+        ],
+    ).await?;
+
+    // Tx 8: Freelance Consulting
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+        Some("INV-042"),
+        "Nexus Software LLC",
+        Some("Code review and consulting services"),
+        vec![
+            SplitDef { account_id: checking, amount: dec!(850.00), memo: Some("ACH wire received"), rec_state: "c" },
+            SplitDef { account_id: consulting, amount: dec!(-850.00), memo: Some("Invoice #042 consulting"), rec_state: "n" },
+        ],
+    ).await?;
+
+    // Tx 9: Utilities Bill
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
+        Some("ELEC"),
+        "City Power & Light",
+        Some("Electricity and water bill"),
+        vec![
+            SplitDef { account_id: utilities, amount: dec!(92.40), memo: Some("October utility bill"), rec_state: "n" },
+            SplitDef { account_id: checking, amount: dec!(-92.40), memo: Some("Bill pay"), rec_state: "c" },
+        ],
+    ).await?;
+
+    // Tx 10: Bi-weekly Salary 2
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 19).unwrap(),
+        Some("DIR-DEP"),
+        "Acme Corp Paycheck",
+        Some("Second bi-weekly payroll"),
+        vec![
+            SplitDef { account_id: checking, amount: dec!(2550.00), memo: Some("Net pay deposit"), rec_state: "c" },
+            SplitDef { account_id: fed_tax, amount: dec!(650.00), memo: Some("Federal tax"), rec_state: "n" },
+            SplitDef { account_id: ss_tax, amount: dec!(300.00), memo: Some("FICA tax"), rec_state: "n" },
+            SplitDef { account_id: salary, amount: dec!(-3500.00), memo: Some("Gross salary earnings"), rec_state: "n" },
+        ],
+    ).await?;
+
+    // Tx 11: Visa Credit Card Payment
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 20).unwrap(),
+        Some("CC-PMT"),
+        "Visa Card Statement Payment",
+        Some("Autopay from checking to credit card"),
+        vec![
+            SplitDef { account_id: visa, amount: dec!(148.49), memo: Some("Payment received"), rec_state: "c" },
+            SplitDef { account_id: checking, amount: dec!(-148.49), memo: Some("Autopay debit"), rec_state: "c" },
+        ],
+    ).await?;
+
+    // Tx 12: Savings Transfer
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 22).unwrap(),
+        Some("XFER"),
+        "Emergency Fund Transfer",
+        Some("Monthly savings allocation"),
+        vec![
+            SplitDef { account_id: savings, amount: dec!(500.00), memo: Some("Savings deposit"), rec_state: "n" },
+            SplitDef { account_id: checking, amount: dec!(-500.00), memo: Some("Checking transfer out"), rec_state: "c" },
+        ],
+    ).await?;
+
+    // Tx 13: Streaming subscriptions on Mastercard
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 24).unwrap(),
+        None,
+        "Netflix & Spotify",
+        Some("Monthly digital media streaming"),
+        vec![
+            SplitDef { account_id: entertainment, amount: dec!(29.98), memo: Some("Streaming services"), rec_state: "n" },
+            SplitDef { account_id: mastercard, amount: dec!(-29.98), memo: Some("Card charge"), rec_state: "n" },
+        ],
+    ).await?;
+
+    // Tx 14: Pharmacy in Cash
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
+        None,
+        "Walgreens Pharmacy",
+        Some("Vitamins and prescription medicine"),
+        vec![
+            SplitDef { account_id: healthcare, amount: dec!(24.50), memo: Some("Health supplies"), rec_state: "n" },
+            SplitDef { account_id: cash, amount: dec!(-24.50), memo: Some("Cash purchase"), rec_state: "n" },
+        ],
+    ).await?;
+
+    // Tx 15: Interest Income on Savings
+    insert_tx(
+        &mut tx,
+        NaiveDate::from_ymd_opt(2026, 10, 31).unwrap(),
+        Some("INT"),
+        "High-Yield Savings Interest",
+        Some("Monthly interest compound"),
+        vec![
+            SplitDef { account_id: savings, amount: dec!(42.15), memo: Some("Interest credited"), rec_state: "n" },
+            SplitDef { account_id: interest, amount: dec!(-42.15), memo: Some("Interest earned"), rec_state: "n" },
+        ],
+    ).await?;
+
+    tx.commit().await?;
+    Ok(())
+}
