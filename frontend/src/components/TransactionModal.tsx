@@ -212,17 +212,17 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-3xl w-full overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-3xl w-full overflow-hidden max-h-[94vh] flex flex-col animate-in fade-in zoom-in-95 duration-150">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+        <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
           <div className="flex items-center space-x-2">
-            <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
               <Split className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="font-bold text-slate-800 text-base">New Double-Entry Transaction</h3>
-              <p className="text-xs text-slate-400">
+              <h3 className="font-bold text-slate-800 text-sm sm:text-base">New Double-Entry Transaction</h3>
+              <p className="text-[11px] sm:text-xs text-slate-400">
                 GnuCash multi-split transaction with balanced debits and credits
               </p>
             </div>
@@ -236,7 +236,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+        <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-4 sm:space-y-5 overflow-y-auto flex-1">
           {error && (
             <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg text-xs flex items-center space-x-2">
               <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
@@ -285,11 +285,11 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
             </div>
           </div>
 
-          {/* Splits Table */}
+          {/* Splits Section */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                Transaction Splits (Debits & Credits)
+                Transaction Splits
               </label>
               <div className="flex items-center space-x-2">
                 <button
@@ -300,7 +300,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
                   title="Auto-calculate the balancing split"
                 >
                   <Wand2 className="w-3.5 h-3.5" />
-                  <span>Auto-Balance</span>
+                  <span className="hidden xs:inline">Auto-Balance</span>
                 </button>
                 <button
                   type="button"
@@ -313,14 +313,88 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
               </div>
             </div>
 
-            <div className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+            {/* Mobile View: Split Cards (< sm) */}
+            <div className="sm:hidden space-y-2.5">
+              {splits.map((s, idx) => (
+                <div key={s.id} className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-600">Split #{idx + 1}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeSplitRow(idx)}
+                      className="text-slate-400 hover:text-rose-500 p-1"
+                      title="Remove split"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-slate-400 mb-0.5">Account</label>
+                    <select
+                      value={s.account_id}
+                      onChange={(e) => handleSplitChange(idx, 'account_id', e.target.value)}
+                      className="w-full py-1.5 px-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 font-medium"
+                    >
+                      {validAccounts.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.code ? `${a.code} - ` : ''}
+                          {a.name} ({a.account_type})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-slate-400 mb-0.5">Memo</label>
+                    <input
+                      type="text"
+                      placeholder="Optional memo"
+                      value={s.memo}
+                      onChange={(e) => handleSplitChange(idx, 'memo', e.target.value)}
+                      className="w-full py-1.5 px-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[10px] uppercase font-semibold text-emerald-700 mb-0.5">Debit (+)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="0.00"
+                        value={s.debit}
+                        onChange={(e) => handleSplitChange(idx, 'debit', e.target.value)}
+                        className="w-full py-1.5 px-2 text-xs text-right font-mono bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 text-emerald-700 font-bold"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] uppercase font-semibold text-rose-700 mb-0.5">Credit (-)</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="0.00"
+                        value={s.credit}
+                        onChange={(e) => handleSplitChange(idx, 'credit', e.target.value)}
+                        className="w-full py-1.5 px-2 text-xs text-right font-mono bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 text-rose-700 font-bold"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Desktop View: Split Table (>= sm) */}
+            <div className="hidden sm:block border border-slate-200 rounded-xl overflow-x-auto shadow-sm">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="bg-slate-100 text-slate-600 font-semibold border-b border-slate-200">
                     <th className="py-2 px-3 text-left w-56">Account</th>
                     <th className="py-2 px-2 text-left">Memo</th>
-                    <th className="py-2 px-2 text-right w-28">Debit ($)</th>
-                    <th className="py-2 px-2 text-right w-28">Credit ($)</th>
+                    <th className="py-2 px-2 text-right w-28">Debit</th>
+                    <th className="py-2 px-2 text-right w-28">Credit</th>
                     <th className="py-2 px-2 text-center w-10"></th>
                   </tr>
                 </thead>
@@ -395,35 +469,35 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
                   ))}
                 </tbody>
               </table>
+            </div>
 
-              {/* Totals & Balance Status Bar */}
-              <div className="bg-slate-50 border-t border-slate-200 px-4 py-3 flex items-center justify-between text-xs">
-                <div className="flex items-center space-x-2">
-                  {isBalanced ? (
-                    <div className="flex items-center space-x-1.5 text-emerald-700 font-semibold bg-emerald-100 px-2.5 py-1 rounded-full border border-emerald-300">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                      <span>Balanced! (Diff: 0.00)</span>
-                    </div>
-                  ) : (
-                    <div className="flex items-center space-x-1.5 text-rose-700 font-semibold bg-rose-100 px-2.5 py-1 rounded-full border border-rose-300">
-                      <AlertCircle className="w-4 h-4 text-rose-600" />
-                      <span>
-                        Out of balance: {formatCurrency(Math.abs(imbalance), currentCurrency)} (
-                        {imbalance > 0 ? 'Need more Credits' : 'Need more Debits'})
-                      </span>
-                    </div>
-                  )}
+            {/* Totals & Balance Status Bar (Responsive) */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 text-xs">
+              <div className="flex items-center space-x-2">
+                {isBalanced ? (
+                  <div className="flex items-center space-x-1.5 text-emerald-700 font-semibold bg-emerald-100 px-2.5 py-1 rounded-full border border-emerald-300">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>Balanced! (Diff: 0.00)</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center space-x-1.5 text-rose-700 font-semibold bg-rose-100 px-2.5 py-1 rounded-full border border-rose-300">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>
+                      Diff: {formatCurrency(Math.abs(imbalance), currentCurrency)} (
+                      {imbalance > 0 ? 'Need Credits' : 'Need Debits'})
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between sm:justify-end space-x-4 font-mono text-xs">
+                <div>
+                  <span className="text-slate-400 mr-1.5 font-sans font-medium text-[11px]">Debits:</span>
+                  <span className="font-bold text-emerald-700">{formatCurrency(totalDebits, currentCurrency)}</span>
                 </div>
-
-                <div className="flex items-center space-x-6 font-mono text-xs">
-                  <div>
-                    <span className="text-slate-400 mr-2 font-sans font-medium">Total Debits:</span>
-                    <span className="font-bold text-emerald-700">{formatCurrency(totalDebits, currentCurrency)}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 mr-2 font-sans font-medium">Total Credits:</span>
-                    <span className="font-bold text-rose-700">{formatCurrency(totalCredits, currentCurrency)}</span>
-                  </div>
+                <div>
+                  <span className="text-slate-400 mr-1.5 font-sans font-medium text-[11px]">Credits:</span>
+                  <span className="font-bold text-rose-700">{formatCurrency(totalCredits, currentCurrency)}</span>
                 </div>
               </div>
             </div>

@@ -47,22 +47,22 @@ export const TransactionsJournal: React.FC<TransactionsJournalProps> = ({
   return (
     <div className="space-y-4">
       {/* Journal Header Bar */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
           <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600">
+            <div className="w-10 h-10 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600 shrink-0">
               <ListFilter className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-slate-900">General Journal</h2>
-              <p className="text-xs text-slate-500">
+              <h2 className="text-base sm:text-lg font-bold text-slate-900">General Journal</h2>
+              <p className="text-[11px] sm:text-xs text-slate-500">
                 Complete chronological log of all double-entry financial transactions
               </p>
             </div>
           </div>
 
-          <div className="flex items-center space-x-3">
-            <div className="relative w-64">
+          <div className="flex items-center space-x-2 w-full sm:w-auto">
+            <div className="relative flex-1 sm:w-64">
               <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
@@ -75,18 +75,116 @@ export const TransactionsJournal: React.FC<TransactionsJournalProps> = ({
 
             <button
               onClick={onOpenNewTx}
-              className="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition shadow-sm"
+              className="flex items-center space-x-1 sm:space-x-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition shadow-sm shrink-0"
             >
               <PlusCircle className="w-4 h-4" />
-              <span>New Transaction</span>
+              <span>New Entry</span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* Journal Table */}
+      {/* Journal Container */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
+        {/* Mobile View: Cards Stream (Visible on < md) */}
+        <div className="md:hidden divide-y divide-slate-100">
+          {filtered.length === 0 ? (
+            <div className="py-12 text-center text-xs text-slate-400">
+              No transactions found. Tap "New Entry" to record one.
+            </div>
+          ) : (
+            filtered.map((tx) => {
+              const isExpanded = expandedId === tx.id;
+              const totalPositive = tx.splits
+                .map((s) => parseFloat(s.amount))
+                .filter((a) => a > 0)
+                .reduce((a, b) => a + b, 0);
+
+              return (
+                <div key={tx.id} className="p-3.5 space-y-2 hover:bg-slate-50 transition">
+                  <div className="flex items-center justify-between text-xs">
+                    <div className="flex items-center space-x-1.5 font-mono text-slate-500 font-semibold">
+                      <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                      <span>{tx.post_date}</span>
+                      {tx.num && (
+                        <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded">
+                          #{tx.num}
+                        </span>
+                      )}
+                    </div>
+                    <span className="font-mono font-bold text-slate-900 text-sm">
+                      {formatCurrency(totalPositive, currentCurrency)}
+                    </span>
+                  </div>
+
+                  <div>
+                    <h4 className="font-bold text-slate-900 text-xs sm:text-sm">{tx.description}</h4>
+                    {tx.notes && <p className="text-[11px] text-slate-400 mt-0.5">{tx.notes}</p>}
+                  </div>
+
+                  {/* Accounts Involved */}
+                  <div className="flex flex-wrap gap-1 pt-1">
+                    {tx.splits.map((s) => (
+                      <span
+                        key={s.id}
+                        className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] border border-slate-200"
+                      >
+                        {s.account_name}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* Mobile Actions: View splits or delete */}
+                  <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-xs">
+                    <button
+                      onClick={() => toggleExpand(tx.id)}
+                      className="inline-flex items-center space-x-1 text-emerald-700 font-medium text-[11px]"
+                    >
+                      <Split className="w-3 h-3" />
+                      <span>{isExpanded ? 'Hide Splits' : `View Splits (${tx.splits.length})`}</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        if (confirm('Delete this transaction and its splits?')) {
+                          onDeleteTransaction(tx.id);
+                        }
+                      }}
+                      className="p-1 text-slate-400 hover:text-rose-600 transition"
+                      title="Delete"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Expanded Splits in Mobile Card */}
+                  {isExpanded && (
+                    <div className="mt-2 bg-slate-50 rounded-lg p-2.5 border border-slate-200 text-xs space-y-1.5">
+                      <div className="font-semibold text-slate-700 text-[11px]">Double-Entry Splits:</div>
+                      {tx.splits.map((s) => {
+                        const val = parseFloat(s.amount);
+                        return (
+                          <div key={s.id} className="flex justify-between items-center text-[11px] py-1 border-b border-slate-100 last:border-none">
+                            <div>
+                              <span className="font-medium text-slate-800">{s.account_name}</span>
+                              {s.memo && <span className="text-slate-400 ml-1 italic">({s.memo})</span>}
+                            </div>
+                            <span className={`font-mono font-bold ${val > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                              {val > 0 ? `+${formatCurrency(val, currentCurrency)}` : `-${formatCurrency(Math.abs(val), currentCurrency)}`}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Desktop View: Wide Table (Visible on >= md) */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-100 text-slate-700 text-xs font-bold border-b border-slate-200">

@@ -135,13 +135,16 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
               : 'hover:bg-emerald-50/40 text-slate-700'
           }`}
         >
-          {/* Account Name with tree indentation */}
-          <td className="py-2.5 px-4">
-            <div className="flex items-center" style={{ paddingLeft: `${depth * 24}px` }}>
+          {/* Account Name with responsive tree indentation */}
+          <td className="py-2.5 px-3 sm:px-4">
+            <div
+              className="flex items-center"
+              style={{ paddingLeft: `${Math.min(depth * 14, 42)}px` }}
+            >
               {hasChildren ? (
                 <button
                   onClick={() => toggleCollapse(account.id)}
-                  className="p-1 mr-1 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-200/60 transition"
+                  className="p-1 mr-1 text-slate-400 hover:text-slate-700 rounded hover:bg-slate-200/60 transition shrink-0"
                   title={isCollapsed ? 'Expand' : 'Collapse'}
                 >
                   {isCollapsed ? (
@@ -151,24 +154,42 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
                   )}
                 </button>
               ) : (
-                <span className="w-6 inline-block" />
+                <span className="w-5 inline-block shrink-0" />
               )}
 
-              <span className="mr-2.5">{getAccountTypeIcon(account.account_type, account.placeholder)}</span>
+              <span className="mr-2 shrink-0">{getAccountTypeIcon(account.account_type, account.placeholder)}</span>
 
-              <div className="flex flex-col">
-                <div className="flex items-center space-x-2">
-                  <span className={account.placeholder ? 'font-bold' : 'font-medium'}>
-                    {account.name}
-                  </span>
-                  {account.placeholder && (
-                    <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.2 rounded bg-slate-200 text-slate-600">
-                      Placeholder
+              <div className="flex flex-col min-w-0">
+                <div className="flex items-center space-x-1.5 flex-wrap">
+                  {!account.placeholder ? (
+                    <button
+                      onClick={() => onSelectAccountForRegister(account)}
+                      className="font-medium text-slate-800 hover:text-emerald-700 text-left truncate text-xs sm:text-sm hover:underline"
+                      title="Open in Ledger Register"
+                    >
+                      {account.name}
+                    </button>
+                  ) : (
+                    <span className="font-bold text-slate-800 truncate text-xs sm:text-sm">
+                      {account.name}
                     </span>
                   )}
+                  {account.placeholder && (
+                    <span className="text-[9px] uppercase font-bold tracking-wider px-1 py-0.2 rounded bg-slate-200 text-slate-600 shrink-0">
+                      Folder
+                    </span>
+                  )}
+                  {/* Mobile Type badge */}
+                  <span
+                    className={`sm:hidden inline-block px-1.5 py-0.2 rounded text-[10px] font-medium border capitalize ${getBadgeStyle(
+                      account.account_type
+                    )} shrink-0`}
+                  >
+                    {account.account_type}
+                  </span>
                 </div>
                 {account.description && (
-                  <span className="text-[11px] text-slate-400 font-normal">
+                  <span className="text-[10px] sm:text-[11px] text-slate-400 font-normal truncate max-w-xs">
                     {account.description}
                   </span>
                 )}
@@ -176,13 +197,13 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
             </div>
           </td>
 
-          {/* Account Code */}
-          <td className="py-2.5 px-3 text-slate-500 font-mono text-xs">
+          {/* Account Code (Hidden on mobile) */}
+          <td className="hidden md:table-cell py-2.5 px-3 text-slate-500 font-mono text-xs">
             {account.code || '—'}
           </td>
 
-          {/* Account Type */}
-          <td className="py-2.5 px-3">
+          {/* Account Type (Hidden on mobile, shown inline) */}
+          <td className="hidden sm:table-cell py-2.5 px-3">
             <span
               className={`inline-block px-2 py-0.5 rounded-md text-xs font-medium border capitalize ${getBadgeStyle(
                 account.account_type
@@ -192,8 +213,8 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
             </span>
           </td>
 
-          {/* Direct Balance */}
-          <td className="py-2.5 px-4 text-right font-mono text-xs">
+          {/* Direct Balance (Hidden on tablet/mobile) */}
+          <td className="hidden lg:table-cell py-2.5 px-4 text-right font-mono text-xs">
             {!account.placeholder ? (
               <span
                 className={
@@ -210,7 +231,7 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
           </td>
 
           {/* Total Subtree Balance */}
-          <td className="py-2.5 px-4 text-right font-mono text-xs font-semibold">
+          <td className="py-2.5 px-2 sm:px-4 text-right font-mono text-xs font-semibold whitespace-nowrap">
             <span
               className={
                 parseFloat(account.display_balance) < 0 ? 'text-rose-600' : 'text-slate-900'
@@ -221,17 +242,17 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
           </td>
 
           {/* Actions */}
-          <td className="py-2.5 px-4 text-right">
+          <td className="py-2.5 px-2 sm:px-4 text-right whitespace-nowrap">
             <div className="flex items-center justify-end space-x-1">
               {!account.placeholder && (
                 <>
                   <button
                     onClick={() => onSelectAccountForRegister(account)}
-                    className="flex items-center space-x-1 px-2.5 py-1 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded border border-emerald-200 transition"
+                    className="flex items-center space-x-1 px-2 py-1 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded border border-emerald-200 transition"
                     title="Open Ledger Register"
                   >
                     <BookOpen className="w-3.5 h-3.5" />
-                    <span>Register</span>
+                    <span className="hidden sm:inline">Register</span>
                   </button>
 
                   {['bank', 'credit', 'cash'].includes(account.account_type.toLowerCase()) && (
@@ -253,7 +274,7 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
                   title="Add Subaccount"
                 >
                   <Plus className="w-3 h-3" />
-                  <span>Subaccount</span>
+                  <span className="hidden sm:inline">Subaccount</span>
                 </button>
               )}
 
@@ -279,62 +300,62 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Top Summary Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
         {/* Net Worth */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+        <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Net Worth</p>
-            <h3 className="text-xl font-bold text-slate-900 mt-1">
+            <p className="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider">Net Worth</p>
+            <h3 className="text-base sm:text-xl font-bold font-mono text-slate-900 mt-0.5 sm:mt-1 truncate">
               {formatCurrency(netWorth, currentCurrency)}
             </h3>
-            <p className="text-[11px] text-slate-400 mt-0.5">Assets minus Liabilities</p>
+            <p className="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 hidden xs:block">Assets minus Liabilities</p>
           </div>
-          <div className="w-10 h-10 rounded-lg bg-emerald-50 border border-emerald-100 flex items-center justify-center text-emerald-600">
-            <Scale className="w-5 h-5" />
+          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-emerald-50 border border-emerald-100 flex items-center justify-center text-emerald-600 shrink-0">
+            <Scale className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
         </div>
 
         {/* Total Assets */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+        <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Total Assets</p>
-            <h3 className="text-xl font-bold text-sky-700 mt-1">
+            <p className="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Assets</p>
+            <h3 className="text-base sm:text-xl font-bold font-mono text-sky-700 mt-0.5 sm:mt-1 truncate">
               {formatCurrency(assetsTotal, currentCurrency)}
             </h3>
-            <p className="text-[11px] text-slate-400 mt-0.5">Cash, Bank, Property</p>
+            <p className="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 hidden xs:block">Cash, Bank, Property</p>
           </div>
-          <div className="w-10 h-10 rounded-lg bg-sky-50 border border-sky-100 flex items-center justify-center text-sky-600">
-            <Landmark className="w-5 h-5" />
+          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-sky-50 border border-sky-100 flex items-center justify-center text-sky-600 shrink-0">
+            <Landmark className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
         </div>
 
         {/* Total Liabilities */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+        <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Liabilities</p>
-            <h3 className="text-xl font-bold text-amber-700 mt-1">
+            <p className="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider">Liabilities</p>
+            <h3 className="text-base sm:text-xl font-bold font-mono text-amber-700 mt-0.5 sm:mt-1 truncate">
               {formatCurrency(liabTotal, currentCurrency)}
             </h3>
-            <p className="text-[11px] text-slate-400 mt-0.5">Credit Cards, Payables</p>
+            <p className="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 hidden xs:block">Credit Cards, Payables</p>
           </div>
-          <div className="w-10 h-10 rounded-lg bg-amber-50 border border-amber-100 flex items-center justify-center text-amber-600">
-            <CreditCard className="w-5 h-5" />
+          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-amber-50 border border-amber-100 flex items-center justify-center text-amber-600 shrink-0">
+            <CreditCard className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
         </div>
 
         {/* Total Equity */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+        <div className="bg-white p-3 sm:p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">Equity</p>
-            <h3 className="text-xl font-bold text-purple-700 mt-1">
+            <p className="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase tracking-wider">Equity</p>
+            <h3 className="text-base sm:text-xl font-bold font-mono text-purple-700 mt-0.5 sm:mt-1 truncate">
               {formatCurrency(equityTotal, currentCurrency)}
             </h3>
-            <p className="text-[11px] text-slate-400 mt-0.5">Opening Balances & Earnings</p>
+            <p className="text-[10px] sm:text-[11px] text-slate-400 mt-0.5 hidden xs:block">Opening Balances & Earnings</p>
           </div>
-          <div className="w-10 h-10 rounded-lg bg-purple-50 border border-purple-100 flex items-center justify-center text-purple-600">
-            <Scale className="w-5 h-5" />
+          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-purple-50 border border-purple-100 flex items-center justify-center text-purple-600 shrink-0">
+            <Scale className="w-4 h-4 sm:w-5 sm:h-5" />
           </div>
         </div>
       </div>
@@ -342,25 +363,25 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
       {/* Main Table Container */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         {/* Table Toolbar */}
-        <div className="p-4 border-b border-slate-200 bg-slate-50/50 flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div className="p-3 sm:p-4 border-b border-slate-200 bg-slate-50/50 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 sm:gap-3">
           <div className="flex items-center space-x-2">
-            <FolderTree className="w-5 h-5 text-emerald-600" />
-            <h2 className="font-bold text-slate-800 text-base">Chart of Accounts</h2>
-            <span className="text-xs text-slate-500 bg-slate-200 px-2 py-0.5 rounded-full font-medium">
+            <FolderTree className="w-5 h-5 text-emerald-600 shrink-0" />
+            <h2 className="font-bold text-slate-800 text-sm sm:text-base">Chart of Accounts</h2>
+            <span className="text-[11px] text-slate-500 bg-slate-200 px-2 py-0.5 rounded-full font-medium">
               Tree Hierarchy
             </span>
           </div>
 
           <div className="flex items-center space-x-2 w-full sm:w-auto">
             {/* Search Input */}
-            <div className="relative w-full sm:w-64">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <div className="relative flex-1 sm:w-64">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 placeholder="Filter accounts..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
               />
             </div>
 
@@ -369,7 +390,7 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
               className="flex items-center space-x-1 px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition shrink-0"
             >
               <Plus className="w-4 h-4" />
-              <span>Add Account</span>
+              <span className="hidden xs:inline">Add Account</span>
             </button>
           </div>
         </div>
@@ -378,13 +399,13 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="bg-slate-100/80 border-b border-slate-200 text-slate-600 text-xs font-semibold uppercase tracking-wider">
-                <th className="py-3 px-4">Account Name</th>
-                <th className="py-3 px-3 w-24">Code</th>
-                <th className="py-3 px-3 w-28">Type</th>
-                <th className="py-3 px-4 w-36 text-right">Direct Balance</th>
-                <th className="py-3 px-4 w-36 text-right">Total Balance</th>
-                <th className="py-3 px-4 w-40 text-right">Actions</th>
+              <tr className="bg-slate-100/80 border-b border-slate-200 text-slate-600 text-[11px] sm:text-xs font-semibold uppercase tracking-wider">
+                <th className="py-2.5 sm:py-3 px-3 sm:px-4">Account Name</th>
+                <th className="hidden md:table-cell py-2.5 sm:py-3 px-3 w-24">Code</th>
+                <th className="hidden sm:table-cell py-2.5 sm:py-3 px-3 w-28">Type</th>
+                <th className="hidden lg:table-cell py-2.5 sm:py-3 px-4 w-36 text-right">Direct Balance</th>
+                <th className="py-2.5 sm:py-3 px-2 sm:px-4 w-28 sm:w-36 text-right">Total Balance</th>
+                <th className="py-2.5 sm:py-3 px-2 sm:px-4 w-24 sm:w-40 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>

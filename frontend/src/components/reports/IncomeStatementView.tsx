@@ -39,21 +39,21 @@ export const IncomeStatementView: React.FC<IncomeStatementViewProps> = ({ curren
   return (
     <div className="space-y-6">
       {/* Header Bar */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4">
         <div className="flex items-center space-x-3">
-          <div className="w-10 h-10 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600">
+          <div className="w-10 h-10 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600 shrink-0">
             <TrendingUp className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-slate-900">Income Statement (P&L)</h2>
-            <p className="text-xs text-slate-500">
+            <h2 className="text-base sm:text-lg font-bold text-slate-900">Income Statement (P&L)</h2>
+            <p className="text-[11px] sm:text-xs text-slate-500">
               Profit and Loss summary over selected date range (Revenues minus Expenses)
             </p>
           </div>
         </div>
 
         {/* Date Range Selectors */}
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-2 flex-wrap gap-y-1.5 w-full sm:w-auto">
           <div className="flex items-center space-x-1.5">
             <span className="text-xs text-slate-400 font-semibold">From:</span>
             <input

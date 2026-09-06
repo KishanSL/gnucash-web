@@ -218,7 +218,7 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 pb-24 md:pb-8">
         {loading ? (
           <div className="py-24 text-center text-slate-400 text-sm">
             Connecting to GnuCash Rust backend on port 8082...
@@ -292,7 +292,7 @@ export const App: React.FC = () => {
             {activeTab === 'reports' && (
               <div className="space-y-6">
                 {/* Reports Sub-nav buttons */}
-                <div className="flex space-x-2 border-b border-slate-200 pb-3">
+                <div className="flex space-x-2 border-b border-slate-200 pb-3 overflow-x-auto no-scrollbar">
                   <button
                     onClick={() => setReportTab('balance-sheet')}
                     className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition ${
@@ -372,7 +372,7 @@ export const App: React.FC = () => {
       />
 
       {/* Footer */}
-      <footer className="border-t border-slate-200 bg-white py-4 mt-auto">
+      <footer className="border-t border-slate-200 bg-white py-4 mb-16 md:mb-0 mt-auto">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-400 gap-2">
           <p>GnuCash Web • Pure Double-Entry Accounting Engine</p>
           <p>Backend: Axum + SQLx + PostgreSQL (Port 8082) • Frontend: React + Vite (Port 8081)</p>

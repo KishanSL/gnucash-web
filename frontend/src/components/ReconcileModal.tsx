@@ -37,6 +37,7 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
   const [statementEndingBalance, setStatementEndingBalance] = useState('');
   const [reconcileData, setReconcileData] = useState<ReconcileData | null>(null);
   const [selectedSplitIds, setSelectedSplitIds] = useState<Set<string>>(new Set());
+  const [mobileTab, setMobileTab] = useState<'deposits' | 'withdrawals'>('deposits');
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -247,10 +248,37 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
         </div>
       )}
 
+      {/* Mobile Tab Switcher for Funds In vs Funds Out */}
+      <div className="lg:hidden flex space-x-2 border-b border-slate-200 pb-2">
+        <button
+          onClick={() => setMobileTab('deposits')}
+          className={`flex-1 flex items-center justify-center space-x-1.5 py-2 px-3 rounded-lg text-xs font-bold transition ${
+            mobileTab === 'deposits'
+              ? 'bg-emerald-600 text-white shadow-sm'
+              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+          }`}
+        >
+          <ArrowDownLeft className="w-3.5 h-3.5" />
+          <span>Funds In ({reconcileData?.deposits.length || 0})</span>
+        </button>
+
+        <button
+          onClick={() => setMobileTab('withdrawals')}
+          className={`flex-1 flex items-center justify-center space-x-1.5 py-2 px-3 rounded-lg text-xs font-bold transition ${
+            mobileTab === 'withdrawals'
+              ? 'bg-rose-600 text-white shadow-sm'
+              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+          }`}
+        >
+          <ArrowUpRight className="w-3.5 h-3.5" />
+          <span>Funds Out ({reconcileData?.withdrawals.length || 0})</span>
+        </button>
+      </div>
+
       {/* Two-Column Reconcile Checkoff Grid (GnuCash Style) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Column 1: Funds In / Deposits */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
+        <div className={`${mobileTab === 'deposits' ? 'flex' : 'hidden lg:flex'} bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex-col`}>
           <div className="p-3.5 border-b border-slate-200 bg-emerald-50/50 flex items-center justify-between">
             <div className="flex items-center space-x-2">
               <ArrowDownLeft className="w-4 h-4 text-emerald-600" />
@@ -314,7 +342,7 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
         </div>
 
         {/* Column 2: Funds Out / Payments */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
+        <div className={`${mobileTab === 'withdrawals' ? 'flex' : 'hidden lg:flex'} bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex-col`}>
           <div className="p-3.5 border-b border-slate-200 bg-rose-50/50 flex items-center justify-between">
             <div className="flex items-center space-x-2">
               <ArrowUpRight className="w-4 h-4 text-rose-600" />
@@ -379,8 +407,8 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
       </div>
 
       {/* Reconciliation Balance Summary & Finish Bar */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 items-center">
+      <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 shadow-sm">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4 items-center">
           <div>
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
               Starting Balance

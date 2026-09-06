@@ -66,7 +66,7 @@ export const BalanceSheetView: React.FC<BalanceSheetViewProps> = ({ currentCurre
         <div className="space-y-6">
           {/* Balanced Status Banner */}
           <div
-            className={`p-4 rounded-xl border flex items-center justify-between text-xs font-medium ${
+            className={`p-3.5 sm:p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-medium ${
               report.is_balanced
                 ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
                 : 'bg-rose-50 border-rose-200 text-rose-800'
@@ -85,7 +85,7 @@ export const BalanceSheetView: React.FC<BalanceSheetViewProps> = ({ currentCurre
               </span>
             </div>
 
-            <div className="font-mono font-bold flex items-center space-x-4">
+            <div className="font-mono font-bold flex items-center justify-between sm:justify-end space-x-2 sm:space-x-4 pt-1 sm:pt-0 border-t sm:border-t-0 border-emerald-200/50">
               <span>Assets: {formatCurrency(report.assets.total, currentCurrency)}</span>
               <span>=</span>
               <span>L+E: {formatCurrency(report.total_liabilities_and_equity, currentCurrency)}</span>
