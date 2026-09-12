@@ -39,7 +39,7 @@ pub async fn get_balance_sheet(
     // 1. Fetch all accounts
     let accounts: Vec<AccountRow> = sqlx::query_as(
         "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
-         FROM accounts WHERE hidden = FALSE
+         FROM accounts
          ORDER BY code ASC NULLS LAST, name ASC",
     )
     .fetch_all(&pool)
@@ -212,7 +212,7 @@ pub async fn get_income_statement(
 
     let accounts: Vec<AccountRow> = sqlx::query_as(
         "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
-         FROM accounts WHERE hidden = FALSE
+         FROM accounts
          ORDER BY code ASC NULLS LAST, name ASC",
     )
     .fetch_all(&pool)
@@ -339,13 +339,13 @@ pub async fn get_trial_balance(
     let as_of_date = query.date.unwrap_or_else(|| Utc::now().date_naive());
 
     let rows = sqlx::query_as::<_, (Uuid, Option<String>, String, String, Decimal)>(
-        r#"SELECT a.id, a.code, a.name, a.account_type, COALESCE(SUM(s.amount), 0) as balance
+        r#"SELECT a.id, a.code, a.name, a.account_type, SUM(s.amount) as balance
            FROM accounts a
-           LEFT JOIN splits s ON a.id = s.account_id
-           LEFT JOIN transactions t ON s.transaction_id = t.id AND t.post_date <= $1
-           WHERE a.placeholder = FALSE AND a.hidden = FALSE
+           JOIN splits s ON a.id = s.account_id
+           JOIN transactions t ON s.transaction_id = t.id
+           WHERE t.post_date <= $1
            GROUP BY a.id, a.code, a.name, a.account_type
-           HAVING COALESCE(SUM(s.amount), 0) != 0
+           HAVING SUM(s.amount) != 0
            ORDER BY a.code ASC NULLS LAST, a.name ASC"#
     )
     .bind(as_of_date)

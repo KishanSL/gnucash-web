@@ -96,10 +96,10 @@ export const ImportModal: React.FC<ImportModalProps> = ({
             </div>
             <div>
               <h3 className="font-bold text-slate-800 text-sm sm:text-base">
-                Import GnuCash SQLite Database
+                Import GnuCash File (.gnucash)
               </h3>
               <p className="text-[11px] sm:text-xs text-slate-400">
-                Import your .gnucash or SQLite file with full accounts & transactions
+                Supports all official GnuCash files (standard compressed XML & SQLite formats)
               </p>
             </div>
           </div>

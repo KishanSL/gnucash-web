@@ -223,7 +223,7 @@ async fn test_valid_double_entry_transaction_and_balances() {
     let app = create_app(pool.clone());
 
     let checking = sqlx::query_as::<_, (uuid::Uuid,)>(
-        "SELECT id FROM accounts WHERE name ILIKE '%Checking%' LIMIT 1",
+        "SELECT id FROM accounts WHERE placeholder = FALSE AND (account_type = 'bank' OR name ILIKE '%Checking%' OR name ILIKE '%Bank%' OR name ILIKE '%Cash%') LIMIT 1",
     )
     .fetch_one(&pool)
     .await
@@ -269,7 +269,7 @@ async fn test_account_register_running_balance() {
     let app = create_app(pool.clone());
 
     let checking = sqlx::query_as::<_, (uuid::Uuid,)>(
-        "SELECT id FROM accounts WHERE name ILIKE '%Checking%' LIMIT 1",
+        "SELECT id FROM accounts WHERE placeholder = FALSE AND (account_type = 'bank' OR name ILIKE '%Checking%' OR name ILIKE '%Bank%' OR name ILIKE '%Cash%') LIMIT 1",
     )
     .fetch_one(&pool)
     .await
@@ -303,7 +303,7 @@ async fn test_reconciliation_endpoint() {
     let app = create_app(pool.clone());
 
     let checking = sqlx::query_as::<_, (uuid::Uuid,)>(
-        "SELECT id FROM accounts WHERE name ILIKE '%Checking%' LIMIT 1",
+        "SELECT id FROM accounts WHERE placeholder = FALSE AND (account_type = 'bank' OR name ILIKE '%Checking%' OR name ILIKE '%Bank%' OR name ILIKE '%Cash%') LIMIT 1",
     )
     .fetch_one(&pool)
     .await
@@ -478,6 +478,100 @@ async fn test_import_gnucash_sqlite() {
     let json: Value = serde_json::from_slice(&res_body).unwrap();
     assert_eq!(json["success"], true);
     assert_eq!(json["accounts_imported"], 4);
+    assert_eq!(json["transactions_imported"], 1);
+    assert_eq!(json["splits_imported"], 2);
+}
+
+#[tokio::test]
+async fn test_import_gnucash_compressed_xml() {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+
+    let pool = get_test_pool().await;
+    let app = create_app(pool.clone());
+
+    let xml_data = r#"<?xml version="1.0" encoding="utf-8" ?>
+<gnc-v2 xmlns:gnc="http://www.gnucash.org/XML/gnc" xmlns:act="http://www.gnucash.org/XML/act" xmlns:trn="http://www.gnucash.org/XML/trn" xmlns:split="http://www.gnucash.org/XML/split" xmlns:cmdty="http://www.gnucash.org/XML/cmdty" xmlns:ts="http://www.gnucash.org/XML/ts" xmlns:slot="http://www.gnucash.org/XML/slot">
+<gnc:book version="2.0.0">
+  <gnc:account version="2.0.0">
+    <act:name>Root Account</act:name>
+    <act:id type="guid">10000000000000000000000000000000</act:id>
+    <act:type>ROOT</act:type>
+  </gnc:account>
+  <gnc:account version="2.0.0">
+    <act:name>Assets</act:name>
+    <act:id type="guid">20000000000000000000000000000000</act:id>
+    <act:type>ASSET</act:type>
+    <act:parent type="guid">10000000000000000000000000000000</act:parent>
+  </gnc:account>
+  <gnc:account version="2.0.0">
+    <act:name>Checking</act:name>
+    <act:id type="guid">30000000000000000000000000000000</act:id>
+    <act:type>BANK</act:type>
+    <act:parent type="guid">20000000000000000000000000000000</act:parent>
+  </gnc:account>
+  <gnc:account version="2.0.0">
+    <act:name>Salary</act:name>
+    <act:id type="guid">40000000000000000000000000000000</act:id>
+    <act:type>INCOME</act:type>
+    <act:parent type="guid">10000000000000000000000000000000</act:parent>
+  </gnc:account>
+  <gnc:transaction version="2.0.0">
+    <trn:id type="guid">50000000000000000000000000000000</trn:id>
+    <trn:date-posted><ts:date>2026-05-01 12:00:00 +0000</ts:date></trn:date-posted>
+    <trn:description>May Paycheck</trn:description>
+    <trn:splits>
+      <trn:split>
+        <split:id type="guid">60000000000000000000000000000000</split:id>
+        <split:account type="guid">30000000000000000000000000000000</split:account>
+        <split:value>7500000/100</split:value>
+        <split:reconciled-state>n</split:reconciled-state>
+      </trn:split>
+      <trn:split>
+        <split:id type="guid">70000000000000000000000000000000</split:id>
+        <split:account type="guid">40000000000000000000000000000000</split:account>
+        <split:value>-7500000/100</split:value>
+        <split:reconciled-state>n</split:reconciled-state>
+      </trn:split>
+    </trn:splits>
+  </gnc:transaction>
+</gnc:book>
+</gnc-v2>"#;
+
+    // Compress with Gzip
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(xml_data.as_bytes()).unwrap();
+    let gzip_bytes = encoder.finish().unwrap();
+
+    let boundary = "---------------------------12345678901234567890";
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"file\"; filename=\"sample.gnucash\"\r\n");
+    body.extend_from_slice(b"Content-Type: application/gzip\r\n\r\n");
+    body.extend_from_slice(&gzip_bytes);
+    body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/import/gnucash-sqlite?wipe=false")
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={}", boundary),
+                )
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let res_body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&res_body).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["accounts_imported"], 3);
     assert_eq!(json["transactions_imported"], 1);
     assert_eq!(json["splits_imported"], 2);
 }
