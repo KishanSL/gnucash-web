@@ -24,6 +24,13 @@ pub struct ImportQuery {
     pub default_currency: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ImportPathPayload {
+    pub path: String,
+    pub wipe: Option<bool>,
+    pub default_currency: Option<String>,
+}
+
 fn parse_gnucash_guid(guid_str: &str) -> Uuid {
     let clean = guid_str.trim().replace('-', "");
     Uuid::parse_str(&clean).unwrap_or_else(|_| {
@@ -541,9 +548,115 @@ pub async fn import_gnucash_sqlite(
         )
     })?;
 
-    let (mut raw_accounts, raw_transactions, raw_splits, format_desc) = import_result;
+    let (raw_accounts, raw_transactions, raw_splits, format_desc) = import_result;
+    let res = save_gnucash_data_to_db(&pool, wipe, raw_accounts, raw_transactions, raw_splits, format_desc).await?;
+    Ok(Json(res))
+}
 
-    // 3. Clean up parent_guid if parent is ROOT account
+pub async fn import_from_path(
+    State(pool): State<PgPool>,
+    Json(payload): Json<ImportPathPayload>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let wipe = payload.wipe.unwrap_or(true);
+    let default_curr = payload.default_currency.unwrap_or_else(|| "INR".to_string());
+
+    let mut file_path = payload.path.trim().to_string();
+    if file_path.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            file_path = format!("{}{}", home, &file_path[1..]);
+        }
+    }
+
+    let path_buf = std::path::PathBuf::from(&file_path);
+    if !path_buf.exists() || !path_buf.is_file() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("File not found at path: {}", file_path) })),
+        ));
+    }
+
+    let file_bytes = std::fs::read(&path_buf).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to read file: {}", e) })),
+        )
+    })?;
+
+    let default_curr_clone = default_curr.clone();
+    let import_result = tokio::task::spawn_blocking(move || {
+        parse_gnucash_file(&file_bytes, &default_curr_clone)
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Worker task failed: {}", e) })),
+        )
+    })?
+    .map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e })),
+        )
+    })?;
+
+    let (raw_accounts, raw_transactions, raw_splits, format_desc) = import_result;
+    let res = save_gnucash_data_to_db(&pool, wipe, raw_accounts, raw_transactions, raw_splits, format_desc).await?;
+    Ok(Json(res))
+}
+
+pub async fn list_local_gnucash_files() -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let mut files = Vec::new();
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/kishan".to_string());
+
+    let search_dirs = vec![
+        format!("{}/codebase", home),
+        home.clone(),
+        std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+    ];
+
+    let mut seen_paths = HashSet::new();
+
+    for dir_path in search_dirs {
+        if dir_path.is_empty() {
+            continue;
+        }
+        let dir = std::path::Path::new(&dir_path);
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    if ext.eq_ignore_ascii_case("gnucash") {
+                        let path_str = p.to_string_lossy().to_string();
+                        if seen_paths.insert(path_str.clone()) {
+                            let metadata = entry.metadata().ok();
+                            let size_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                            let filename = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                            files.push(json!({
+                                "path": path_str,
+                                "filename": filename,
+                                "size_bytes": size_bytes,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Json(json!({ "files": files })))
+}
+
+async fn save_gnucash_data_to_db(
+    pool: &PgPool,
+    wipe: bool,
+    mut raw_accounts: Vec<RawAccount>,
+    raw_transactions: Vec<RawTransaction>,
+    raw_splits: Vec<RawSplit>,
+    format_desc: &str,
+) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
+    // 1. Clean up parent_guid if parent is ROOT account
     let root_guids: HashSet<String> = raw_accounts
         .iter()
         .filter(|a| a.account_type.trim().to_uppercase() == "ROOT")
@@ -560,7 +673,7 @@ pub async fn import_gnucash_sqlite(
         }
     }
 
-    // 4. Save to PostgreSQL transaction
+    // 2. Save to PostgreSQL transaction
     let mut tx = pool.begin().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -734,7 +847,7 @@ pub async fn import_gnucash_sqlite(
         )
     })?;
 
-    Ok(Json(json!({
+    Ok(json!({
         "success": true,
         "accounts_imported": inserted_acc_ids.len(),
         "transactions_imported": tx_count,
@@ -744,5 +857,5 @@ pub async fn import_gnucash_sqlite(
             "Successfully imported {} file ({} accounts, {} transactions, {} splits).",
             format_desc, inserted_acc_ids.len(), tx_count, split_count
         )
-    })))
+    }))
 }

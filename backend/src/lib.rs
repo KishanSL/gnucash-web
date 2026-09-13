@@ -80,6 +80,14 @@ pub fn create_app(pool: sqlx::PgPool) -> Router {
             "/api/import/gnucash-sqlite",
             post(handlers::importer::import_gnucash_sqlite),
         )
+        .route(
+            "/api/import/local-files",
+            get(handlers::importer::list_local_gnucash_files),
+        )
+        .route(
+            "/api/import/from-path",
+            post(handlers::importer::import_from_path),
+        )
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(pool)

@@ -575,3 +575,107 @@ async fn test_import_gnucash_compressed_xml() {
     assert_eq!(json["transactions_imported"], 1);
     assert_eq!(json["splits_imported"], 2);
 }
+
+#[tokio::test]
+async fn test_list_local_files_and_import_path() {
+    let pool = get_test_pool().await;
+    let app = create_app(pool.clone());
+
+    // 1. List local files
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/import/local-files")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["files"].is_array());
+
+    // 2. Import a temp .gnucash file via path
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+
+    let xml_data = r#"<?xml version="1.0" encoding="utf-8" ?>
+<gnc-v2 xmlns:gnc="http://www.gnucash.org/XML/gnc" xmlns:act="http://www.gnucash.org/XML/act" xmlns:trn="http://www.gnucash.org/XML/trn" xmlns:split="http://www.gnucash.org/XML/split" xmlns:cmdty="http://www.gnucash.org/XML/cmdty" xmlns:ts="http://www.gnucash.org/XML/ts">
+<gnc:book version="2.0.0">
+  <gnc:account version="2.0.0">
+    <act:name>Root Account</act:name>
+    <act:id type="guid">50000000000000000000000000000000</act:id>
+    <act:type>ROOT</act:type>
+  </gnc:account>
+  <gnc:account version="2.0.0">
+    <act:name>Wallet Cash</act:name>
+    <act:id type="guid">50000000000000000000000000000001</act:id>
+    <act:type>CASH</act:type>
+    <act:parent type="guid">50000000000000000000000000000000</act:parent>
+  </gnc:account>
+  <gnc:account version="2.0.0">
+    <act:name>Food Expense</act:name>
+    <act:id type="guid">50000000000000000000000000000002</act:id>
+    <act:type>EXPENSE</act:type>
+    <act:parent type="guid">50000000000000000000000000000000</act:parent>
+  </gnc:account>
+  <gnc:transaction version="2.0.0">
+    <trn:id type="guid">50000000000000000000000000000003</trn:id>
+    <trn:description>Lunch</trn:description>
+    <trn:splits>
+      <trn:split>
+        <split:id type="guid">50000000000000000000000000000004</split:id>
+        <split:reconciled-state>n</split:reconciled-state>
+        <split:value>250/1</split:value>
+        <split:account type="guid">50000000000000000000000000000002</split:account>
+      </trn:split>
+      <trn:split>
+        <split:id type="guid">50000000000000000000000000000005</split:id>
+        <split:reconciled-state>n</split:reconciled-state>
+        <split:value>-250/1</split:value>
+        <split:account type="guid">50000000000000000000000000000001</split:account>
+      </trn:split>
+    </trn:splits>
+  </gnc:transaction>
+</gnc:book>
+</gnc-v2>"#;
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(xml_data.as_bytes()).unwrap();
+    let gzip_bytes = encoder.finish().unwrap();
+
+    let mut temp_file = tempfile::Builder::new().suffix(".gnucash").tempfile().unwrap();
+    temp_file.write_all(&gzip_bytes).unwrap();
+    let temp_path = temp_file.path().to_str().unwrap().to_string();
+
+    let payload = json!({
+        "path": temp_path,
+        "wipe": false,
+        "default_currency": "INR"
+    });
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/import/from-path")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], true);
+    assert_eq!(json["accounts_imported"], 2);
+    assert_eq!(json["transactions_imported"], 1);
+    assert_eq!(json["splits_imported"], 2);
+}

@@ -181,6 +181,42 @@ export async function importGnuCashSqlite(
   return res.json();
 }
 
+export interface LocalGnuCashFile {
+  path: string;
+  filename: string;
+  size_bytes: number;
+}
+
+export async function fetchLocalGnuCashFiles(): Promise<LocalGnuCashFile[]> {
+  const res = await fetch(`${API_BASE}/import/local-files`);
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => ({ files: [] }));
+  return data.files || [];
+}
+
+export async function importFromPath(
+  path: string,
+  wipe: boolean = true,
+  defaultCurrency: string = 'INR'
+): Promise<{
+  success: boolean;
+  accounts_imported: number;
+  transactions_imported: number;
+  splits_imported: number;
+  message: string;
+}> {
+  const res = await fetch(`${API_BASE}/import/from-path`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, wipe, default_currency: defaultCurrency }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to import GnuCash file from path');
+  }
+  return res.json();
+}
+
 export const SUPPORTED_CURRENCIES = [
   { code: 'INR', symbol: '₹', name: 'Indian Rupee (INR)' },
   { code: 'USD', symbol: '$', name: 'US Dollar (USD)' },
