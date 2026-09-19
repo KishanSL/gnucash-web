@@ -86,11 +86,14 @@ docker compose up -d
 
 ### Services Started:
 
-| Service | Container Name | Port | Description |
+| Service | Container Name | Port Exposure | Description |
 | :--- | :--- | :--- | :--- |
-| **Frontend UI** | `gnucash-frontend` | `8081` | React 18 + Tailwind SPA served via Nginx reverse proxy |
-| **Rust Backend** | `gnucash-backend` | `8082` | Axum REST API server with healthcheck |
-| **PostgreSQL DB** | `gnucash-postgres` | `5432` | PostgreSQL 16 database with persistent volume |
+| **Frontend UI** | `gnucash-frontend` | `8081` (Host) | React 18 SPA served via Nginx reverse proxy |
+| **Rust Backend** | `gnucash-backend` | Internal (`8082`) | Axum REST API server (accessible via Nginx `/api/`) |
+| **PostgreSQL DB** | `gnucash-postgres` | Internal (`5432`) | PostgreSQL 16 database (isolated within Docker network) |
+
+> [!NOTE]
+> For security and clean architecture, only the frontend is exposed on port `8081`. All API calls (`/api/...`) are securely proxied by Nginx internally to the backend, and PostgreSQL is isolated from the host.
 
 ### Automatic GnuCash File Import:
 - On startup, if the database is uninitialized, the backend automatically scans `~/codebase` (mounted into the container) for any `.gnucash` files (such as `KishanSenLaskar-2026-27.gnucash`) and auto-imports them on first boot!
@@ -115,13 +118,13 @@ docker compose down -v
 
 ---
 
-## Ports & Deployment
+## Ports & Access
 
-| Service | Port | Endpoint / Status |
-| :--- | :--- | :--- |
-| **Frontend UI** | `8081` | `http://localhost:8081` |
-| **Rust Backend** | `8082` | `http://localhost:8082` (`/api/...`) |
-| **PostgreSQL DB** | `5432` | `postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash` |
+| Service | Host Port | Internal Docker Port | Access URL |
+| :--- | :--- | :--- | :--- |
+| **Web UI & API Proxy** | `8081` | `80` | `http://localhost:8081` |
+| **Rust Backend API** | *None* | `8082` | Proxied via `http://localhost:8081/api/...` |
+| **PostgreSQL Database** | *None* | `5432` | Internal to container network |
 
 ---
 
