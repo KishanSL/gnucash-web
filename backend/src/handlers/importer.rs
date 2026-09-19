@@ -455,7 +455,7 @@ fn parse_gnucash_sqlite(
     Ok((raw_accounts, raw_transactions, raw_splits))
 }
 
-fn parse_gnucash_file(
+pub fn parse_gnucash_file(
     file_bytes: &[u8],
     default_curr: &str,
 ) -> Result<(Vec<RawAccount>, Vec<RawTransaction>, Vec<RawSplit>, &'static str), String> {
@@ -648,7 +648,7 @@ pub async fn list_local_gnucash_files() -> Result<impl IntoResponse, (StatusCode
     Ok(Json(json!({ "files": files })))
 }
 
-async fn save_gnucash_data_to_db(
+pub async fn save_gnucash_data_to_db(
     pool: &PgPool,
     wipe: bool,
     mut raw_accounts: Vec<RawAccount>,

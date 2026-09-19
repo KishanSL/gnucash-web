@@ -76,6 +76,45 @@ A modern, high-performance web clone of **GnuCash** built with **Rust (Axum + SQ
 
 ---
 
+## Docker Compose Deployment (1-Command Launch)
+
+Deploy the entire full-stack application (PostgreSQL + Rust Backend + React Frontend/Nginx) with a single command:
+
+```bash
+docker compose up -d
+```
+
+### Services Started:
+
+| Service | Container Name | Port | Description |
+| :--- | :--- | :--- | :--- |
+| **Frontend UI** | `gnucash-frontend` | `8081` | React 18 + Tailwind SPA served via Nginx reverse proxy |
+| **Rust Backend** | `gnucash-backend` | `8082` | Axum REST API server with healthcheck |
+| **PostgreSQL DB** | `gnucash-postgres` | `5432` | PostgreSQL 16 database with persistent volume |
+
+### Automatic GnuCash File Import:
+- On startup, if the database is uninitialized, the backend automatically scans `~/codebase` (mounted into the container) for any `.gnucash` files (such as `KishanSenLaskar-2026-27.gnucash`) and auto-imports them on first boot!
+- If no file is detected, it seeds default standard accounts.
+- You can also import any `.gnucash` file at any time using the **Import GnuCash** button in the web UI at `http://localhost:8081`.
+
+### Managing Containers:
+
+```bash
+# View container logs
+docker compose logs -f
+
+# Check status
+docker compose ps
+
+# Stop all services
+docker compose down
+
+# Stop and wipe database volume
+docker compose down -v
+```
+
+---
+
 ## Ports & Deployment
 
 | Service | Port | Endpoint / Status |
