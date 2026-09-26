@@ -339,7 +339,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
                       {validAccounts.map((a) => (
                         <option key={a.id} value={a.id}>
                           {a.code ? `${a.code} - ` : ''}
-                          {a.name} ({a.account_type})
+                          {a.name} ({a.account_type}){a.hidden ? ' [Hidden]' : ''}
                         </option>
                       ))}
                     </select>
@@ -411,7 +411,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
                           {validAccounts.map((a) => (
                             <option key={a.id} value={a.id}>
                               {a.code ? `${a.code} - ` : ''}
-                              {a.name} ({a.account_type})
+                              {a.name} ({a.account_type}){a.hidden ? ' [Hidden]' : ''}
                             </option>
                           ))}
                         </select>

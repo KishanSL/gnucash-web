@@ -9,6 +9,8 @@ import {
   CornerDownRight,
   Split,
   Search,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { Account, RegisterEntry } from '../types';
 import { formatCurrency } from '../api';
@@ -22,6 +24,7 @@ interface AccountRegisterProps {
   onOpenNewTx: (defaultAccountId?: string) => void;
   onOpenReconcile: (acc: Account) => void;
   onDeleteTransaction: (txId: string) => void;
+  onToggleHideAccount?: (acc: Account) => void;
 }
 
 export const AccountRegister: React.FC<AccountRegisterProps> = ({
@@ -33,6 +36,7 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
   onOpenNewTx,
   onOpenReconcile,
   onDeleteTransaction,
+  onToggleHideAccount,
 }) => {
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -114,13 +118,19 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
                     .map((a) => (
                       <option key={a.id} value={a.id}>
                         {a.code ? `${a.code} - ` : ''}
-                        {a.name} ({a.account_type})
+                        {a.name} ({a.account_type}){a.hidden ? ' [Hidden]' : ''}
                       </option>
                     ))}
                 </select>
                 <span className="text-[11px] sm:text-xs px-2 py-0.5 rounded-md capitalize font-medium bg-slate-100 text-slate-600 border border-slate-200">
                   {account.account_type}
                 </span>
+                {account.hidden && (
+                  <span className="inline-flex items-center space-x-1 text-[11px] sm:text-xs px-2 py-0.5 rounded-md font-medium bg-amber-100 text-amber-800 border border-amber-300">
+                    <EyeOff className="w-3 h-3 text-amber-700" />
+                    <span>Hidden Account</span>
+                  </span>
+                )}
               </div>
               <p className="text-[11px] sm:text-xs text-slate-400 mt-0.5 truncate">
                 {account.description || `Ledger register for ${account.name}`}
@@ -144,6 +154,21 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
             </div>
 
             <div className="flex items-center space-x-1.5 sm:space-x-2">
+              {onToggleHideAccount && (
+                <button
+                  onClick={() => onToggleHideAccount(account)}
+                  className={`flex items-center space-x-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold rounded-lg border transition ${
+                    account.hidden
+                      ? 'text-amber-800 bg-amber-100 hover:bg-amber-200 border-amber-300'
+                      : 'text-slate-600 bg-slate-50 hover:bg-slate-100 border-slate-200'
+                  }`}
+                  title={account.hidden ? 'Unhide Account (Make visible in tree)' : 'Hide Account (Omit from tree)'}
+                >
+                  {account.hidden ? <EyeOff className="w-4 h-4 text-amber-700" /> : <Eye className="w-4 h-4 text-slate-500" />}
+                  <span className="hidden sm:inline">{account.hidden ? 'Unhide' : 'Hide'}</span>
+                </button>
+              )}
+
               {['bank', 'credit', 'cash'].includes(account.account_type.toLowerCase()) && (
                 <button
                   onClick={() => onOpenReconcile(account)}

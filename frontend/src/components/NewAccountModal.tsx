@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { X, FolderPlus, AlertCircle } from 'lucide-react';
-import { Account, CreateAccountPayload } from '../types';
+import { X, FolderPlus, Edit3, AlertCircle, EyeOff } from 'lucide-react';
+import { Account, CreateAccountPayload, UpdateAccountPayload } from '../types';
 import { SUPPORTED_CURRENCIES } from '../api';
 
 interface NewAccountModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSubmit: (payload: CreateAccountPayload) => Promise<void>;
+  onUpdate?: (id: string, payload: UpdateAccountPayload) => Promise<void>;
+  editingAccount?: Account | null;
   accounts: Account[];
   defaultParentId?: string;
   currentCurrency: string;
@@ -16,6 +18,8 @@ export const NewAccountModal: React.FC<NewAccountModalProps> = ({
   isOpen,
   onClose,
   onSubmit,
+  onUpdate,
+  editingAccount,
   accounts,
   defaultParentId,
   currentCurrency,
@@ -27,29 +31,44 @@ export const NewAccountModal: React.FC<NewAccountModalProps> = ({
   const [currency, setCurrency] = useState(currentCurrency || 'INR');
   const [description, setDescription] = useState('');
   const [placeholder, setPlaceholder] = useState(false);
+  const [hidden, setHidden] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const isEditing = Boolean(editingAccount);
+
   useEffect(() => {
     if (isOpen) {
-      setName('');
-      setCode('');
-      setAccountType('bank');
-      setParentId(defaultParentId || '');
-      setCurrency(currentCurrency || 'INR');
-      setDescription('');
-      setPlaceholder(false);
-      setError(null);
+      if (editingAccount) {
+        setName(editingAccount.name);
+        setCode(editingAccount.code || '');
+        setAccountType(editingAccount.account_type);
+        setParentId(editingAccount.parent_id || '');
+        setCurrency(editingAccount.currency || currentCurrency || 'INR');
+        setDescription(editingAccount.description || '');
+        setPlaceholder(editingAccount.placeholder);
+        setHidden(editingAccount.hidden);
+      } else {
+        setName('');
+        setCode('');
+        setAccountType('bank');
+        setParentId(defaultParentId || '');
+        setCurrency(currentCurrency || 'INR');
+        setDescription('');
+        setPlaceholder(false);
+        setHidden(false);
 
-      // Inherit type from parent if selected
-      if (defaultParentId) {
-        const parent = accounts.find((a) => a.id === defaultParentId);
-        if (parent) {
-          setAccountType(parent.account_type);
+        // Inherit type from parent if selected
+        if (defaultParentId) {
+          const parent = accounts.find((a) => a.id === defaultParentId);
+          if (parent) {
+            setAccountType(parent.account_type);
+          }
         }
       }
+      setError(null);
     }
-  }, [isOpen, defaultParentId, accounts]);
+  }, [isOpen, editingAccount, defaultParentId, accounts, currentCurrency]);
 
   if (!isOpen) return null;
 
@@ -64,18 +83,32 @@ export const NewAccountModal: React.FC<NewAccountModalProps> = ({
 
     try {
       setSubmitting(true);
-      await onSubmit({
-        name: name.trim(),
-        code: code.trim() ? code.trim() : null,
-        account_type: accountType,
-        parent_id: parentId ? parentId : null,
-        currency,
-        description: description.trim() ? description.trim() : null,
-        placeholder,
-      });
+      if (isEditing && editingAccount && onUpdate) {
+        await onUpdate(editingAccount.id, {
+          name: name.trim(),
+          code: code.trim() ? code.trim() : null,
+          account_type: accountType,
+          parent_id: parentId ? parentId : null,
+          currency,
+          description: description.trim() ? description.trim() : null,
+          placeholder,
+          hidden,
+        });
+      } else {
+        await onSubmit({
+          name: name.trim(),
+          code: code.trim() ? code.trim() : null,
+          account_type: accountType,
+          parent_id: parentId ? parentId : null,
+          currency,
+          description: description.trim() ? description.trim() : null,
+          placeholder,
+          hidden,
+        });
+      }
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to create account');
+      setError(err.message || (isEditing ? 'Failed to update account' : 'Failed to create account'));
     } finally {
       setSubmitting(false);
     }
@@ -86,12 +119,18 @@ export const NewAccountModal: React.FC<NewAccountModalProps> = ({
       <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-lg w-full overflow-hidden max-h-[94vh] flex flex-col animate-in fade-in zoom-in-95 duration-150">
         <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
           <div className="flex items-center space-x-2">
-            <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
-              <FolderPlus className="w-4 h-4" />
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+              isEditing ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+            }`}>
+              {isEditing ? <Edit3 className="w-4 h-4" /> : <FolderPlus className="w-4 h-4" />}
             </div>
             <div>
-              <h3 className="font-bold text-slate-800 text-sm sm:text-base">New Account</h3>
-              <p className="text-[11px] sm:text-xs text-slate-400">Add an account to your Chart of Accounts</p>
+              <h3 className="font-bold text-slate-800 text-sm sm:text-base">
+                {isEditing ? `Edit Account: ${editingAccount?.name}` : 'New Account'}
+              </h3>
+              <p className="text-[11px] sm:text-xs text-slate-400">
+                {isEditing ? 'Update account details, placeholder, or hidden status' : 'Add an account to your Chart of Accounts'}
+              </p>
             </div>
           </div>
           <button
@@ -172,11 +211,13 @@ export const NewAccountModal: React.FC<NewAccountModalProps> = ({
                 className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
               >
                 <option value="">-- Top Level Account (None) --</option>
-                {accounts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name} ({a.account_type}) {a.placeholder ? '[Placeholder]' : ''}
-                  </option>
-                ))}
+                {accounts
+                  .filter((a) => !editingAccount || a.id !== editingAccount.id)
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.account_type}){a.placeholder ? ' [Folder]' : ''}{a.hidden ? ' [Hidden]' : ''}
+                    </option>
+                  ))}
               </select>
             </div>
           </div>
@@ -196,18 +237,49 @@ export const NewAccountModal: React.FC<NewAccountModalProps> = ({
                 ))}
               </select>
             </div>
+          </div>
 
-            <div className="flex items-center pt-5">
-              <label className="flex items-center space-x-2 cursor-pointer select-none">
+          {/* Account Flag Options: Placeholder and Hidden */}
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+            <label className="flex items-start space-x-2.5 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={placeholder}
+                onChange={(e) => setPlaceholder(e.target.checked)}
+                className="mt-0.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 w-4 h-4"
+              />
+              <div>
+                <span className="text-xs text-slate-800 font-semibold block">
+                  Placeholder / Folder
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  Used purely to categorize subaccounts. Cannot contain direct transactions.
+                </span>
+              </div>
+            </label>
+
+            <div className="border-t border-slate-200 pt-2.5">
+              <label className="flex items-start space-x-2.5 cursor-pointer select-none">
                 <input
                   type="checkbox"
-                  checked={placeholder}
-                  onChange={(e) => setPlaceholder(e.target.checked)}
-                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 w-4 h-4"
+                  checked={hidden}
+                  onChange={(e) => setHidden(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-300 text-amber-600 focus:ring-amber-500 w-4 h-4"
                 />
-                <span className="text-xs text-slate-700 font-medium">
-                  Placeholder (Category only)
-                </span>
+                <div>
+                  <div className="flex items-center space-x-1.5">
+                    <span className="text-xs text-slate-800 font-semibold">
+                      Hidden Account
+                    </span>
+                    <span className="inline-flex items-center space-x-1 px-1.5 py-0.2 rounded text-[10px] font-medium bg-amber-100 text-amber-800 border border-amber-200">
+                      <EyeOff className="w-3 h-3" />
+                      <span>GnuCash hidden</span>
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-slate-500">
+                    Omit from Chart of Accounts tree and register lists by default unless "Show Hidden" is enabled.
+                  </span>
+                </div>
               </label>
             </div>
           </div>
@@ -236,9 +308,15 @@ export const NewAccountModal: React.FC<NewAccountModalProps> = ({
             <button
               type="submit"
               disabled={submitting}
-              className="px-5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg transition shadow-sm active:scale-95"
+              className={`px-5 py-2 text-xs font-semibold text-white disabled:opacity-50 rounded-lg transition shadow-sm active:scale-95 ${
+                isEditing
+                  ? 'bg-amber-600 hover:bg-amber-500'
+                  : 'bg-emerald-600 hover:bg-emerald-500'
+              }`}
             >
-              {submitting ? 'Creating...' : 'Create Account'}
+              {submitting
+                ? (isEditing ? 'Saving...' : 'Creating...')
+                : (isEditing ? 'Save Changes' : 'Create Account')}
             </button>
           </div>
         </form>

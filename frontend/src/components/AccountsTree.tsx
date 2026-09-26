@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   ChevronRight,
   ChevronDown,
@@ -16,6 +16,9 @@ import {
   Trash2,
   Search,
   Plus,
+  Eye,
+  EyeOff,
+  Edit3,
 } from 'lucide-react';
 import { Account, AccountTreeNode } from '../types';
 import { formatCurrency } from '../api';
@@ -27,6 +30,8 @@ interface AccountsTreeProps {
   onSelectAccountForReconcile: (account: Account) => void;
   onDeleteAccount: (id: string) => void;
   onOpenNewAccount: (parentId?: string) => void;
+  onEditAccount: (account: Account) => void;
+  onToggleHideAccount: (account: Account) => void;
 }
 
 export const AccountsTree: React.FC<AccountsTreeProps> = ({
@@ -36,13 +41,39 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
   onSelectAccountForReconcile,
   onDeleteAccount,
   onOpenNewAccount,
+  onEditAccount,
+  onToggleHideAccount,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [showHidden, setShowHidden] = useState<boolean>(() => {
+    return localStorage.getItem('gnucash_show_hidden') === 'true';
+  });
+
+  const handleToggleShowHidden = () => {
+    const next = !showHidden;
+    setShowHidden(next);
+    localStorage.setItem('gnucash_show_hidden', String(next));
+  };
 
   const toggleCollapse = (id: string) => {
     setCollapsed((prev) => ({ ...prev, [id]: !prev[id] }));
   };
+
+  // Count total hidden accounts in the tree
+  const hiddenCount = useMemo(() => {
+    const countNodes = (nodes: AccountTreeNode[]): number => {
+      let count = 0;
+      for (const node of nodes) {
+        if (node.account.hidden) count++;
+        if (node.children && node.children.length > 0) {
+          count += countNodes(node.children);
+        }
+      }
+      return count;
+    };
+    return countNodes(tree);
+  }, [tree]);
 
   // Compute summary stats
   const findRootTotal = (name: string): number => {
@@ -102,10 +133,22 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
     }
   };
 
+  const hasNonHiddenDescendant = (childrenList: AccountTreeNode[]): boolean => {
+    return childrenList.some(
+      (c) => !c.account.hidden || hasNonHiddenDescendant(c.children)
+    );
+  };
+
   const renderNode = (node: AccountTreeNode, depth = 0): React.ReactNode => {
     const { account, children } = node;
     const isCollapsed = collapsed[account.id] || false;
     const hasChildren = children && children.length > 0;
+
+    // Hidden account filter
+    // If hidden and showHidden is false, omit unless it contains non-hidden descendants
+    if (!showHidden && account.hidden && !hasNonHiddenDescendant(children)) {
+      return null;
+    }
 
     // Search filter
     const matchesSearch =
@@ -117,7 +160,10 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
     const childrenHaveMatches = (childrenList: AccountTreeNode[]): boolean => {
       return childrenList.some(
         (c) =>
-          c.account.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          ((showHidden || !c.account.hidden || hasNonHiddenDescendant(c.children)) &&
+            (c.account.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+              (c.account.code && c.account.code.toLowerCase().includes(searchTerm.toLowerCase())) ||
+              c.account.account_type.toLowerCase().includes(searchTerm.toLowerCase()))) ||
           childrenHaveMatches(c.children)
       );
     };
@@ -126,11 +172,15 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
       return null;
     }
 
+    const isHiddenAccount = account.hidden;
+
     return (
       <React.Fragment key={account.id}>
         <tr
           className={`border-b border-slate-100 transition-colors ${
-            account.placeholder
+            isHiddenAccount
+              ? 'bg-amber-50/50 hover:bg-amber-100/40 text-slate-600 italic'
+              : account.placeholder
               ? 'bg-slate-50/80 font-semibold text-slate-800'
               : 'hover:bg-emerald-50/40 text-slate-700'
           }`}
@@ -160,11 +210,13 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
               <span className="mr-2 shrink-0">{getAccountTypeIcon(account.account_type, account.placeholder)}</span>
 
               <div className="flex flex-col min-w-0">
-                <div className="flex items-center space-x-1.5 flex-wrap">
+                <div className="flex items-center space-x-1.5 flex-wrap gap-y-0.5">
                   {!account.placeholder ? (
                     <button
                       onClick={() => onSelectAccountForRegister(account)}
-                      className="font-medium text-slate-800 hover:text-emerald-700 text-left truncate text-xs sm:text-sm hover:underline"
+                      className={`font-medium hover:text-emerald-700 text-left truncate text-xs sm:text-sm hover:underline ${
+                        isHiddenAccount ? 'text-slate-600' : 'text-slate-800'
+                      }`}
                       title="Open in Ledger Register"
                     >
                       {account.name}
@@ -174,14 +226,28 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
                       {account.name}
                     </span>
                   )}
+
+                  {/* Hidden badge */}
+                  {isHiddenAccount && (
+                    <span
+                      className="inline-flex items-center space-x-0.5 text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 border border-amber-300 shrink-0 not-italic"
+                      title="This account is hidden"
+                    >
+                      <EyeOff className="w-2.5 h-2.5 text-amber-700" />
+                      <span>Hidden</span>
+                    </span>
+                  )}
+
+                  {/* Placeholder Folder badge */}
                   {account.placeholder && (
-                    <span className="text-[9px] uppercase font-bold tracking-wider px-1 py-0.2 rounded bg-slate-200 text-slate-600 shrink-0">
+                    <span className="text-[9px] uppercase font-bold tracking-wider px-1 py-0.2 rounded bg-slate-200 text-slate-600 shrink-0 not-italic">
                       Folder
                     </span>
                   )}
+
                   {/* Mobile Type badge */}
                   <span
-                    className={`sm:hidden inline-block px-1.5 py-0.2 rounded text-[10px] font-medium border capitalize ${getBadgeStyle(
+                    className={`sm:hidden inline-block px-1.5 py-0.2 rounded text-[10px] font-medium border capitalize not-italic ${getBadgeStyle(
                       account.account_type
                     )} shrink-0`}
                   >
@@ -189,7 +255,7 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
                   </span>
                 </div>
                 {account.description && (
-                  <span className="text-[10px] sm:text-[11px] text-slate-400 font-normal truncate max-w-xs">
+                  <span className="text-[10px] sm:text-[11px] text-slate-400 font-normal truncate max-w-xs not-italic">
                     {account.description}
                   </span>
                 )}
@@ -205,7 +271,7 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
           {/* Account Type (Hidden on mobile, shown inline) */}
           <td className="hidden sm:table-cell py-2.5 px-3">
             <span
-              className={`inline-block px-2 py-0.5 rounded-md text-xs font-medium border capitalize ${getBadgeStyle(
+              className={`inline-block px-2 py-0.5 rounded-md text-xs font-medium border capitalize not-italic ${getBadgeStyle(
                 account.account_type
               )}`}
             >
@@ -214,12 +280,14 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
           </td>
 
           {/* Direct Balance (Hidden on tablet/mobile) */}
-          <td className="hidden lg:table-cell py-2.5 px-4 text-right font-mono text-xs">
+          <td className="hidden lg:table-cell py-2.5 px-4 text-right font-mono text-xs not-italic">
             {!account.placeholder ? (
               <span
                 className={
                   parseFloat(account.display_balance) < 0
                     ? 'text-rose-600 font-semibold'
+                    : isHiddenAccount
+                    ? 'text-slate-500'
                     : 'text-slate-700'
                 }
               >
@@ -231,10 +299,14 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
           </td>
 
           {/* Total Subtree Balance */}
-          <td className="py-2.5 px-2 sm:px-4 text-right font-mono text-xs font-semibold whitespace-nowrap">
+          <td className="py-2.5 px-2 sm:px-4 text-right font-mono text-xs font-semibold whitespace-nowrap not-italic">
             <span
               className={
-                parseFloat(account.display_balance) < 0 ? 'text-rose-600' : 'text-slate-900'
+                parseFloat(account.display_balance) < 0
+                  ? 'text-rose-600'
+                  : isHiddenAccount
+                  ? 'text-slate-600'
+                  : 'text-slate-900'
               }
             >
               {formatCurrency(account.display_balance, currentCurrency || account.currency)}
@@ -242,7 +314,7 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
           </td>
 
           {/* Actions */}
-          <td className="py-2.5 px-2 sm:px-4 text-right whitespace-nowrap">
+          <td className="py-2.5 px-2 sm:px-4 text-right whitespace-nowrap not-italic">
             <div className="flex items-center justify-end space-x-1">
               {!account.placeholder && (
                 <>
@@ -277,6 +349,28 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
                   <span className="hidden sm:inline">Subaccount</span>
                 </button>
               )}
+
+              {/* 1-Click Hide/Unhide Quick Toggle */}
+              <button
+                onClick={() => onToggleHideAccount(account)}
+                className={`p-1 rounded transition border ${
+                  account.hidden
+                    ? 'text-amber-700 bg-amber-100 hover:bg-amber-200 border-amber-300'
+                    : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100 border-transparent hover:border-slate-200'
+                }`}
+                title={account.hidden ? 'Unhide Account (Make visible)' : 'Hide Account (Omit from tree)'}
+              >
+                {account.hidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+
+              {/* Edit Account */}
+              <button
+                onClick={() => onEditAccount(account)}
+                className="p-1 text-slate-400 hover:text-emerald-700 rounded hover:bg-emerald-50 border border-transparent hover:border-emerald-200 transition"
+                title="Edit Account Details"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+              </button>
 
               {!account.placeholder && parseFloat(account.balance) === 0 && (
                 <button
@@ -364,7 +458,7 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
         {/* Table Toolbar */}
         <div className="p-3 sm:p-4 border-b border-slate-200 bg-slate-50/50 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 sm:gap-3">
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center space-x-2 flex-wrap gap-y-1">
             <FolderTree className="w-5 h-5 text-emerald-600 shrink-0" />
             <h2 className="font-bold text-slate-800 text-sm sm:text-base">Chart of Accounts</h2>
             <span className="text-[11px] text-slate-500 bg-slate-200 px-2 py-0.5 rounded-full font-medium">
@@ -372,9 +466,9 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
             </span>
           </div>
 
-          <div className="flex items-center space-x-2 w-full sm:w-auto">
+          <div className="flex items-center space-x-2 w-full sm:w-auto flex-wrap sm:flex-nowrap gap-y-2">
             {/* Search Input */}
-            <div className="relative flex-1 sm:w-64">
+            <div className="relative flex-1 sm:w-60 min-w-[150px]">
               <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
@@ -384,6 +478,34 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
                 className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
               />
             </div>
+
+            {/* Show / Hide Hidden Accounts Toggle Button */}
+            <button
+              type="button"
+              onClick={handleToggleShowHidden}
+              className={`flex items-center space-x-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-lg border transition shrink-0 ${
+                showHidden
+                  ? 'bg-amber-500 text-white border-amber-600 shadow-sm hover:bg-amber-600'
+                  : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+              }`}
+              title={showHidden ? 'Click to hide hidden accounts' : 'Click to show hidden accounts'}
+            >
+              {showHidden ? (
+                <Eye className="w-3.5 h-3.5" />
+              ) : (
+                <EyeOff className="w-3.5 h-3.5 text-slate-400" />
+              )}
+              <span>{showHidden ? 'Hidden Accounts Visible' : 'Show Hidden'}</span>
+              {hiddenCount > 0 && (
+                <span
+                  className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                    showHidden ? 'bg-amber-700 text-amber-100' : 'bg-slate-200 text-slate-600'
+                  }`}
+                >
+                  {hiddenCount}
+                </span>
+              )}
+            </button>
 
             <button
               onClick={() => onOpenNewAccount()}
@@ -405,7 +527,7 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
                 <th className="hidden sm:table-cell py-2.5 sm:py-3 px-3 w-28">Type</th>
                 <th className="hidden lg:table-cell py-2.5 sm:py-3 px-4 w-36 text-right">Direct Balance</th>
                 <th className="py-2.5 sm:py-3 px-2 sm:px-4 w-28 sm:w-36 text-right">Total Balance</th>
-                <th className="py-2.5 sm:py-3 px-2 sm:px-4 w-24 sm:w-40 text-right">Actions</th>
+                <th className="py-2.5 sm:py-3 px-2 sm:px-4 w-24 sm:w-44 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>

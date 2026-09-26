@@ -17,6 +17,7 @@ import {
   CreateTransactionPayload,
   RegisterEntry,
   Transaction,
+  UpdateAccountPayload,
 } from './types';
 import {
   checkHealth,
@@ -29,6 +30,7 @@ import {
   fetchAccountRegister,
   fetchTransactions,
   seedDatabase,
+  updateAccount,
 } from './api';
 import { Scale, TrendingUp, BookCheck, AlertCircle } from 'lucide-react';
 
@@ -63,6 +65,7 @@ export const App: React.FC = () => {
   const [defaultTxAccountId, setDefaultTxAccountId] = useState<string | undefined>();
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
   const [newAccountParentId, setNewAccountParentId] = useState<string | undefined>();
+  const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
 
   // Load all foundational data
@@ -162,6 +165,29 @@ export const App: React.FC = () => {
     await refreshData();
   };
 
+  // Update Account
+  const handleUpdateAccount = async (id: string, payload: UpdateAccountPayload) => {
+    await updateAccount(id, payload);
+    await refreshData();
+  };
+
+  // 1-Click Toggle Hidden Status
+  const handleToggleHideAccount = async (acc: Account) => {
+    try {
+      await updateAccount(acc.id, { hidden: !acc.hidden });
+      await refreshData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to update account');
+    }
+  };
+
+  // Open Edit Account Modal
+  const handleOpenEditAccount = (acc: Account) => {
+    setEditingAccount(acc);
+    setNewAccountParentId(acc.parent_id || undefined);
+    setIsAccountModalOpen(true);
+  };
+
   // Delete Account
   const handleDeleteAccount = async (id: string) => {
     if (confirm('Are you sure you want to delete this account?')) {
@@ -194,6 +220,7 @@ export const App: React.FC = () => {
           setIsTxModalOpen(true);
         }}
         onOpenNewAccount={() => {
+          setEditingAccount(null);
           setNewAccountParentId(undefined);
           setIsAccountModalOpen(true);
         }}
@@ -234,9 +261,12 @@ export const App: React.FC = () => {
                 onSelectAccountForReconcile={handleSelectAccountForReconcile}
                 onDeleteAccount={handleDeleteAccount}
                 onOpenNewAccount={(parentId) => {
+                  setEditingAccount(null);
                   setNewAccountParentId(parentId);
                   setIsAccountModalOpen(true);
                 }}
+                onEditAccount={handleOpenEditAccount}
+                onToggleHideAccount={handleToggleHideAccount}
               />
             )}
 
@@ -256,6 +286,7 @@ export const App: React.FC = () => {
                     }}
                     onOpenReconcile={handleSelectAccountForReconcile}
                     onDeleteTransaction={handleDeleteTransaction}
+                    onToggleHideAccount={handleToggleHideAccount}
                   />
                 ) : (
                   <div className="py-16 text-center text-slate-400 bg-white rounded-xl border border-slate-200">
@@ -349,11 +380,16 @@ export const App: React.FC = () => {
         currentCurrency={currency}
       />
 
-      {/* New Account Modal */}
+      {/* New / Edit Account Modal */}
       <NewAccountModal
         isOpen={isAccountModalOpen}
-        onClose={() => setIsAccountModalOpen(false)}
+        onClose={() => {
+          setIsAccountModalOpen(false);
+          setEditingAccount(null);
+        }}
         onSubmit={handleCreateAccount}
+        onUpdate={handleUpdateAccount}
+        editingAccount={editingAccount}
         accounts={accounts}
         defaultParentId={newAccountParentId}
         currentCurrency={currency}

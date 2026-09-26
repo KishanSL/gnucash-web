@@ -40,6 +40,18 @@ export interface CreateAccountPayload {
   currency?: string;
   description?: string | null;
   placeholder?: boolean;
+  hidden?: boolean;
+}
+
+export interface UpdateAccountPayload {
+  name?: string;
+  code?: string | null;
+  account_type?: string;
+  parent_id?: string | null;
+  currency?: string;
+  description?: string | null;
+  placeholder?: boolean;
+  hidden?: boolean;
 }
 
 export interface SplitWithAccount {

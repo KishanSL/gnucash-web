@@ -9,6 +9,7 @@ import {
   RegisterEntry,
   Transaction,
   TrialBalanceReport,
+  UpdateAccountPayload,
 } from './types';
 
 const API_BASE = '/api';
@@ -40,6 +41,22 @@ export async function createAccount(payload: CreateAccountPayload): Promise<Acco
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to create account');
+  }
+  return res.json();
+}
+
+export async function updateAccount(
+  id: string,
+  payload: UpdateAccountPayload
+): Promise<Account> {
+  const res = await fetch(`${API_BASE}/accounts/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to update account');
   }
   return res.json();
 }
