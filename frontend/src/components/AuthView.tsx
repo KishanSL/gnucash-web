@@ -1,0 +1,325 @@
+import React, { useState } from 'react';
+import { Landmark, Lock, User as UserIcon, Mail, AlertCircle, ArrowRight, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import { login, signup } from '../api';
+import { User } from '../types';
+
+interface AuthViewProps {
+  onAuthSuccess: (user: User) => void;
+}
+
+export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
+  const [tab, setTab] = useState<'login' | 'signup'>('login');
+
+  // Login form state
+  const [loginUsername, setLoginUsername] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+
+  // Signup form state
+  const [signupUsername, setSignupUsername] = useState('');
+  const [signupEmail, setSignupEmail] = useState('');
+  const [signupPassword, setSignupPassword] = useState('');
+  const [signupConfirm, setSignupConfirm] = useState('');
+
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (!loginUsername.trim() || !loginPassword) {
+      setError('Please provide your username/email and password.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const res = await login({
+        username: loginUsername.trim(),
+        password: loginPassword,
+      });
+      onAuthSuccess(res.user);
+    } catch (err: any) {
+      setError(err.message || 'Login failed. Please check your credentials.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleQuickDemoLogin = async () => {
+    setError(null);
+    setLoginUsername('kishan');
+    setLoginPassword('password123');
+    try {
+      setLoading(true);
+      const res = await login({
+        username: 'kishan',
+        password: 'password123',
+      });
+      onAuthSuccess(res.user);
+    } catch (err: any) {
+      setError(err.message || 'Demo login failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    const username = signupUsername.trim();
+    const email = signupEmail.trim();
+
+    if (username.length < 3) {
+      setError('Username must be at least 3 characters.');
+      return;
+    }
+    if (!email.includes('@') || !email.includes('.')) {
+      setError('Please provide a valid email address.');
+      return;
+    }
+    if (signupPassword.length < 6) {
+      setError('Password must be at least 6 characters.');
+      return;
+    }
+    if (signupPassword !== signupConfirm) {
+      setError('Passwords do not match.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const res = await signup({
+        username,
+        email,
+        password: signupPassword,
+      });
+      onAuthSuccess(res.user);
+    } catch (err: any) {
+      setError(err.message || 'Signup failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-emerald-950 flex flex-col items-center justify-center p-4">
+      {/* Container */}
+      <div className="max-w-md w-full">
+        {/* Brand Header */}
+        <div className="text-center mb-6 sm:mb-8">
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 mb-3 shadow-lg shadow-emerald-900/30">
+            <Landmark className="w-8 h-8" />
+          </div>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+            GnuCash Web
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-400 mt-1">
+            Pure Double-Entry Ledger & Financial Engine
+          </p>
+        </div>
+
+        {/* Card */}
+        <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+          {/* Tab Selector */}
+          <div className="flex border-b border-slate-200 bg-slate-50">
+            <button
+              type="button"
+              onClick={() => {
+                setTab('login');
+                setError(null);
+              }}
+              className={`flex-1 py-3.5 text-xs sm:text-sm font-semibold transition text-center ${
+                tab === 'login'
+                  ? 'bg-white text-emerald-700 border-b-2 border-emerald-600 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100/60'
+              }`}
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTab('signup');
+                setError(null);
+              }}
+              className={`flex-1 py-3.5 text-xs sm:text-sm font-semibold transition text-center ${
+                tab === 'signup'
+                  ? 'bg-white text-emerald-700 border-b-2 border-emerald-600 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100/60'
+              }`}
+            >
+              Create Account
+            </button>
+          </div>
+
+          <div className="p-5 sm:p-7">
+            {error && (
+              <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs flex items-center space-x-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            {/* Login Tab */}
+            {tab === 'login' && (
+              <form onSubmit={handleLogin} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Username or Email
+                  </label>
+                  <div className="relative">
+                    <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      required
+                      placeholder="Username or email address"
+                      value={loginUsername}
+                      onChange={(e) => setLoginUsername(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Password
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="password"
+                      required
+                      placeholder="••••••••"
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs sm:text-sm font-semibold transition shadow-sm disabled:opacity-50 flex items-center justify-center space-x-1.5 active:scale-[0.99]"
+                >
+                  <span>{loading ? 'Signing in...' : 'Sign In'}</span>
+                  {!loading && <ArrowRight className="w-4 h-4" />}
+                </button>
+
+                {/* Quick Demo Helper */}
+                <div className="pt-3 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={handleQuickDemoLogin}
+                    disabled={loading}
+                    className="w-full py-2 px-3 text-xs font-medium text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition flex items-center justify-center space-x-1.5"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Quick Sign In as <strong>kishan</strong> (Default)</span>
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Signup Tab */}
+            {tab === 'signup' && (
+              <form onSubmit={handleSignup} className="space-y-3.5">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Username *
+                  </label>
+                  <div className="relative">
+                    <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. kishan, accountant_jane"
+                      value={signupUsername}
+                      onChange={(e) => setSignupUsername(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Email Address *
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="email"
+                      required
+                      placeholder="e.g. jane@example.com"
+                      value={signupEmail}
+                      onChange={(e) => setSignupEmail(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Password *
+                    </label>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="password"
+                        required
+                        placeholder="At least 6 chars"
+                        value={signupPassword}
+                        onChange={(e) => setSignupPassword(e.target.value)}
+                        className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Confirm Password *
+                    </label>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="password"
+                        required
+                        placeholder="Repeat password"
+                        value={signupConfirm}
+                        onChange={(e) => setSignupConfirm(e.target.value)}
+                        className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-2.5 bg-emerald-50/70 border border-emerald-100 rounded-lg flex items-start space-x-2 text-[11px] text-emerald-800">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <span>
+                    Your personal ledger will be automatically initialized with standard root accounts (Assets, Liabilities, Equity, Income, Expenses).
+                  </span>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs sm:text-sm font-semibold transition shadow-sm disabled:opacity-50 flex items-center justify-center space-x-1.5 active:scale-[0.99] mt-2"
+                >
+                  <span>{loading ? 'Creating Account...' : 'Create Account & Sign In'}</span>
+                  {!loading && <ArrowRight className="w-4 h-4" />}
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <p className="text-center text-xs text-slate-500 mt-6">
+          Multi-User Double-Entry Accounting • Data isolated per user
+        </p>
+      </div>
+    </div>
+  );
+};

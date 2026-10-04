@@ -2,6 +2,7 @@ use gnucash_backend::{create_app, db, handlers};
 use std::net::SocketAddr;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,6 +28,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or((0,));
 
     if account_count.0 == 0 {
+        let default_user_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001")
+            .unwrap_or_else(|_| Uuid::new_v4());
         let mut imported_file = false;
         let home = std::env::var("HOME").unwrap_or_else(|_| "/home/kishan".to_string());
         let codebase_dir = std::path::PathBuf::from(format!("{}/codebase", home));
@@ -44,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Ok(bytes) = std::fs::read(&p) {
                         let default_curr = "INR".to_string();
                         if let Ok((accs, txs, splits, fmt)) = handlers::importer::parse_gnucash_file(&bytes, &default_curr) {
-                            if let Ok(res) = handlers::importer::save_gnucash_data_to_db(&pool, true, accs, txs, splits, fmt).await {
+                            if let Ok(res) = handlers::importer::save_gnucash_data_to_db(&pool, default_user_id, true, accs, txs, splits, fmt).await {
                                 info!("Auto-imported {:?}: {}", p, res["message"]);
                                 imported_file = true;
                                 break;
@@ -57,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if !imported_file {
             info!("No .gnucash file found. Seeding initial Chart of Accounts and sample transactions...");
-            if let Err(e) = handlers::seed::run_seed(&pool).await {
+            if let Err(e) = handlers::seed::run_seed(&pool, default_user_id).await {
                 tracing::error!("Failed to auto-seed: {}", e);
             } else {
                 info!("Successfully auto-seeded database!");

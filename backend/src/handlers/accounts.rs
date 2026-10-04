@@ -10,18 +10,21 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::auth::AuthUser;
 use crate::models::{
     calculate_display_balance, Account, AccountRow, AccountTreeNode, CreateAccountRequest,
     UpdateAccountRequest,
 };
 
 pub async fn list_accounts(
+    auth: AuthUser,
     State(pool): State<PgPool>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let rows: Vec<AccountRow> = sqlx::query_as::<_, AccountRow>(
         "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
-         FROM accounts ORDER BY code ASC NULLS LAST, name ASC",
+         FROM accounts WHERE user_id = $1 ORDER BY code ASC NULLS LAST, name ASC",
     )
+    .bind(auth.id)
     .fetch_all(&pool)
     .await
     .map_err(|e| {
@@ -31,28 +34,34 @@ pub async fn list_accounts(
         )
     })?;
 
-    // Fetch direct balances
+    // Fetch direct balances for user's accounts
     let balances: Vec<(Uuid, Decimal)> = sqlx::query_as::<_, (Uuid, Decimal)>(
-        "SELECT account_id, COALESCE(SUM(amount), 0) as balance FROM splits GROUP BY account_id",
+        r#"SELECT s.account_id, COALESCE(SUM(s.amount), 0) as balance
+           FROM splits s
+           JOIN accounts a ON s.account_id = a.id
+           WHERE a.user_id = $1
+           GROUP BY s.account_id"#,
     )
+    .bind(auth.id)
     .fetch_all(&pool)
     .await
     .unwrap_or_default();
 
     let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().collect();
-
     let accounts = build_account_list(rows, &balance_map);
 
     Ok(Json(accounts))
 }
 
 pub async fn get_account_tree(
+    auth: AuthUser,
     State(pool): State<PgPool>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let rows: Vec<AccountRow> = sqlx::query_as::<_, AccountRow>(
         "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
-         FROM accounts ORDER BY code ASC NULLS LAST, name ASC",
+         FROM accounts WHERE user_id = $1 ORDER BY code ASC NULLS LAST, name ASC",
     )
+    .bind(auth.id)
     .fetch_all(&pool)
     .await
     .map_err(|e| {
@@ -63,8 +72,13 @@ pub async fn get_account_tree(
     })?;
 
     let balances: Vec<(Uuid, Decimal)> = sqlx::query_as::<_, (Uuid, Decimal)>(
-        "SELECT account_id, COALESCE(SUM(amount), 0) as balance FROM splits GROUP BY account_id",
+        r#"SELECT s.account_id, COALESCE(SUM(s.amount), 0) as balance
+           FROM splits s
+           JOIN accounts a ON s.account_id = a.id
+           WHERE a.user_id = $1
+           GROUP BY s.account_id"#,
     )
+    .bind(auth.id)
     .fetch_all(&pool)
     .await
     .unwrap_or_default();
@@ -77,14 +91,16 @@ pub async fn get_account_tree(
 }
 
 pub async fn get_account(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let row = sqlx::query_as::<_, AccountRow>(
         "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
-         FROM accounts WHERE id = $1",
+         FROM accounts WHERE id = $1 AND user_id = $2",
     )
     .bind(id)
+    .bind(auth.id)
     .fetch_optional(&pool)
     .await
     .map_err(|e| {
@@ -132,6 +148,7 @@ pub async fn get_account(
 }
 
 pub async fn create_account(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Json(payload): Json<CreateAccountRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -142,13 +159,32 @@ pub async fn create_account(
         ));
     }
 
+    // If parent_id is specified, verify it belongs to this user
+    if let Some(pid) = payload.parent_id {
+        let parent_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM accounts WHERE id = $1 AND user_id = $2",
+        )
+        .bind(pid)
+        .bind(auth.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(0);
+
+        if parent_exists == 0 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Parent account not found" })),
+            ));
+        }
+    }
+
     let currency = payload.currency.unwrap_or_else(|| "INR".to_string());
     let placeholder = payload.placeholder.unwrap_or(false);
     let hidden = payload.hidden.unwrap_or(false);
 
     let row = sqlx::query_as::<_, AccountRow>(
-        r#"INSERT INTO accounts (name, code, account_type, parent_id, currency, description, placeholder, hidden)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        r#"INSERT INTO accounts (name, code, account_type, parent_id, currency, description, placeholder, hidden, user_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            RETURNING id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at"#
     )
     .bind(payload.name.trim())
@@ -159,6 +195,7 @@ pub async fn create_account(
     .bind(payload.description)
     .bind(placeholder)
     .bind(hidden)
+    .bind(auth.id)
     .fetch_one(&pool)
     .await
     .map_err(|e| {
@@ -189,15 +226,17 @@ pub async fn create_account(
 }
 
 pub async fn update_account(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateAccountRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let existing = sqlx::query_as::<_, AccountRow>(
         "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
-         FROM accounts WHERE id = $1",
+         FROM accounts WHERE id = $1 AND user_id = $2",
     )
     .bind(id)
+    .bind(auth.id)
     .fetch_optional(&pool)
     .await
     .map_err(|e| {
@@ -230,11 +269,29 @@ pub async fn update_account(
         ));
     }
 
+    if let Some(pid) = parent_id {
+        let parent_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM accounts WHERE id = $1 AND user_id = $2",
+        )
+        .bind(pid)
+        .bind(auth.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(0);
+
+        if parent_exists == 0 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Parent account not found" })),
+            ));
+        }
+    }
+
     let updated = sqlx::query_as::<_, AccountRow>(
         r#"UPDATE accounts
            SET name = $1, code = $2, account_type = $3, parent_id = $4, currency = $5,
                description = $6, placeholder = $7, hidden = $8, updated_at = NOW()
-           WHERE id = $9
+           WHERE id = $9 AND user_id = $10
            RETURNING id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at"#
     )
     .bind(name)
@@ -246,6 +303,7 @@ pub async fn update_account(
     .bind(placeholder)
     .bind(hidden)
     .bind(id)
+    .bind(auth.id)
     .fetch_one(&pool)
     .await
     .map_err(|e| {
@@ -287,9 +345,27 @@ pub async fn update_account(
 }
 
 pub async fn delete_account(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    // Check if account exists and belongs to user
+    let existing = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM accounts WHERE id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(auth.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap_or(0);
+
+    if existing == 0 {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Account not found" })),
+        ));
+    }
+
     // Check if account has splits
     let split_count: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM splits WHERE account_id = $1",
@@ -313,8 +389,9 @@ pub async fn delete_account(
         ));
     }
 
-    let deleted = sqlx::query("DELETE FROM accounts WHERE id = $1")
+    let deleted = sqlx::query("DELETE FROM accounts WHERE id = $1 AND user_id = $2")
         .bind(id)
+        .bind(auth.id)
         .execute(&pool)
         .await
         .map_err(|e| {
@@ -339,75 +416,97 @@ fn build_account_list(rows: Vec<AccountRow>, balance_map: &HashMap<Uuid, Decimal
     let mut direct_balances: HashMap<Uuid, Decimal> = HashMap::new();
     let mut parent_to_children: HashMap<Option<Uuid>, Vec<Uuid>> = HashMap::new();
 
-    for row in &rows {
-        let direct = balance_map.get(&row.id).copied().unwrap_or(Decimal::ZERO);
-        direct_balances.insert(row.id, direct);
+    for r in &rows {
+        let b = balance_map.get(&r.id).copied().unwrap_or(Decimal::ZERO);
+        direct_balances.insert(r.id, b);
         parent_to_children
-            .entry(row.parent_id)
+            .entry(r.parent_id)
             .or_default()
-            .push(row.id);
+            .push(r.id);
     }
 
-    // Function to calculate recursive total balance for an account
-    fn calc_total(
-        account_id: Uuid,
+    // Compute total recursive balance
+    fn calc_total_balance(
+        acc_id: Uuid,
         direct_balances: &HashMap<Uuid, Decimal>,
         parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
     ) -> Decimal {
-        let mut total = direct_balances.get(&account_id).copied().unwrap_or(Decimal::ZERO);
-        if let Some(children) = parent_to_children.get(&Some(account_id)) {
-            for child in children {
-                total += calc_total(*child, direct_balances, parent_to_children);
-            }
-        }
-        total
+        let direct = direct_balances.get(&acc_id).copied().unwrap_or(Decimal::ZERO);
+        let children = parent_to_children.get(&Some(acc_id));
+        let children_total: Decimal = match children {
+            Some(c_ids) => c_ids
+                .iter()
+                .map(|&cid| calc_total_balance(cid, direct_balances, parent_to_children))
+                .sum(),
+            None => Decimal::ZERO,
+        };
+        direct + children_total
     }
 
-    rows.into_iter()
-        .map(|row| {
-            let direct = direct_balances.get(&row.id).copied().unwrap_or(Decimal::ZERO);
-            let total = calc_total(row.id, &direct_balances, &parent_to_children);
-            let display_balance = calculate_display_balance(&row.account_type, total);
+    let mut accounts = Vec::new();
+    for r in rows {
+        let direct_b = direct_balances.get(&r.id).copied().unwrap_or(Decimal::ZERO);
+        let total_b = calc_total_balance(r.id, &direct_balances, &parent_to_children);
+        let display_b = calculate_display_balance(&r.account_type, total_b);
 
-            Account {
-                id: row.id,
-                name: row.name,
-                code: row.code,
-                account_type: row.account_type,
-                parent_id: row.parent_id,
-                currency: row.currency,
-                description: row.description,
-                placeholder: row.placeholder,
-                hidden: row.hidden,
-                balance: direct,
-                total_balance: total,
-                display_balance,
-                created_at: row.created_at,
-                updated_at: row.updated_at,
-            }
-        })
-        .collect()
+        accounts.push(Account {
+            id: r.id,
+            name: r.name,
+            code: r.code,
+            account_type: r.account_type,
+            parent_id: r.parent_id,
+            currency: r.currency,
+            description: r.description,
+            placeholder: r.placeholder,
+            hidden: r.hidden,
+            balance: direct_b,
+            total_balance: total_b,
+            display_balance: display_b,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        });
+    }
+
+    accounts
 }
 
 fn build_tree_structure(accounts: Vec<Account>) -> Vec<AccountTreeNode> {
-    let mut by_parent: HashMap<Option<Uuid>, Vec<Account>> = HashMap::new();
+    let mut account_map: HashMap<Uuid, Account> = HashMap::new();
+    let mut parent_to_children: HashMap<Option<Uuid>, Vec<Uuid>> = HashMap::new();
+
     for acc in accounts {
-        by_parent.entry(acc.parent_id).or_default().push(acc);
+        let id = acc.id;
+        let parent_id = acc.parent_id;
+        account_map.insert(id, acc);
+        parent_to_children.entry(parent_id).or_default().push(id);
     }
 
-    fn recurse(parent_id: Option<Uuid>, by_parent: &HashMap<Option<Uuid>, Vec<Account>>) -> Vec<AccountTreeNode> {
-        let mut nodes = Vec::new();
-        if let Some(children) = by_parent.get(&parent_id) {
-            for child in children {
-                let sub_nodes = recurse(Some(child.id), by_parent);
-                nodes.push(AccountTreeNode {
-                    account: child.clone(),
-                    children: sub_nodes,
-                });
+    fn build_node(
+        acc_id: Uuid,
+        account_map: &HashMap<Uuid, Account>,
+        parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
+    ) -> Option<AccountTreeNode> {
+        let account = account_map.get(&acc_id)?.clone();
+        let child_ids = parent_to_children.get(&Some(acc_id));
+        let mut children = Vec::new();
+        if let Some(c_ids) = child_ids {
+            for &cid in c_ids {
+                if let Some(child_node) = build_node(cid, account_map, parent_to_children) {
+                    children.push(child_node);
+                }
             }
         }
-        nodes
+        Some(AccountTreeNode { account, children })
     }
 
-    recurse(None, &by_parent)
+    let mut roots = Vec::new();
+    if let Some(root_ids) = parent_to_children.get(&None) {
+        for &rid in root_ids {
+            if let Some(root_node) = build_node(rid, &account_map, &parent_to_children) {
+                roots.push(root_node);
+            }
+        }
+    }
+
+    roots
 }

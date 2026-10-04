@@ -12,6 +12,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::auth::AuthUser;
 use crate::models::{
     calculate_display_balance, is_asset_type, is_expense_type,
     CreateTransactionRequest, RegisterEntry, SplitRow, SplitWithAccount, TransactionRow,
@@ -29,6 +30,7 @@ pub struct TransactionListQuery {
 }
 
 pub async fn list_transactions(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Query(query): Query<TransactionListQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -39,33 +41,48 @@ pub async fn list_transactions(
         "SELECT DISTINCT t.id, t.post_date, t.enter_date, t.num, t.description, t.notes, t.created_at, t.updated_at
          FROM transactions t
          LEFT JOIN splits s ON t.id = s.transaction_id
-         WHERE 1=1",
+         WHERE t.user_id = $1",
     );
 
+    let mut param_idx = 2;
     if query.account_id.is_some() {
-        sql.push_str(" AND s.account_id = $1");
+        sql.push_str(&format!(" AND s.account_id = ${}", param_idx));
+        param_idx += 1;
     }
     if query.from_date.is_some() {
-        sql.push_str(" AND t.post_date >= $2");
+        sql.push_str(&format!(" AND t.post_date >= ${}", param_idx));
+        param_idx += 1;
     }
     if query.to_date.is_some() {
-        sql.push_str(" AND t.post_date <= $3");
+        sql.push_str(&format!(" AND t.post_date <= ${}", param_idx));
+        param_idx += 1;
     }
     if query.search.is_some() {
-        sql.push_str(" AND (t.description ILIKE $4 OR t.num ILIKE $4 OR t.notes ILIKE $4)");
+        sql.push_str(&format!(" AND (t.description ILIKE ${0} OR t.num ILIKE ${0} OR t.notes ILIKE ${0})", param_idx));
+        param_idx += 1;
     }
 
-    sql.push_str(" ORDER BY t.post_date DESC, t.enter_date DESC LIMIT $5 OFFSET $6");
+    sql.push_str(&format!(" ORDER BY t.post_date DESC, t.enter_date DESC LIMIT ${} OFFSET ${}", param_idx, param_idx + 1));
 
     let search_pattern = query.search.as_ref().map(|s| format!("%{}%", s));
 
-    let rows: Vec<TransactionRow> = sqlx::query_as(&sql)
-        .bind(query.account_id)
-        .bind(query.from_date)
-        .bind(query.to_date)
-        .bind(search_pattern)
-        .bind(limit)
-        .bind(offset)
+    let mut q = sqlx::query_as::<_, TransactionRow>(&sql).bind(auth.id);
+
+    if let Some(acc_id) = query.account_id {
+        q = q.bind(acc_id);
+    }
+    if let Some(from_d) = query.from_date {
+        q = q.bind(from_d);
+    }
+    if let Some(to_d) = query.to_date {
+        q = q.bind(to_d);
+    }
+    if let Some(sp) = search_pattern {
+        q = q.bind(sp);
+    }
+    q = q.bind(limit).bind(offset);
+
+    let rows: Vec<TransactionRow> = q
         .fetch_all(&pool)
         .await
         .map_err(|e| {
@@ -136,14 +153,16 @@ pub async fn list_transactions(
 }
 
 pub async fn get_transaction(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let tx = sqlx::query_as::<_, TransactionRow>(
         "SELECT id, post_date, enter_date, num, description, notes, created_at, updated_at
-         FROM transactions WHERE id = $1",
+         FROM transactions WHERE id = $1 AND user_id = $2",
     )
     .bind(id)
+    .bind(auth.id)
     .fetch_optional(&pool)
     .await
     .map_err(|e| {
@@ -207,6 +226,7 @@ pub async fn get_transaction(
 }
 
 pub async fn create_transaction(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Json(payload): Json<CreateTransactionRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -233,12 +253,13 @@ pub async fn create_transaction(
         ));
     }
 
-    // 3. Verify accounts exist and are not placeholders
+    // 3. Verify accounts exist, belong to this user, and are not placeholders
     let account_ids: Vec<Uuid> = payload.splits.iter().map(|s| s.account_id).collect();
     let accounts: Vec<(Uuid, String, bool)> = sqlx::query_as(
-        "SELECT id, name, placeholder FROM accounts WHERE id = ANY($1)",
+        "SELECT id, name, placeholder FROM accounts WHERE id = ANY($1) AND user_id = $2",
     )
     .bind(&account_ids)
+    .bind(auth.id)
     .fetch_all(&pool)
     .await
     .map_err(|e| {
@@ -258,7 +279,7 @@ pub async fn create_transaction(
             None => {
                 return Err((
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("Account {} does not exist", split.account_id) })),
+                    Json(json!({ "error": format!("Account {} does not exist or does not belong to you", split.account_id) })),
                 ));
             }
             Some((name, placeholder)) => {
@@ -281,14 +302,15 @@ pub async fn create_transaction(
     })?;
 
     let tx_row = sqlx::query_as::<_, TransactionRow>(
-        r#"INSERT INTO transactions (post_date, num, description, notes)
-           VALUES ($1, $2, $3, $4)
+        r#"INSERT INTO transactions (post_date, num, description, notes, user_id)
+           VALUES ($1, $2, $3, $4, $5)
            RETURNING id, post_date, enter_date, num, description, notes, created_at, updated_at"#
     )
     .bind(payload.post_date)
     .bind(payload.num.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
     .bind(payload.description.trim())
     .bind(payload.notes)
+    .bind(auth.id)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| {
@@ -368,15 +390,17 @@ pub async fn create_transaction(
 }
 
 pub async fn update_transaction(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateTransactionRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let existing = sqlx::query_as::<_, TransactionRow>(
         "SELECT id, post_date, enter_date, num, description, notes, created_at, updated_at
-         FROM transactions WHERE id = $1",
+         FROM transactions WHERE id = $1 AND user_id = $2",
     )
     .bind(id)
+    .bind(auth.id)
     .fetch_optional(&pool)
     .await
     .map_err(|e| {
@@ -407,7 +431,7 @@ pub async fn update_transaction(
     let _updated_tx = sqlx::query_as::<_, TransactionRow>(
         r#"UPDATE transactions
            SET post_date = $1, num = $2, description = $3, notes = $4, updated_at = NOW()
-           WHERE id = $5
+           WHERE id = $5 AND user_id = $6
            RETURNING id, post_date, enter_date, num, description, notes, created_at, updated_at"#
     )
     .bind(post_date)
@@ -415,6 +439,7 @@ pub async fn update_transaction(
     .bind(description)
     .bind(notes)
     .bind(id)
+    .bind(auth.id)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| {
@@ -443,6 +468,24 @@ pub async fn update_transaction(
                 Json(json!({
                     "error": format!("Transaction is not balanced! Sum is {}, must be 0.00", sum)
                 })),
+            ));
+        }
+
+        // Verify all accounts belong to user
+        let account_ids: Vec<Uuid> = new_splits.iter().map(|s| s.account_id).collect();
+        let valid_acc_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM accounts WHERE id = ANY($1) AND user_id = $2 AND placeholder = false",
+        )
+        .bind(&account_ids)
+        .bind(auth.id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap_or(0);
+
+        if (valid_acc_count as usize) < account_ids.len() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "One or more accounts do not belong to you or are placeholder categories" })),
             ));
         }
 
@@ -492,15 +535,17 @@ pub async fn update_transaction(
     })?;
 
     // Return updated transaction
-    get_transaction(State(pool), Path(id)).await
+    get_transaction(auth, State(pool), Path(id)).await
 }
 
 pub async fn delete_transaction(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let deleted = sqlx::query("DELETE FROM transactions WHERE id = $1")
+    let deleted = sqlx::query("DELETE FROM transactions WHERE id = $1 AND user_id = $2")
         .bind(id)
+        .bind(auth.id)
         .execute(&pool)
         .await
         .map_err(|e| {
@@ -523,14 +568,16 @@ pub async fn delete_transaction(
 /// Account Register (Ledger View)
 /// Returns all entries for this account with chronological running balance!
 pub async fn get_account_register(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Path(account_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    // 1. Get account details
+    // 1. Get account details ensuring ownership
     let account = sqlx::query_as::<_, (String, String)>(
-        "SELECT name, account_type FROM accounts WHERE id = $1",
+        "SELECT name, account_type FROM accounts WHERE id = $1 AND user_id = $2",
     )
     .bind(account_id)
+    .bind(auth.id)
     .fetch_optional(&pool)
     .await
     .map_err(|e| {
@@ -553,10 +600,11 @@ pub async fn get_account_register(
         r#"SELECT s.id, t.id, t.post_date, t.enter_date, t.num, t.description, s.memo, s.reconciled_state, s.amount
            FROM splits s
            JOIN transactions t ON s.transaction_id = t.id
-           WHERE s.account_id = $1
+           WHERE s.account_id = $1 AND t.user_id = $2
            ORDER BY t.post_date ASC, t.enter_date ASC, s.id ASC"#
     )
     .bind(account_id)
+    .bind(auth.id)
     .fetch_all(&pool)
     .await
     .map_err(|e| {
@@ -628,8 +676,6 @@ pub async fn get_account_register(
         };
 
         // Determine Debit vs Credit columns
-        // For Assets & Expenses: positive is Debit (Deposit/Increase), negative is Credit (Withdrawal/Decrease)
-        // For Liabilities & Equity & Income: negative amount is Credit (Increase/Charge), positive amount is Debit (Payment/Decrease)
         let (debit, credit) = if is_asset || is_expense {
             if amount >= Decimal::ZERO {
                 (Some(amount), None)
@@ -638,10 +684,8 @@ pub async fn get_account_register(
             }
         } else {
             if amount < Decimal::ZERO {
-                // Credit: Charge/Increase to liability
                 (None, Some(-amount))
             } else {
-                // Debit: Payment/Decrease to liability
                 (Some(amount), None)
             }
         };

@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod db;
 pub mod handlers;
 pub mod models;
@@ -20,6 +21,10 @@ pub fn create_app(pool: sqlx::PgPool) -> Router {
         // Health check
         .route("/health", get(health_check))
         .route("/api/health", get(health_check))
+        // Authentication
+        .route("/api/auth/signup", post(handlers::auth::signup))
+        .route("/api/auth/login", post(handlers::auth::login))
+        .route("/api/auth/me", get(handlers::auth::get_current_user))
         // Accounts
         .route("/api/accounts", get(handlers::accounts::list_accounts))
         .route("/api/accounts/tree", get(handlers::accounts::get_account_tree))

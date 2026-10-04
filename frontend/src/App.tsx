@@ -10,6 +10,7 @@ import { ImportModal } from './components/ImportModal';
 import { BalanceSheetView } from './components/reports/BalanceSheetView';
 import { IncomeStatementView } from './components/reports/IncomeStatementView';
 import { TrialBalanceView } from './components/reports/TrialBalanceView';
+import { AuthView } from './components/AuthView';
 import {
   Account,
   AccountTreeNode,
@@ -18,6 +19,7 @@ import {
   RegisterEntry,
   Transaction,
   UpdateAccountPayload,
+  User,
 } from './types';
 import {
   checkHealth,
@@ -31,8 +33,12 @@ import {
   fetchTransactions,
   seedDatabase,
   updateAccount,
+  getStoredUser,
+  getStoredToken,
+  logout,
+  fetchCurrentUser,
 } from './api';
-import { Scale, TrendingUp, BookCheck, AlertCircle } from 'lucide-react';
+import { Scale, TrendingUp, BookCheck, AlertCircle, Coins } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>('accounts');
@@ -45,6 +51,9 @@ export const App: React.FC = () => {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [registerEntries, setRegisterEntries] = useState<RegisterEntry[]>([]);
+
+  // Authentication state
+  const [currentUser, setCurrentUser] = useState<User | null>(() => getStoredUser());
 
   const [backendOnline, setBackendOnline] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -68,8 +77,34 @@ export const App: React.FC = () => {
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
 
-  // Load all foundational data
+  // Logout handler
+  const handleLogout = useCallback(() => {
+    logout();
+    setCurrentUser(null);
+    setAccounts([]);
+    setTree([]);
+    setTransactions([]);
+    setSelectedAccount(null);
+    setRegisterEntries([]);
+  }, []);
+
+  // Listen for 401 unauthorized token invalidation
+  useEffect(() => {
+    const handleAuthInvalid = () => {
+      handleLogout();
+    };
+    window.addEventListener('gnucash_auth_invalid', handleAuthInvalid);
+    return () => {
+      window.removeEventListener('gnucash_auth_invalid', handleAuthInvalid);
+    };
+  }, [handleLogout]);
+
+  // Load all foundational data for current user
   const loadInitialData = useCallback(async () => {
+    if (!getStoredToken()) {
+      setLoading(false);
+      return;
+    }
     try {
       setLoading(true);
       await checkHealth();
@@ -86,7 +121,7 @@ export const App: React.FC = () => {
       setTransactions(txsData);
 
       // Default select a Checking or first Bank account
-      if (!selectedAccount && accountsData.length > 0) {
+      if (accountsData.length > 0) {
         const defaultAcc =
           accountsData.find(
             (a) => !a.placeholder && a.name.toLowerCase().includes('checking')
@@ -104,11 +139,23 @@ export const App: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [selectedAccount]);
+  }, []);
 
+  // Sync / verify current user on mount if token exists
   useEffect(() => {
-    loadInitialData();
-  }, [loadInitialData]);
+    if (getStoredToken()) {
+      fetchCurrentUser()
+        .then((user) => {
+          setCurrentUser(user);
+          loadInitialData();
+        })
+        .catch(() => {
+          handleLogout();
+        });
+    } else {
+      setLoading(false);
+    }
+  }, [handleLogout, loadInitialData]);
 
   // Load register when selectedAccount changes
   const handleSelectAccountForRegister = async (account: Account) => {
@@ -210,11 +257,55 @@ export const App: React.FC = () => {
     }
   };
 
+  // If user is not authenticated, display login / signup view
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col justify-between text-slate-100">
+        <header className="bg-slate-900/90 backdrop-blur-sm border-b border-slate-800 text-white py-4 shadow-md sticky top-0 z-30">
+          <div className="max-w-6xl mx-auto px-4 flex items-center justify-between">
+            <div className="flex items-center space-x-2.5">
+              <div className="w-9 h-9 rounded-lg bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center shadow-inner">
+                <Coins className="w-5 h-5 text-white" />
+              </div>
+              <div className="flex items-center space-x-1.5">
+                <span className="font-bold text-lg tracking-tight text-white">GnuCash</span>
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                  Web
+                </span>
+              </div>
+            </div>
+            <span className="text-xs text-slate-400 hidden sm:inline">
+              Multi-User Double-Entry Accounting
+            </span>
+          </div>
+        </header>
+
+        <main className="flex-1 flex items-center justify-center p-4">
+          <AuthView
+            onAuthSuccess={(user) => {
+              setCurrentUser(user);
+              loadInitialData();
+            }}
+          />
+        </main>
+
+        <footer className="border-t border-slate-800/80 bg-slate-900/40 py-4 text-xs text-slate-500 text-center">
+          <div className="max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+            <span>GnuCash Web • Pure Double-Entry Accounting Engine</span>
+            <span>Port 8081 • Multi-Tenant Isolated Ledger</span>
+          </div>
+        </footer>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800">
       <Navbar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
+        currentUser={currentUser}
+        onLogout={handleLogout}
         onOpenNewTx={() => {
           setDefaultTxAccountId(selectedAccount?.id);
           setIsTxModalOpen(true);

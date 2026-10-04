@@ -18,6 +18,8 @@ use std::io::{Read, Write};
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
+use crate::auth::AuthUser;
+
 #[derive(Debug, Deserialize)]
 pub struct ImportQuery {
     pub wipe: Option<bool>,
@@ -493,6 +495,7 @@ pub fn parse_gnucash_file(
 }
 
 pub async fn import_gnucash_sqlite(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Query(query): Query<ImportQuery>,
     mut multipart: Multipart,
@@ -549,11 +552,12 @@ pub async fn import_gnucash_sqlite(
     })?;
 
     let (raw_accounts, raw_transactions, raw_splits, format_desc) = import_result;
-    let res = save_gnucash_data_to_db(&pool, wipe, raw_accounts, raw_transactions, raw_splits, format_desc).await?;
+    let res = save_gnucash_data_to_db(&pool, auth.id, wipe, raw_accounts, raw_transactions, raw_splits, format_desc).await?;
     Ok(Json(res))
 }
 
 pub async fn import_from_path(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Json(payload): Json<ImportPathPayload>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -601,11 +605,13 @@ pub async fn import_from_path(
     })?;
 
     let (raw_accounts, raw_transactions, raw_splits, format_desc) = import_result;
-    let res = save_gnucash_data_to_db(&pool, wipe, raw_accounts, raw_transactions, raw_splits, format_desc).await?;
+    let res = save_gnucash_data_to_db(&pool, auth.id, wipe, raw_accounts, raw_transactions, raw_splits, format_desc).await?;
     Ok(Json(res))
 }
 
-pub async fn list_local_gnucash_files() -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+pub async fn list_local_gnucash_files(
+    _auth: AuthUser,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let mut files = Vec::new();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/kishan".to_string());
 
@@ -650,6 +656,7 @@ pub async fn list_local_gnucash_files() -> Result<impl IntoResponse, (StatusCode
 
 pub async fn save_gnucash_data_to_db(
     pool: &PgPool,
+    user_id: Uuid,
     wipe: bool,
     mut raw_accounts: Vec<RawAccount>,
     raw_transactions: Vec<RawTransaction>,
@@ -682,9 +689,23 @@ pub async fn save_gnucash_data_to_db(
     })?;
 
     if wipe {
-        sqlx::query("DELETE FROM splits").execute(&mut *tx).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))?;
-        sqlx::query("DELETE FROM transactions").execute(&mut *tx).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))?;
-        sqlx::query("DELETE FROM accounts").execute(&mut *tx).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))?;
+        sqlx::query("DELETE FROM splits WHERE account_id IN (SELECT id FROM accounts WHERE user_id = $1)")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))?;
+
+        sqlx::query("DELETE FROM transactions WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))?;
+
+        sqlx::query("DELETE FROM accounts WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))?;
     }
 
     // Map of GnuCash GUID string -> Postgres UUID
@@ -712,12 +733,12 @@ pub async fn save_gnucash_data_to_db(
 
             if can_insert {
                 sqlx::query(
-                    r#"INSERT INTO accounts (id, name, code, account_type, parent_id, currency, description, placeholder, hidden)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    r#"INSERT INTO accounts (id, name, code, account_type, parent_id, currency, description, placeholder, hidden, user_id)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                        ON CONFLICT (id) DO UPDATE SET
                            name = EXCLUDED.name, code = EXCLUDED.code, account_type = EXCLUDED.account_type,
                            parent_id = EXCLUDED.parent_id, currency = EXCLUDED.currency, description = EXCLUDED.description,
-                           placeholder = EXCLUDED.placeholder, hidden = EXCLUDED.hidden"#
+                           placeholder = EXCLUDED.placeholder, hidden = EXCLUDED.hidden, user_id = EXCLUDED.user_id"#
                 )
                 .bind(acc_id)
                 .bind(&acc.name)
@@ -728,6 +749,7 @@ pub async fn save_gnucash_data_to_db(
                 .bind(&acc.description)
                 .bind(acc.placeholder)
                 .bind(acc.hidden)
+                .bind(user_id)
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| {
@@ -749,9 +771,9 @@ pub async fn save_gnucash_data_to_db(
     for acc in remaining {
         let acc_id = *account_guid_to_uuid.get(&acc.guid).unwrap();
         sqlx::query(
-            r#"INSERT INTO accounts (id, name, code, account_type, parent_id, currency, description, placeholder, hidden)
-               VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8)
-               ON CONFLICT (id) DO NOTHING"#
+            r#"INSERT INTO accounts (id, name, code, account_type, parent_id, currency, description, placeholder, hidden, user_id)
+               VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9)
+               ON CONFLICT (id) DO UPDATE SET user_id = EXCLUDED.user_id"#
         )
         .bind(acc_id)
         .bind(&acc.name)
@@ -761,6 +783,7 @@ pub async fn save_gnucash_data_to_db(
         .bind(&acc.description)
         .bind(acc.placeholder)
         .bind(acc.hidden)
+        .bind(user_id)
         .execute(&mut *tx)
         .await
         .ok();
@@ -776,11 +799,17 @@ pub async fn save_gnucash_data_to_db(
         tx_guid_to_uuid.insert(t.guid.clone(), tx_id);
 
         sqlx::query(
-            r#"INSERT INTO transactions (id, post_date, num, description)
-               VALUES ($1, $2, $3, $4)
+            r#"INSERT INTO transactions (id, post_date, num, description, user_id)
+               VALUES ($1, $2, $3, $4, $5)
                ON CONFLICT (id) DO UPDATE SET
-                   post_date = EXCLUDED.post_date, num = EXCLUDED.num, description = EXCLUDED.description"#
+                   post_date = EXCLUDED.post_date, num = EXCLUDED.num, description = EXCLUDED.description,
+                   user_id = EXCLUDED.user_id"#
         )
+        .bind(tx_id)
+        .bind(t.post_date)
+        .bind(&t.num)
+        .bind(&t.description)
+        .bind(user_id)
         .bind(tx_id)
         .bind(t.post_date)
         .bind(&t.num)

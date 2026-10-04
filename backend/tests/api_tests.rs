@@ -28,7 +28,12 @@ async fn get_test_pool() -> PgPool {
                 .unwrap_or((0,));
 
             if account_count.0 == 0 {
-                gnucash_backend::handlers::seed::run_seed(&pool)
+                let default_user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users LIMIT 1")
+                    .fetch_optional(&pool)
+                    .await
+                    .unwrap_or(None)
+                    .unwrap_or_else(uuid::Uuid::new_v4);
+                gnucash_backend::handlers::seed::run_seed(&pool, default_user_id)
                     .await
                     .expect("Failed to seed database");
             }

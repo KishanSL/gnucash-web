@@ -12,6 +12,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::auth::AuthUser;
 use crate::models::{
     calculate_display_balance, is_asset_type, is_equity_type, is_expense_type, is_income_type,
     is_liability_type, AccountRow, BalanceSheetItem, BalanceSheetReport, BalanceSheetSection,
@@ -31,17 +32,20 @@ pub struct DateRangeQuery {
 }
 
 pub async fn get_balance_sheet(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Query(query): Query<DateQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let as_of_date = query.date.unwrap_or_else(|| Utc::now().date_naive());
 
-    // 1. Fetch all accounts
+    // 1. Fetch user's accounts
     let accounts: Vec<AccountRow> = sqlx::query_as(
         "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
          FROM accounts
+         WHERE user_id = $1
          ORDER BY code ASC NULLS LAST, name ASC",
     )
+    .bind(auth.id)
     .fetch_all(&pool)
     .await
     .map_err(|e| {
@@ -51,15 +55,17 @@ pub async fn get_balance_sheet(
         )
     })?;
 
-    // 2. Fetch sum of amounts per account up to as_of_date
+    // 2. Fetch sum of amounts per account up to as_of_date for this user
     let balances: Vec<(Uuid, Decimal)> = sqlx::query_as(
         r#"SELECT s.account_id, COALESCE(SUM(s.amount), 0)
            FROM splits s
            JOIN transactions t ON s.transaction_id = t.id
-           WHERE t.post_date <= $1
-           GROUP BY s.account_id"#
+           JOIN accounts a ON s.account_id = a.id
+           WHERE t.post_date <= $1 AND a.user_id = $2
+           GROUP BY s.account_id"#,
     )
     .bind(as_of_date)
+    .bind(auth.id)
     .fetch_all(&pool)
     .await
     .unwrap_or_default();
@@ -89,30 +95,26 @@ pub async fn get_balance_sheet(
         sum
     }
 
-    // Classify into sections
+    // 4. Compute Net Income (Total Revenues - Total Expenses) up to as_of_date
+    let mut total_income = Decimal::ZERO;
+    let mut total_expense = Decimal::ZERO;
+
+    for acc in &accounts {
+        if is_income_type(&acc.account_type) {
+            let direct = balance_map.get(&acc.id).copied().unwrap_or(Decimal::ZERO);
+            total_income += calculate_display_balance(&acc.account_type, direct);
+        } else if is_expense_type(&acc.account_type) {
+            let direct = balance_map.get(&acc.id).copied().unwrap_or(Decimal::ZERO);
+            total_expense += calculate_display_balance(&acc.account_type, direct);
+        }
+    }
+    let net_income = total_income - total_expense;
+
+    // 5. Build section line items
     let mut asset_items = Vec::new();
     let mut liability_items = Vec::new();
     let mut equity_items = Vec::new();
-    let mut total_income_raw = Decimal::ZERO;
-    let mut total_expense_raw = Decimal::ZERO;
 
-    for acc in &accounts {
-        let raw_direct = balance_map.get(&acc.id).copied().unwrap_or(Decimal::ZERO);
-        if is_income_type(&acc.account_type) {
-            total_income_raw += raw_direct;
-        } else if is_expense_type(&acc.account_type) {
-            total_expense_raw += raw_direct;
-        }
-    }
-
-    // Net income = Income (credit, negative) + Expense (debit, positive) in raw terms
-    // Standard display net income = Total Revenue - Total Expense
-    // In raw terms: Revenue is credit (negative), Expense is debit (positive).
-    // Display Revenue = -total_income_raw. Display Expense = total_expense_raw.
-    // Display Net Income = (-total_income_raw) - total_expense_raw.
-    let net_income = (-total_income_raw) - total_expense_raw;
-
-    // Helper to walk tree for a section
     fn collect_section_items(
         parent_id: Option<Uuid>,
         depth: usize,
@@ -128,9 +130,8 @@ pub async fn get_balance_sheet(
                     if type_predicate(&acc.account_type) {
                         let total = get_total_balance(acc.id, balance_map, parent_to_children);
                         let display = calculate_display_balance(&acc.account_type, total);
-
-                        // Only show if non-zero or has children or is a main category
                         let has_children = parent_to_children.contains_key(&Some(acc.id));
+
                         if display != Decimal::ZERO || has_children {
                             items.push(BalanceSheetItem {
                                 account_id: acc.id,
@@ -141,6 +142,7 @@ pub async fn get_balance_sheet(
                                 balance: display,
                             });
                         }
+
                         collect_section_items(Some(acc.id), depth + 1, type_predicate, accounts, balance_map, parent_to_children, items);
                     }
                 }
@@ -201,6 +203,7 @@ pub async fn get_balance_sheet(
 }
 
 pub async fn get_income_statement(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Query(query): Query<DateRangeQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -213,8 +216,10 @@ pub async fn get_income_statement(
     let accounts: Vec<AccountRow> = sqlx::query_as(
         "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
          FROM accounts
+         WHERE user_id = $1
          ORDER BY code ASC NULLS LAST, name ASC",
     )
+    .bind(auth.id)
     .fetch_all(&pool)
     .await
     .map_err(|e| {
@@ -224,16 +229,18 @@ pub async fn get_income_statement(
         )
     })?;
 
-    // Sum splits within date range
+    // Sum splits within date range for user's accounts
     let balances: Vec<(Uuid, Decimal)> = sqlx::query_as(
         r#"SELECT s.account_id, COALESCE(SUM(s.amount), 0)
            FROM splits s
            JOIN transactions t ON s.transaction_id = t.id
-           WHERE t.post_date >= $1 AND t.post_date <= $2
-           GROUP BY s.account_id"#
+           JOIN accounts a ON s.account_id = a.id
+           WHERE t.post_date >= $1 AND t.post_date <= $2 AND a.user_id = $3
+           GROUP BY s.account_id"#,
     )
     .bind(from_date)
     .bind(to_date)
+    .bind(auth.id)
     .fetch_all(&pool)
     .await
     .unwrap_or_default();
@@ -333,6 +340,7 @@ pub async fn get_income_statement(
 }
 
 pub async fn get_trial_balance(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Query(query): Query<DateQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -343,12 +351,13 @@ pub async fn get_trial_balance(
            FROM accounts a
            JOIN splits s ON a.id = s.account_id
            JOIN transactions t ON s.transaction_id = t.id
-           WHERE t.post_date <= $1
+           WHERE t.post_date <= $1 AND a.user_id = $2
            GROUP BY a.id, a.code, a.name, a.account_type
            HAVING SUM(s.amount) != 0
-           ORDER BY a.code ASC NULLS LAST, a.name ASC"#
+           ORDER BY a.code ASC NULLS LAST, a.name ASC"#,
     )
     .bind(as_of_date)
+    .bind(auth.id)
     .fetch_all(&pool)
     .await
     .map_err(|e| {

@@ -11,6 +11,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::auth::AuthUser;
 use crate::models::{
     calculate_display_balance, is_asset_type, is_expense_type, Account, AccountRow,
     FinishReconcileRequest, ReconcileData, ReconcileSplitItem,
@@ -22,18 +23,20 @@ pub struct ReconcileQuery {
 }
 
 pub async fn get_reconcile_info(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Path(account_id): Path<Uuid>,
     Query(query): Query<ReconcileQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let statement_date = query.statement_date.unwrap_or_else(|| Utc::now().date_naive());
 
-    // 1. Fetch account
+    // 1. Fetch account ensuring ownership
     let acc_row = sqlx::query_as::<_, AccountRow>(
         "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
-         FROM accounts WHERE id = $1",
+         FROM accounts WHERE id = $1 AND user_id = $2",
     )
     .bind(account_id)
+    .bind(auth.id)
     .fetch_optional(&pool)
     .await
     .map_err(|e| {
@@ -80,11 +83,12 @@ pub async fn get_reconcile_info(
         r#"SELECT s.id, t.id, t.post_date, t.num, t.description, s.amount, s.reconciled_state
            FROM splits s
            JOIN transactions t ON s.transaction_id = t.id
-           WHERE s.account_id = $1 AND s.reconciled_state != 'y' AND t.post_date <= $2
+           WHERE s.account_id = $1 AND s.reconciled_state != 'y' AND t.post_date <= $2 AND t.user_id = $3
            ORDER BY t.post_date ASC, t.enter_date ASC"#
     )
     .bind(account_id)
     .bind(statement_date)
+    .bind(auth.id)
     .fetch_all(&pool)
     .await
     .map_err(|e| {
@@ -120,7 +124,6 @@ pub async fn get_reconcile_info(
                 withdrawals.push(item);
             }
         } else {
-            // For liabilities: negative amount is charge/increase, positive amount is payment/decrease
             if amount < Decimal::ZERO {
                 withdrawals.push(item);
             } else {
@@ -159,10 +162,28 @@ pub async fn get_reconcile_info(
 }
 
 pub async fn finish_reconcile(
+    auth: AuthUser,
     State(pool): State<PgPool>,
     Path(account_id): Path<Uuid>,
     Json(payload): Json<FinishReconcileRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    // Verify account belongs to user
+    let acc_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM accounts WHERE id = $1 AND user_id = $2",
+    )
+    .bind(account_id)
+    .bind(auth.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap_or(0);
+
+    if acc_exists == 0 {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Account not found" })),
+        ));
+    }
+
     if payload.reconciled_split_ids.is_empty() {
         return Ok(Json(json!({ "message": "No splits were selected to reconcile." })));
     }
