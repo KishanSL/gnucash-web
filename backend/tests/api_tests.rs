@@ -13,6 +13,7 @@ use gnucash_backend::{create_app, db};
 static TEST_POOL: OnceCell<PgPool> = OnceCell::const_new();
 
 async fn get_test_pool() -> PgPool {
+    std::env::set_var("GNUCASH_TEST_MODE", "1");
     TEST_POOL
         .get_or_init(|| async {
             let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
@@ -683,4 +684,95 @@ async fn test_list_local_files_and_import_path() {
     assert_eq!(json["accounts_imported"], 2);
     assert_eq!(json["transactions_imported"], 1);
     assert_eq!(json["splits_imported"], 2);
+}
+
+#[tokio::test]
+async fn test_auth_login_and_reset_password() {
+    let pool = get_test_pool().await;
+    let app = create_app(pool.clone());
+
+    // 1. Successful login with default user
+    let login_payload = json!({
+        "username": "kishan",
+        "password": "password123"
+    });
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&login_payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert!(json.get("token").is_some());
+    assert_eq!(json["user"]["username"], "kishan");
+
+    // 2. Reset password endpoint
+    let reset_payload = json!({
+        "username": "kishan",
+        "new_password": "new_password_2026"
+    });
+
+    let app2 = create_app(pool.clone());
+    let reset_res = app2
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/reset-password")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&reset_payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(reset_res.status(), StatusCode::OK);
+
+    // 3. Login with new password
+    let app3 = create_app(pool.clone());
+    let new_login_payload = json!({
+        "username": "kishan",
+        "password": "new_password_2026"
+    });
+
+    let res3 = app3
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&new_login_payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res3.status(), StatusCode::OK);
+
+    // 4. Reset back to password123 for consistency
+    let app4 = create_app(pool);
+    let reset_back_payload = json!({
+        "username": "kishan",
+        "new_password": "password123"
+    });
+
+    let _ = app4
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/reset-password")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&reset_back_payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
 }

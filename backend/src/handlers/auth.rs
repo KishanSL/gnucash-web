@@ -191,6 +191,70 @@ pub async fn get_current_user(
     Ok(Json(user))
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ResetPasswordRequest {
+    pub username: String,
+    pub new_password: String,
+}
+
+pub async fn reset_password(
+    State(pool): State<PgPool>,
+    Json(payload): Json<ResetPasswordRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let identifier = payload.username.trim();
+    let new_password = payload.new_password.trim();
+
+    if identifier.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Username or email is required" })),
+        ));
+    }
+
+    if new_password.len() < 6 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "New password must be at least 6 characters long" })),
+        ));
+    }
+
+    let password_hash = bcrypt::hash(new_password, bcrypt::DEFAULT_COST).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Password hashing failed: {}", e) })),
+        )
+    })?;
+
+    let rows_affected = sqlx::query(
+        r#"UPDATE users
+           SET password_hash = $1, updated_at = NOW()
+           WHERE LOWER(username) = LOWER($2) OR LOWER(email) = LOWER($2)"#
+    )
+    .bind(password_hash)
+    .bind(identifier)
+    .execute(&pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Database error: {}", e) })),
+        )
+    })?
+    .rows_affected();
+
+    if rows_affected == 0 {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "User not found" })),
+        ));
+    }
+
+    Ok(Json(json!({
+        "success": true,
+        "message": format!("Password for user '{}' has been successfully reset.", identifier)
+    })))
+}
+
 /// Provisions standard GnuCash root accounts for new user
 async fn provision_starter_accounts(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
     // 1. Assets

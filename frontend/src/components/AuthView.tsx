@@ -1,6 +1,19 @@
 import React, { useState } from 'react';
-import { Landmark, Lock, User as UserIcon, Mail, AlertCircle, ArrowRight, ShieldCheck, CheckCircle2 } from 'lucide-react';
-import { login, signup } from '../api';
+import {
+  Landmark,
+  Lock,
+  User as UserIcon,
+  Mail,
+  AlertCircle,
+  ArrowRight,
+  ShieldCheck,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  RotateCcw,
+  KeyRound,
+} from 'lucide-react';
+import { login, signup, resetPassword } from '../api';
 import { User } from '../types';
 
 interface AuthViewProps {
@@ -8,11 +21,12 @@ interface AuthViewProps {
 }
 
 export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
-  const [tab, setTab] = useState<'login' | 'signup'>('login');
+  const [tab, setTab] = useState<'login' | 'signup' | 'reset'>('login');
 
-  // Login form state
-  const [loginUsername, setLoginUsername] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
+  // Login form state - pre-filled with default user for immediate frictionless access
+  const [loginUsername, setLoginUsername] = useState('kishan');
+  const [loginPassword, setLoginPassword] = useState('password123');
+  const [showPassword, setShowPassword] = useState(false);
 
   // Signup form state
   const [signupUsername, setSignupUsername] = useState('');
@@ -20,13 +34,21 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
   const [signupPassword, setSignupPassword] = useState('');
   const [signupConfirm, setSignupConfirm] = useState('');
 
+  // Reset form state
+  const [resetUsername, setResetUsername] = useState('kishan');
+  const [resetNewPassword, setResetNewPassword] = useState('password123');
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleLogin = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     setError(null);
-    if (!loginUsername.trim() || !loginPassword) {
+    setSuccessMsg(null);
+
+    const userToLogin = loginUsername.trim();
+    if (!userToLogin || !loginPassword) {
       setError('Please provide your username/email and password.');
       return;
     }
@@ -34,12 +56,15 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
     try {
       setLoading(true);
       const res = await login({
-        username: loginUsername.trim(),
+        username: userToLogin,
         password: loginPassword,
       });
       onAuthSuccess(res.user);
     } catch (err: any) {
-      setError(err.message || 'Login failed. Please check your credentials.');
+      setError(
+        err.message ||
+          'Login failed. If using the default account, make sure username is "kishan" and password is "password123".'
+      );
     } finally {
       setLoading(false);
     }
@@ -47,6 +72,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
 
   const handleQuickDemoLogin = async () => {
     setError(null);
+    setSuccessMsg(null);
     setLoginUsername('kishan');
     setLoginPassword('password123');
     try {
@@ -57,7 +83,42 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
       });
       onAuthSuccess(res.user);
     } catch (err: any) {
-      setError(err.message || 'Demo login failed');
+      setError(
+        err.message ||
+          'Demo login failed. You can reset the password for "kishan" to "password123" below.'
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccessMsg(null);
+
+    const targetUser = resetUsername.trim();
+    if (!targetUser) {
+      setError('Please provide the username to reset.');
+      return;
+    }
+    if (resetNewPassword.length < 6) {
+      setError('New password must be at least 6 characters.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const res = await resetPassword({
+        username: targetUser,
+        new_password: resetNewPassword,
+      });
+      setSuccessMsg(res.message || 'Password successfully reset! You can now log in.');
+      setLoginUsername(targetUser);
+      setLoginPassword(resetNewPassword);
+      setTab('login');
+    } catch (err: any) {
+      setError(err.message || 'Failed to reset password.');
     } finally {
       setLoading(false);
     }
@@ -66,6 +127,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setSuccessMsg(null);
 
     const username = signupUsername.trim();
     const email = signupEmail.trim();
@@ -128,8 +190,9 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
               onClick={() => {
                 setTab('login');
                 setError(null);
+                setSuccessMsg(null);
               }}
-              className={`flex-1 py-3.5 text-xs sm:text-sm font-semibold transition text-center ${
+              className={`flex-1 py-3 text-xs sm:text-sm font-semibold transition text-center ${
                 tab === 'login'
                   ? 'bg-white text-emerald-700 border-b-2 border-emerald-600 shadow-sm'
                   : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100/60'
@@ -142,8 +205,9 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
               onClick={() => {
                 setTab('signup');
                 setError(null);
+                setSuccessMsg(null);
               }}
-              className={`flex-1 py-3.5 text-xs sm:text-sm font-semibold transition text-center ${
+              className={`flex-1 py-3 text-xs sm:text-sm font-semibold transition text-center ${
                 tab === 'signup'
                   ? 'bg-white text-emerald-700 border-b-2 border-emerald-600 shadow-sm'
                   : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100/60'
@@ -151,75 +215,143 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
             >
               Create Account
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTab('reset');
+                setError(null);
+                setSuccessMsg(null);
+              }}
+              className={`py-3 px-3 text-xs font-semibold transition text-center ${
+                tab === 'reset'
+                  ? 'bg-white text-emerald-700 border-b-2 border-emerald-600 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100/60'
+              }`}
+              title="Reset Password"
+            >
+              Reset
+            </button>
           </div>
 
           <div className="p-5 sm:p-7">
             {error && (
-              <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs flex items-center space-x-2">
-                <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
-                <span>{error}</span>
+              <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs space-y-2">
+                <div className="flex items-center space-x-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                  <span className="font-medium">{error}</span>
+                </div>
+                {tab === 'login' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResetUsername('kishan');
+                      setResetNewPassword('password123');
+                      setTab('reset');
+                      setError(null);
+                    }}
+                    className="text-[11px] text-rose-800 font-semibold underline hover:text-rose-900 block"
+                  >
+                    Click here to reset "kishan" password to "password123"
+                  </button>
+                )}
+              </div>
+            )}
+
+            {successMsg && (
+              <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs flex items-center space-x-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+                <span className="font-medium">{successMsg}</span>
               </div>
             )}
 
             {/* Login Tab */}
             {tab === 'login' && (
-              <form onSubmit={handleLogin} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Username or Email
-                  </label>
-                  <div className="relative">
-                    <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      required
-                      placeholder="Username or email address"
-                      value={loginUsername}
-                      onChange={(e) => setLoginUsername(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                    />
+              <div className="space-y-4">
+                {/* Default Credentials Banner */}
+                <div className="p-3 bg-emerald-50/80 border border-emerald-200 rounded-xl flex items-center justify-between gap-2">
+                  <div className="flex items-center space-x-2 text-xs text-emerald-900">
+                    <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <div>
+                      <p className="font-semibold text-emerald-950">Default Account</p>
+                      <p className="text-[11px] text-emerald-700 font-mono">
+                        User: <strong>kishan</strong> • Pass: <strong>password123</strong>
+                      </p>
+                    </div>
                   </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Password
-                  </label>
-                  <div className="relative">
-                    <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="password"
-                      required
-                      placeholder="••••••••"
-                      value={loginPassword}
-                      onChange={(e) => setLoginPassword(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs sm:text-sm font-semibold transition shadow-sm disabled:opacity-50 flex items-center justify-center space-x-1.5 active:scale-[0.99]"
-                >
-                  <span>{loading ? 'Signing in...' : 'Sign In'}</span>
-                  {!loading && <ArrowRight className="w-4 h-4" />}
-                </button>
-
-                {/* Quick Demo Helper */}
-                <div className="pt-3 border-t border-slate-100">
                   <button
                     type="button"
                     onClick={handleQuickDemoLogin}
                     disabled={loading}
-                    className="w-full py-2 px-3 text-xs font-medium text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition flex items-center justify-center space-x-1.5"
+                    className="px-2.5 py-1 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition shadow-xs shrink-0"
                   >
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Quick Sign In as <strong>kishan</strong> (Default)</span>
+                    1-Click Login
                   </button>
                 </div>
-              </form>
+
+                <form onSubmit={handleLogin} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Username or Email
+                    </label>
+                    <div className="relative">
+                      <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        required
+                        placeholder="Username or email address"
+                        value={loginUsername}
+                        onChange={(e) => setLoginUsername(e.target.value)}
+                        className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-semibold text-slate-700">
+                        Password
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTab('reset');
+                          setError(null);
+                        }}
+                        className="text-[11px] text-emerald-600 hover:underline font-medium"
+                      >
+                        Forgot password?
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        placeholder="••••••••"
+                        value={loginPassword}
+                        onChange={(e) => setLoginPassword(e.target.value)}
+                        className="w-full pl-9 pr-10 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs sm:text-sm font-semibold transition shadow-sm disabled:opacity-50 flex items-center justify-center space-x-1.5 active:scale-[0.99]"
+                  >
+                    <span>{loading ? 'Signing in...' : 'Sign In'}</span>
+                    {!loading && <ArrowRight className="w-4 h-4" />}
+                  </button>
+                </form>
+              </div>
             )}
 
             {/* Signup Tab */}
@@ -310,6 +442,77 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                   <span>{loading ? 'Creating Account...' : 'Create Account & Sign In'}</span>
                   {!loading && <ArrowRight className="w-4 h-4" />}
                 </button>
+              </form>
+            )}
+
+            {/* Reset Password Tab */}
+            {tab === 'reset' && (
+              <form onSubmit={handleResetPassword} className="space-y-4">
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 space-y-1">
+                  <p className="font-semibold flex items-center space-x-1.5">
+                    <KeyRound className="w-3.5 h-3.5 text-amber-700" />
+                    <span>Reset Account Password</span>
+                  </p>
+                  <p className="text-[11px] text-amber-700">
+                    Enter the username and the new password you wish to set.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Username or Email
+                  </label>
+                  <div className="relative">
+                    <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. kishan"
+                      value={resetUsername}
+                      onChange={(e) => setResetUsername(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    New Password (at least 6 characters)
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="password"
+                      required
+                      placeholder="e.g. password123"
+                      value={resetNewPassword}
+                      onChange={(e) => setResetNewPassword(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 pt-1">
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition shadow-xs flex items-center justify-center space-x-1.5"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>{loading ? 'Resetting...' : 'Set New Password'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTab('login');
+                      setError(null);
+                    }}
+                    className="py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-medium transition"
+                  >
+                    Cancel
+                  </button>
+                </div>
               </form>
             )}
           </div>

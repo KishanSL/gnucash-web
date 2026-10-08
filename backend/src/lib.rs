@@ -24,6 +24,7 @@ pub fn create_app(pool: sqlx::PgPool) -> Router {
         // Authentication
         .route("/api/auth/signup", post(handlers::auth::signup))
         .route("/api/auth/login", post(handlers::auth::login))
+        .route("/api/auth/reset-password", post(handlers::auth::reset_password))
         .route("/api/auth/me", get(handlers::auth::get_current_user))
         // Accounts
         .route("/api/accounts", get(handlers::accounts::list_accounts))
