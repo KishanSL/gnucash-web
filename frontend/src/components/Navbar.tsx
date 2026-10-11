@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   BookOpen,
   FolderTree,
@@ -14,10 +14,11 @@ import {
   X,
   ChevronDown,
   LogOut,
-  User as UserIcon,
+  KeyRound,
 } from 'lucide-react';
 import { SUPPORTED_CURRENCIES } from '../api';
 import { User } from '../types';
+import { ChangePasswordModal } from './ChangePasswordModal';
 
 export type ActiveTab = 'accounts' | 'register' | 'journal' | 'reconcile' | 'reports';
 
@@ -51,6 +52,23 @@ export const Navbar: React.FC<NavbarProps> = ({
   onLogout,
 }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
+
+  const userMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close user dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setIsUserMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   const navItems: { id: ActiveTab; label: string; icon: React.ReactNode }[] = [
     { id: 'accounts', label: 'Accounts', icon: <FolderTree className="w-4 h-4" /> },
@@ -128,7 +146,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <button
                 onClick={onOpenImport}
                 className="hidden lg:flex items-center space-x-1 px-2.5 py-1.5 text-xs text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition"
-                title="Import GnuCash SQLite (.gnucash) file"
+                title="Import GnuCash file (.gnucash)"
               >
                 <Upload className="w-3.5 h-3.5 text-sky-400" />
                 <span>Import .gnucash</span>
@@ -162,29 +180,82 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <span className="hidden xs:inline">New Entry</span>
               </button>
 
-              {/* User profile & logout (Desktop) */}
+              {/* User Dropdown (Desktop) */}
               {currentUser && (
-                <div className="hidden sm:flex items-center space-x-1.5 pl-1.5 border-l border-slate-800">
-                  <div
-                    className="flex items-center space-x-1.5 bg-slate-950/80 px-2.5 py-1 rounded-lg border border-slate-700/80 text-xs"
-                    title={`Logged in as ${currentUser.username}${currentUser.email ? ` (${currentUser.email})` : ''}`}
+                <div className="relative hidden sm:block" ref={userMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+                    className="flex items-center space-x-1.5 bg-slate-950/80 hover:bg-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-700/80 text-xs text-slate-200 transition focus:outline-none focus:ring-2 focus:ring-emerald-500/20 active:scale-[0.98]"
+                    aria-expanded={isUserMenuOpen}
+                    aria-label="User Account Menu"
                   >
                     <div className="w-5 h-5 rounded-full bg-emerald-600/30 border border-emerald-500/40 flex items-center justify-center text-[10px] font-bold text-emerald-300">
                       {currentUser.username.charAt(0).toUpperCase()}
                     </div>
-                    <span className="font-medium text-slate-200 max-w-[80px] truncate hidden xl:inline">
+                    <span className="font-semibold text-slate-200 max-w-[110px] truncate">
                       {currentUser.username}
                     </span>
-                  </div>
-                  {onLogout && (
-                    <button
-                      onClick={onLogout}
-                      className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-lg transition"
-                      title="Log Out"
-                      aria-label="Log Out"
-                    >
-                      <LogOut className="w-4 h-4" />
-                    </button>
+                    <ChevronDown
+                      className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-150 ${
+                        isUserMenuOpen ? 'rotate-180' : ''
+                      }`}
+                    />
+                  </button>
+
+                  {/* Dropdown Card */}
+                  {isUserMenuOpen && (
+                    <div className="absolute right-0 mt-2 w-56 bg-slate-900 border border-slate-700/90 rounded-xl shadow-2xl py-1.5 z-50 animate-in fade-in slide-in-from-top-1 duration-150">
+                      {/* User Info Header */}
+                      <div className="px-3.5 py-2.5 border-b border-slate-800">
+                        <div className="flex items-center space-x-2.5">
+                          <div className="w-8 h-8 rounded-full bg-emerald-600/30 border border-emerald-500/40 flex items-center justify-center text-xs font-bold text-emerald-300">
+                            {currentUser.username.charAt(0).toUpperCase()}
+                          </div>
+                          <div className="overflow-hidden">
+                            <p className="text-xs font-bold text-slate-200 truncate">
+                              {currentUser.username}
+                            </p>
+                            {currentUser.email && (
+                              <p className="text-[10px] text-slate-400 truncate">
+                                {currentUser.email}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Dropdown Menu Items */}
+                      <div className="py-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            setIsChangePasswordOpen(true);
+                          }}
+                          className="w-full flex items-center space-x-2 px-3.5 py-2 text-xs text-slate-300 hover:text-white hover:bg-slate-800 transition text-left"
+                        >
+                          <KeyRound className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span>Change Password</span>
+                        </button>
+
+                        <div className="my-1 border-t border-slate-800" />
+
+                        {onLogout && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsUserMenuOpen(false);
+                              onLogout();
+                            }}
+                            className="w-full flex items-center space-x-2 px-3.5 py-2 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition text-left"
+                          >
+                            <LogOut className="w-4 h-4 text-rose-400 shrink-0" />
+                            <span>Log Out</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   )}
                 </div>
               )}
@@ -232,10 +303,11 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             </div>
 
+            {/* Mobile User Profile & Password/Logout Actions */}
             {currentUser && (
-              <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <div className="w-7 h-7 rounded-full bg-emerald-600/30 border border-emerald-500/40 flex items-center justify-center text-xs font-bold text-emerald-300">
+              <div className="pt-2 border-t border-slate-800/80 space-y-2">
+                <div className="flex items-center space-x-2.5">
+                  <div className="w-8 h-8 rounded-full bg-emerald-600/30 border border-emerald-500/40 flex items-center justify-center text-xs font-bold text-emerald-300">
                     {currentUser.username.charAt(0).toUpperCase()}
                   </div>
                   <div>
@@ -245,18 +317,32 @@ export const Navbar: React.FC<NavbarProps> = ({
                     )}
                   </div>
                 </div>
-                {onLogout && (
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
                   <button
                     onClick={() => {
-                      onLogout();
                       setIsMobileMenuOpen(false);
+                      setIsChangePasswordOpen(true);
                     }}
-                    className="flex items-center space-x-1 text-xs text-rose-400 hover:text-rose-300 px-2.5 py-1 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 rounded-md transition"
+                    className="flex items-center justify-center space-x-1.5 text-xs text-slate-200 hover:text-white py-2 px-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition"
                   >
-                    <LogOut className="w-3.5 h-3.5" />
-                    <span>Log Out</span>
+                    <KeyRound className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Change Password</span>
                   </button>
-                )}
+
+                  {onLogout && (
+                    <button
+                      onClick={() => {
+                        setIsMobileMenuOpen(false);
+                        onLogout();
+                      }}
+                      className="flex items-center justify-center space-x-1.5 text-xs text-rose-400 hover:text-rose-300 py-2 px-2.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 rounded-lg transition"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>Log Out</span>
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -286,6 +372,15 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         )}
       </header>
+
+      {/* Change Password Modal */}
+      {currentUser && (
+        <ChangePasswordModal
+          isOpen={isChangePasswordOpen}
+          onClose={() => setIsChangePasswordOpen(false)}
+          username={currentUser.username}
+        />
+      )}
 
       {/* Mobile Bottom Navigation Bar (Persistent at bottom on screens < md) */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 shadow-2xl flex items-center justify-around py-1.5 px-1 safe-area-bottom">

@@ -6,7 +6,6 @@ import {
   Mail,
   AlertCircle,
   ArrowRight,
-  ShieldCheck,
   CheckCircle2,
   Eye,
   EyeOff,
@@ -23,9 +22,9 @@ interface AuthViewProps {
 export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
   const [tab, setTab] = useState<'login' | 'signup' | 'reset'>('login');
 
-  // Login form state - pre-filled with default user for immediate frictionless access
-  const [loginUsername, setLoginUsername] = useState('kishan');
-  const [loginPassword, setLoginPassword] = useState('password123');
+  // Login form state - starts empty
+  const [loginUsername, setLoginUsername] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
   // Signup form state
@@ -35,8 +34,8 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
   const [signupConfirm, setSignupConfirm] = useState('');
 
   // Reset form state
-  const [resetUsername, setResetUsername] = useState('kishan');
-  const [resetNewPassword, setResetNewPassword] = useState('password123');
+  const [resetUsername, setResetUsername] = useState('');
+  const [resetNewPassword, setResetNewPassword] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,32 +60,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
       });
       onAuthSuccess(res.user);
     } catch (err: any) {
-      setError(
-        err.message ||
-          'Login failed. If using the default account, make sure username is "kishan" and password is "password123".'
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleQuickDemoLogin = async () => {
-    setError(null);
-    setSuccessMsg(null);
-    setLoginUsername('kishan');
-    setLoginPassword('password123');
-    try {
-      setLoading(true);
-      const res = await login({
-        username: 'kishan',
-        password: 'password123',
-      });
-      onAuthSuccess(res.user);
-    } catch (err: any) {
-      setError(
-        err.message ||
-          'Demo login failed. You can reset the password for "kishan" to "password123" below.'
-      );
+      setError(err.message || 'Login failed. Please check your credentials.');
     } finally {
       setLoading(false);
     }
@@ -215,45 +189,13 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
             >
               Create Account
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                setTab('reset');
-                setError(null);
-                setSuccessMsg(null);
-              }}
-              className={`py-3 px-3 text-xs font-semibold transition text-center ${
-                tab === 'reset'
-                  ? 'bg-white text-emerald-700 border-b-2 border-emerald-600 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100/60'
-              }`}
-              title="Reset Password"
-            >
-              Reset
-            </button>
           </div>
 
           <div className="p-5 sm:p-7">
             {error && (
-              <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs space-y-2">
-                <div className="flex items-center space-x-2">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
-                  <span className="font-medium">{error}</span>
-                </div>
-                {tab === 'login' && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setResetUsername('kishan');
-                      setResetNewPassword('password123');
-                      setTab('reset');
-                      setError(null);
-                    }}
-                    className="text-[11px] text-rose-800 font-semibold underline hover:text-rose-900 block"
-                  >
-                    Click here to reset "kishan" password to "password123"
-                  </button>
-                )}
+              <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs flex items-center space-x-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+                <span className="font-medium">{error}</span>
               </div>
             )}
 
@@ -266,92 +208,69 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
 
             {/* Login Tab */}
             {tab === 'login' && (
-              <div className="space-y-4">
-                {/* Default Credentials Banner */}
-                <div className="p-3 bg-emerald-50/80 border border-emerald-200 rounded-xl flex items-center justify-between gap-2">
-                  <div className="flex items-center space-x-2 text-xs text-emerald-900">
-                    <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <div>
-                      <p className="font-semibold text-emerald-950">Default Account</p>
-                      <p className="text-[11px] text-emerald-700 font-mono">
-                        User: <strong>kishan</strong> • Pass: <strong>password123</strong>
-                      </p>
-                    </div>
+              <form onSubmit={handleLogin} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Username or Email
+                  </label>
+                  <div className="relative">
+                    <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      required
+                      placeholder="Username or email address"
+                      value={loginUsername}
+                      onChange={(e) => setLoginUsername(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                    />
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleQuickDemoLogin}
-                    disabled={loading}
-                    className="px-2.5 py-1 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition shadow-xs shrink-0"
-                  >
-                    1-Click Login
-                  </button>
                 </div>
 
-                <form onSubmit={handleLogin} className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Username or Email
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Password
                     </label>
-                    <div className="relative">
-                      <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="text"
-                        required
-                        placeholder="Username or email address"
-                        value={loginUsername}
-                        onChange={(e) => setLoginUsername(e.target.value)}
-                        className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                      />
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTab('reset');
+                        setError(null);
+                      }}
+                      className="text-[11px] text-emerald-600 hover:underline font-medium"
+                    >
+                      Forgot password?
+                    </button>
                   </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-xs font-semibold text-slate-700">
-                        Password
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setTab('reset');
-                          setError(null);
-                        }}
-                        className="text-[11px] text-emerald-600 hover:underline font-medium"
-                      >
-                        Forgot password?
-                      </button>
-                    </div>
-                    <div className="relative">
-                      <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                      <input
-                        type={showPassword ? 'text' : 'password'}
-                        required
-                        placeholder="••••••••"
-                        value={loginPassword}
-                        onChange={(e) => setLoginPassword(e.target.value)}
-                        className="w-full pl-9 pr-10 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                      >
-                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      placeholder="••••••••"
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      className="w-full pl-9 pr-10 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
                   </div>
+                </div>
 
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs sm:text-sm font-semibold transition shadow-sm disabled:opacity-50 flex items-center justify-center space-x-1.5 active:scale-[0.99]"
-                  >
-                    <span>{loading ? 'Signing in...' : 'Sign In'}</span>
-                    {!loading && <ArrowRight className="w-4 h-4" />}
-                  </button>
-                </form>
-              </div>
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs sm:text-sm font-semibold transition shadow-sm disabled:opacity-50 flex items-center justify-center space-x-1.5 active:scale-[0.99]"
+                >
+                  <span>{loading ? 'Signing in...' : 'Sign In'}</span>
+                  {!loading && <ArrowRight className="w-4 h-4" />}
+                </button>
+              </form>
             )}
 
             {/* Signup Tab */}
@@ -484,7 +403,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                     <input
                       type="password"
                       required
-                      placeholder="e.g. password123"
+                      placeholder="At least 6 characters"
                       value={resetNewPassword}
                       onChange={(e) => setResetNewPassword(e.target.value)}
                       className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono"

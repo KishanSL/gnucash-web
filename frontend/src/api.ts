@@ -116,6 +116,22 @@ export async function resetPassword(payload: { username: string; new_password: s
   return res.json();
 }
 
+export async function changePassword(payload: {
+  current_password?: string;
+  new_password: string;
+}): Promise<{ success: boolean; message: string }> {
+  const res = await fetchWithAuth(`${API_BASE}/auth/change-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to change password');
+  }
+  return res.json();
+}
+
 export async function fetchCurrentUser(): Promise<User> {
   const res = await fetchWithAuth(`${API_BASE}/auth/me`);
   if (!res.ok) throw new Error('Failed to fetch user');

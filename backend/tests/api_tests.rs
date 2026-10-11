@@ -776,3 +776,117 @@ async fn test_auth_login_and_reset_password() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn test_auth_change_password() {
+    let pool = get_test_pool().await;
+
+    // Login to get token
+    let app1 = create_app(pool.clone());
+    let login_res = app1
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "username": "kishan",
+                        "password": "password123"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login_res.status(), StatusCode::OK);
+    let body = login_res.into_body().collect().await.unwrap().to_bytes();
+    let login_data: Value = serde_json::from_slice(&body).unwrap();
+    let token = login_data["token"].as_str().unwrap();
+
+    // Change password with wrong current password -> should fail
+    let app2 = create_app(pool.clone());
+    let fail_res = app2
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/change-password")
+                .header("Authorization", format!("Bearer {}", token))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "current_password": "wrongpassword",
+                        "new_password": "updated_password_456"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fail_res.status(), StatusCode::BAD_REQUEST);
+
+    // Change password with correct current password -> should succeed
+    let app3 = create_app(pool.clone());
+    let ok_res = app3
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/change-password")
+                .header("Authorization", format!("Bearer {}", token))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "current_password": "password123",
+                        "new_password": "updated_password_456"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok_res.status(), StatusCode::OK);
+
+    // Verify login with updated password
+    let app4 = create_app(pool.clone());
+    let new_login = app4
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "username": "kishan",
+                        "password": "updated_password_456"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(new_login.status(), StatusCode::OK);
+
+    // Change back to password123
+    let app5 = create_app(pool);
+    let _ = app5
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/reset-password")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "username": "kishan",
+                        "new_password": "password123"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+}

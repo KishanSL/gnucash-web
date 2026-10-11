@@ -255,6 +255,91 @@ pub async fn reset_password(
     })))
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: Option<String>,
+    pub new_password: String,
+}
+
+pub async fn change_password(
+    auth: AuthUser,
+    State(pool): State<PgPool>,
+    Json(payload): Json<ChangePasswordRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let new_password = payload.new_password.trim();
+
+    if new_password.len() < 6 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "New password must be at least 6 characters long" })),
+        ));
+    }
+
+    // Fetch existing password hash for this user
+    let existing_hash: Option<String> = sqlx::query_scalar(
+        "SELECT password_hash FROM users WHERE id = $1"
+    )
+    .bind(auth.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Database error: {}", e) })),
+        )
+    })?;
+
+    let existing_hash = match existing_hash {
+        Some(h) => h,
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "User not found" })),
+            ));
+        }
+    };
+
+    // If current_password was supplied, verify it
+    if let Some(curr) = payload.current_password {
+        let curr = curr.trim();
+        if !curr.is_empty() {
+            let valid = bcrypt::verify(curr, &existing_hash).unwrap_or(false);
+            if !valid {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "Incorrect current password" })),
+                ));
+            }
+        }
+    }
+
+    let password_hash = bcrypt::hash(new_password, bcrypt::DEFAULT_COST).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Password hashing failed: {}", e) })),
+        )
+    })?;
+
+    sqlx::query(
+        "UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2"
+    )
+    .bind(password_hash)
+    .bind(auth.id)
+    .execute(&pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to update password: {}", e) })),
+        )
+    })?;
+
+    Ok(Json(json!({
+        "success": true,
+        "message": "Password changed successfully"
+    })))
+}
+
 /// Provisions standard GnuCash root accounts for new user
 async fn provision_starter_accounts(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
     // 1. Assets
