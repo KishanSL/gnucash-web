@@ -152,16 +152,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <span>Import .gnucash</span>
               </button>
 
-              {/* Seed Button (Desktop) */}
-              <button
-                onClick={onSeedData}
-                className="hidden xl:flex items-center space-x-1 px-2.5 py-1.5 text-xs text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition"
-                title="Reset / Seed default GnuCash Chart of Accounts"
-              >
-                <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
-                <span>Seed</span>
-              </button>
-
               {/* New Account Button (Desktop) */}
               <button
                 onClick={onOpenNewAccount}
@@ -237,6 +227,19 @@ export const Navbar: React.FC<NavbarProps> = ({
                         >
                           <KeyRound className="w-4 h-4 text-emerald-400 shrink-0" />
                           <span>Change Password</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            onSeedData();
+                          }}
+                          className="w-full flex items-center space-x-2 px-3.5 py-2 text-xs text-slate-300 hover:text-white hover:bg-slate-800 transition text-left"
+                          title="Reset / Seed default GnuCash Chart of Accounts"
+                        >
+                          <RefreshCw className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span>Seed Sample Data</span>
                         </button>
 
                         <div className="my-1 border-t border-slate-800" />
@@ -330,19 +333,30 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <span>Change Password</span>
                   </button>
 
-                  {onLogout && (
-                    <button
-                      onClick={() => {
-                        setIsMobileMenuOpen(false);
-                        onLogout();
-                      }}
-                      className="flex items-center justify-center space-x-1.5 text-xs text-rose-400 hover:text-rose-300 py-2 px-2.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 rounded-lg transition"
-                    >
-                      <LogOut className="w-3.5 h-3.5" />
-                      <span>Log Out</span>
-                    </button>
-                  )}
+                  <button
+                    onClick={() => {
+                      setIsMobileMenuOpen(false);
+                      onSeedData();
+                    }}
+                    className="flex items-center justify-center space-x-1.5 text-xs text-slate-200 hover:text-white py-2 px-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Seed Data</span>
+                  </button>
                 </div>
+
+                {onLogout && (
+                  <button
+                    onClick={() => {
+                      setIsMobileMenuOpen(false);
+                      onLogout();
+                    }}
+                    className="w-full flex items-center justify-center space-x-1.5 text-xs text-rose-400 hover:text-rose-300 py-2 px-2.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/20 rounded-lg transition mt-1"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>Log Out</span>
+                  </button>
+                )}
               </div>
             )}
 
@@ -358,17 +372,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                 {backendOnline ? 'Online (8082)' : 'Disconnected'}
               </span>
             </div>
-
-            <button
-              onClick={() => {
-                onSeedData();
-                setIsMobileMenuOpen(false);
-              }}
-              className="w-full flex items-center justify-center space-x-2 py-2 text-xs font-medium text-slate-300 hover:text-white bg-slate-800/40 hover:bg-slate-800 rounded-lg border border-slate-700/60"
-            >
-              <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
-              <span>Reset & Seed Sample Data</span>
-            </button>
           </div>
         )}
       </header>

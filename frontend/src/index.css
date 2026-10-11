@@ -6,6 +6,15 @@
   body {
     @apply bg-slate-50 text-slate-800 text-sm selection:bg-emerald-500 selection:text-white;
   }
+
+  /* Ensure inputs, selects, and textareas always use high-contrast dark text */
+  input, select, textarea {
+    color: #0f172a !important; /* text-slate-900 */
+  }
+
+  input::placeholder, textarea::placeholder {
+    color: #94a3b8 !important; /* text-slate-400 */
+  }
 }
 
 /* Custom scrollbars for ledger feel */

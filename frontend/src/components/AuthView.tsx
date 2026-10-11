@@ -156,7 +156,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
         </div>
 
         {/* Card */}
-        <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
+        <div className="bg-white text-slate-900 rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
           {/* Tab Selector */}
           <div className="flex border-b border-slate-200 bg-slate-50">
             <button
@@ -221,7 +221,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                       placeholder="Username or email address"
                       value={loginUsername}
                       onChange={(e) => setLoginUsername(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                      className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-medium"
                     />
                   </div>
                 </div>
@@ -250,7 +250,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                       placeholder="••••••••"
                       value={loginPassword}
                       onChange={(e) => setLoginPassword(e.target.value)}
-                      className="w-full pl-9 pr-10 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono"
+                      className="w-full pl-9 pr-10 py-2 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-mono"
                     />
                     <button
                       type="button"
@@ -288,7 +288,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                       placeholder="e.g. kishan, accountant_jane"
                       value={signupUsername}
                       onChange={(e) => setSignupUsername(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                      className="w-full pl-9 pr-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-medium"
                     />
                   </div>
                 </div>
@@ -305,7 +305,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                       placeholder="e.g. jane@example.com"
                       value={signupEmail}
                       onChange={(e) => setSignupEmail(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                      className="w-full pl-9 pr-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-medium"
                     />
                   </div>
                 </div>
@@ -323,7 +323,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                         placeholder="At least 6 chars"
                         value={signupPassword}
                         onChange={(e) => setSignupPassword(e.target.value)}
-                        className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono"
+                        className="w-full pl-9 pr-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-mono"
                       />
                     </div>
                   </div>
@@ -340,7 +340,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                         placeholder="Repeat password"
                         value={signupConfirm}
                         onChange={(e) => setSignupConfirm(e.target.value)}
-                        className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono"
+                        className="w-full pl-9 pr-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-mono"
                       />
                     </div>
                   </div>
@@ -389,7 +389,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                       placeholder="e.g. kishan"
                       value={resetUsername}
                       onChange={(e) => setResetUsername(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                      className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-medium"
                     />
                   </div>
                 </div>
@@ -406,7 +406,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                       placeholder="At least 6 characters"
                       value={resetNewPassword}
                       onChange={(e) => setResetNewPassword(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono"
+                      className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-mono"
                     />
                   </div>
                 </div>
