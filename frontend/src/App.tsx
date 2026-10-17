@@ -38,7 +38,7 @@ import {
   logout,
   fetchCurrentUser,
 } from './api';
-import { Scale, TrendingUp, BookCheck, AlertCircle, Coins } from 'lucide-react';
+import { Scale, TrendingUp, BookCheck, AlertCircle } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>('accounts');
@@ -260,42 +260,12 @@ export const App: React.FC = () => {
   // If user is not authenticated, display login / signup view
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col justify-between text-slate-100">
-        <header className="bg-slate-900/90 backdrop-blur-sm border-b border-slate-800 text-white py-4 shadow-md sticky top-0 z-30">
-          <div className="max-w-6xl mx-auto px-4 flex items-center justify-between">
-            <div className="flex items-center space-x-2.5">
-              <div className="w-9 h-9 rounded-lg bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center shadow-inner">
-                <Coins className="w-5 h-5 text-white" />
-              </div>
-              <div className="flex items-center space-x-1.5">
-                <span className="font-bold text-lg tracking-tight text-white">GnuCash</span>
-                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                  Web
-                </span>
-              </div>
-            </div>
-            <span className="text-xs text-slate-400 hidden sm:inline">
-              Multi-User Double-Entry Accounting
-            </span>
-          </div>
-        </header>
-
-        <main className="flex-1 flex items-center justify-center p-4">
-          <AuthView
-            onAuthSuccess={(user) => {
-              setCurrentUser(user);
-              loadInitialData();
-            }}
-          />
-        </main>
-
-        <footer className="border-t border-slate-800/80 bg-slate-900/40 py-4 text-xs text-slate-500 text-center">
-          <div className="max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-            <span>GnuCash Web • Pure Double-Entry Accounting Engine</span>
-            <span>Port 8081 • Multi-Tenant Isolated Ledger</span>
-          </div>
-        </footer>
-      </div>
+      <AuthView
+        onAuthSuccess={(user) => {
+          setCurrentUser(user);
+          loadInitialData();
+        }}
+      />
     );
   }
 
