@@ -341,7 +341,7 @@ pub async fn change_password(
 }
 
 /// Provisions standard GnuCash root accounts for new user
-async fn provision_starter_accounts(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
+pub async fn provision_starter_accounts(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
     // 1. Assets
     let assets_id = sqlx::query_scalar::<_, Uuid>(
         r#"INSERT INTO accounts (name, code, account_type, currency, placeholder, user_id)

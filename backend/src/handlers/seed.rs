@@ -11,24 +11,42 @@ pub async fn seed_database(
     auth: AuthUser,
     State(pool): State<PgPool>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    // Check if accounts already exist for this user
-    let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+    let mut tx = pool.begin().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Database error: {}", e) })),
+        )
+    })?;
+
+    // Clear existing user transactions & accounts before seeding
+    sqlx::query("DELETE FROM transactions WHERE user_id = $1")
         .bind(auth.id)
-        .fetch_one(&pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Database error: {}", e) })),
+                Json(json!({ "error": format!("Failed to clear transactions: {}", e) })),
             )
         })?;
 
-    if count > 0 {
-        return Ok(Json(json!({
-            "message": "Your ledger already contains accounts. Skipping seed.",
-            "account_count": count
-        })));
-    }
+    sqlx::query("DELETE FROM accounts WHERE user_id = $1")
+        .bind(auth.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Failed to clear accounts: {}", e) })),
+            )
+        })?;
+
+    tx.commit().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to commit clean slate: {}", e) })),
+        )
+    })?;
 
     run_seed(&pool, auth.id).await.map_err(|e| {
         (
@@ -39,6 +57,64 @@ pub async fn seed_database(
 
     Ok(Json(json!({
         "message": "Chart of accounts and sample transactions successfully seeded!"
+    })))
+}
+
+pub async fn reset_dataset(
+    auth: AuthUser,
+    State(pool): State<PgPool>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let mut tx = pool.begin().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Database transaction error: {}", e) })),
+        )
+    })?;
+
+    // 1. Delete all transactions for this user (cascades to splits)
+    sqlx::query("DELETE FROM transactions WHERE user_id = $1")
+        .bind(auth.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Failed to delete transactions: {}", e) })),
+            )
+        })?;
+
+    // 2. Delete all accounts for this user
+    sqlx::query("DELETE FROM accounts WHERE user_id = $1")
+        .bind(auth.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Failed to delete accounts: {}", e) })),
+            )
+        })?;
+
+    tx.commit().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to commit database reset: {}", e) })),
+        )
+    })?;
+
+    // 3. Re-provision starter accounts
+    crate::handlers::auth::provision_starter_accounts(&pool, auth.id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Failed to provision starter accounts: {}", e) })),
+            )
+        })?;
+
+    Ok(Json(json!({
+        "success": true,
+        "message": "Entire dataset has been reset successfully. Clean starter accounts restored."
     })))
 }
 

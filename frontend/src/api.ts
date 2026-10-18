@@ -304,6 +304,18 @@ export async function fetchTrialBalance(date?: string): Promise<TrialBalanceRepo
 
 // --- Seed & Import ---
 
+export async function resetDataset(): Promise<{ success: boolean; message: string }> {
+  const res = await fetchWithAuth(`${API_BASE}/reset-data`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to reset dataset');
+  }
+  return res.json();
+}
+
 export async function seedDatabase(): Promise<{ message: string }> {
   const res = await fetchWithAuth(`${API_BASE}/seed`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to seed database');

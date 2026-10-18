@@ -83,6 +83,7 @@ pub fn create_app(pool: sqlx::PgPool) -> Router {
         )
         // Seed & Import
         .route("/api/seed", post(handlers::seed::seed_database))
+        .route("/api/reset-data", post(handlers::seed::reset_dataset))
         .route(
             "/api/import/gnucash-sqlite",
             post(handlers::importer::import_gnucash_sqlite),

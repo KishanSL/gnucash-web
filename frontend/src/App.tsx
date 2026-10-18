@@ -32,6 +32,7 @@ import {
   fetchAccountRegister,
   fetchTransactions,
   seedDatabase,
+  resetDataset,
   updateAccount,
   getStoredUser,
   getStoredToken,
@@ -257,6 +258,29 @@ export const App: React.FC = () => {
     }
   };
 
+  // Reset Entire Dataset
+  const handleResetDataset = async () => {
+    const confirmed = confirm(
+      '⚠️ Reset Entire Dataset?\n\n' +
+      'This will delete all your transactions, journal entries, and custom accounts, and restore clean starter accounts.\n\n' +
+      'Are you sure you want to proceed?'
+    );
+    if (!confirmed) return;
+
+    try {
+      setLoading(true);
+      const res = await resetDataset();
+      setStatusMessage(res.message);
+      setTimeout(() => setStatusMessage(null), 5000);
+      setSelectedAccount(null);
+      await refreshData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to reset dataset');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // If user is not authenticated, display login / signup view
   if (!currentUser) {
     return (
@@ -287,6 +311,7 @@ export const App: React.FC = () => {
         }}
         onOpenImport={() => setIsImportModalOpen(true)}
         onSeedData={handleSeedData}
+        onResetDataset={handleResetDataset}
         backendOnline={backendOnline}
         selectedAccountName={selectedAccount?.name}
         currency={currency}

@@ -15,6 +15,7 @@ import {
   ChevronDown,
   LogOut,
   KeyRound,
+  RotateCcw,
 } from 'lucide-react';
 import { SUPPORTED_CURRENCIES } from '../api';
 import { User } from '../types';
@@ -29,6 +30,7 @@ interface NavbarProps {
   onOpenNewAccount: () => void;
   onOpenImport: () => void;
   onSeedData: () => void;
+  onResetDataset?: () => void;
   backendOnline: boolean;
   selectedAccountName?: string;
   currency: string;
@@ -44,6 +46,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenNewAccount,
   onOpenImport,
   onSeedData,
+  onResetDataset,
   backendOnline,
   selectedAccountName,
   currency,
@@ -142,16 +145,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </select>
               </div>
 
-              {/* Import .gnucash SQLite Button (Desktop) */}
-              <button
-                onClick={onOpenImport}
-                className="hidden lg:flex items-center space-x-1 px-2.5 py-1.5 text-xs text-slate-200 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition"
-                title="Import GnuCash file (.gnucash)"
-              >
-                <Upload className="w-3.5 h-3.5 text-sky-400" />
-                <span>Import .gnucash</span>
-              </button>
-
               {/* New Account Button (Desktop) */}
               <button
                 onClick={onOpenNewAccount}
@@ -221,12 +214,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                           type="button"
                           onClick={() => {
                             setIsUserMenuOpen(false);
-                            setIsChangePasswordOpen(true);
+                            onOpenImport();
                           }}
                           className="w-full flex items-center space-x-2 px-3.5 py-2 text-xs text-slate-300 hover:text-white hover:bg-slate-800 transition text-left"
+                          title="Import GnuCash SQLite / XML file (.gnucash)"
                         >
-                          <KeyRound className="w-4 h-4 text-emerald-400 shrink-0" />
-                          <span>Change Password</span>
+                          <Upload className="w-4 h-4 text-sky-400 shrink-0" />
+                          <span>Import .gnucash</span>
                         </button>
 
                         <button
@@ -236,11 +230,38 @@ export const Navbar: React.FC<NavbarProps> = ({
                             onSeedData();
                           }}
                           className="w-full flex items-center space-x-2 px-3.5 py-2 text-xs text-slate-300 hover:text-white hover:bg-slate-800 transition text-left"
-                          title="Reset / Seed default GnuCash Chart of Accounts"
+                          title="Seed standard Chart of Accounts & realistic sample transactions"
                         >
                           <RefreshCw className="w-4 h-4 text-emerald-400 shrink-0" />
                           <span>Seed Sample Data</span>
                         </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
+                            setIsChangePasswordOpen(true);
+                          }}
+                          className="w-full flex items-center space-x-2 px-3.5 py-2 text-xs text-slate-300 hover:text-white hover:bg-slate-800 transition text-left"
+                        >
+                          <KeyRound className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span>Change Password</span>
+                        </button>
+
+                        {onResetDataset && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsUserMenuOpen(false);
+                              onResetDataset();
+                            }}
+                            className="w-full flex items-center space-x-2 px-3.5 py-2 text-xs text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 transition text-left"
+                            title="Reset all transactions and restore clean starter accounts"
+                          >
+                            <RotateCcw className="w-4 h-4 text-amber-400 shrink-0" />
+                            <span>Reset Entire Dataset</span>
+                          </button>
+                        )}
 
                         <div className="my-1 border-t border-slate-800" />
 
@@ -344,6 +365,19 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <span>Seed Data</span>
                   </button>
                 </div>
+
+                {onResetDataset && (
+                  <button
+                    onClick={() => {
+                      setIsMobileMenuOpen(false);
+                      onResetDataset();
+                    }}
+                    className="w-full flex items-center justify-center space-x-1.5 text-xs text-amber-400 hover:text-amber-300 py-2 px-2.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 rounded-lg transition mt-1"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Reset Entire Dataset</span>
+                  </button>
+                )}
 
                 {onLogout && (
                   <button
