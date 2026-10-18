@@ -256,10 +256,10 @@ export const Navbar: React.FC<NavbarProps> = ({
                               onResetDataset();
                             }}
                             className="w-full flex items-center space-x-2 px-3.5 py-2 text-xs text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 transition text-left"
-                            title="Reset all transactions and restore clean starter accounts"
+                            title="Delete all accounts, transactions, and reset database to empty"
                           >
                             <RotateCcw className="w-4 h-4 text-amber-400 shrink-0" />
-                            <span>Reset Entire Dataset</span>
+                            <span>Reset Entire Database</span>
                           </button>
                         )}
 
@@ -375,7 +375,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                     className="w-full flex items-center justify-center space-x-1.5 text-xs text-amber-400 hover:text-amber-300 py-2 px-2.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 rounded-lg transition mt-1"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Reset Entire Dataset</span>
+                    <span>Reset Entire Database</span>
                   </button>
                 )}
 

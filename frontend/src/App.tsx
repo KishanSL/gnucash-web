@@ -258,11 +258,11 @@ export const App: React.FC = () => {
     }
   };
 
-  // Reset Entire Dataset
+  // Reset Entire Database
   const handleResetDataset = async () => {
     const confirmed = confirm(
-      '⚠️ Reset Entire Dataset?\n\n' +
-      'This will delete all your transactions, journal entries, and custom accounts, and restore clean starter accounts.\n\n' +
+      '⚠️ Reset Entire Database?\n\n' +
+      'This will permanently delete ALL accounts, transactions, and journal entries.\n\n' +
       'Are you sure you want to proceed?'
     );
     if (!confirmed) return;
@@ -273,9 +273,13 @@ export const App: React.FC = () => {
       setStatusMessage(res.message);
       setTimeout(() => setStatusMessage(null), 5000);
       setSelectedAccount(null);
+      setAccounts([]);
+      setTree([]);
+      setTransactions([]);
+      setRegisterEntries([]);
       await refreshData();
     } catch (err: any) {
-      alert(err.message || 'Failed to reset dataset');
+      alert(err.message || 'Failed to reset database');
     } finally {
       setLoading(false);
     }

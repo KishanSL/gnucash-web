@@ -102,19 +102,9 @@ pub async fn reset_dataset(
         )
     })?;
 
-    // 3. Re-provision starter accounts
-    crate::handlers::auth::provision_starter_accounts(&pool, auth.id)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to provision starter accounts: {}", e) })),
-            )
-        })?;
-
     Ok(Json(json!({
         "success": true,
-        "message": "Entire dataset has been reset successfully. Clean starter accounts restored."
+        "message": "Entire database reset successfully. All accounts and transactions have been deleted."
     })))
 }
 
