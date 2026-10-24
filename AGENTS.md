@@ -45,20 +45,20 @@ A Puppeteer testing suite is configured in `frontend/scripts/test_ui.mjs` (and a
 
 - **Main Navigation Bar**:
   - Keep the desktop header clean. It contains only:
-    - Currency selector (`INR`, `USD`, `EUR`, `GBP`, etc.)
     - **New Account** button
     - **New Entry** (transaction) button
     - **User Account Menu Dropdown**
 - **User Account Menu Dropdown**:
-  - All account, database, and credential management options live inside the user dropdown:
+  - All account, database, credential, and display preferences live inside the user dropdown:
     1. User Profile info (`username`, `email`)
-    2. **Import .gnucash** (opens GnuCash SQLite / XML import modal — *never place on main navbar*)
-    3. **Seed Sample Data** (seeds chart of accounts & realistic sample transactions)
-    4. **Change Password** (opens credentials modal)
-    5. **Reset Entire Database** (warning amber button with `RotateCcw` icon)
-    6. **Log Out**
+    2. **Currency Preference** (relocated from header into dropdown for cleaner aesthetics)
+    3. **Import .gnucash** (opens GnuCash SQLite / XML import modal — *never place on main navbar*)
+    4. **Seed Sample Data** (seeds chart of accounts & realistic sample transactions)
+    5. **Change Password** (opens credentials modal)
+    6. **Reset Entire Database** (warning amber button with `RotateCcw` icon)
+    7. **Log Out**
 - **Mobile Slide-down Drawer**:
-  - Must mirror all actions available in the desktop user dropdown.
+  - Must mirror all actions and preferences available in the desktop user dropdown.
 
 ---
 

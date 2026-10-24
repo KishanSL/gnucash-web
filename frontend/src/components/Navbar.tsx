@@ -124,27 +124,8 @@ export const Navbar: React.FC<NavbarProps> = ({
               ))}
             </nav>
 
-            {/* Actions & Currency */}
+            {/* Actions */}
             <div className="flex items-center space-x-1.5 sm:space-x-2">
-              {/* Currency Selector Dropdown */}
-              <div className="flex items-center space-x-1 bg-slate-950/80 px-2 py-1 rounded-lg border border-slate-700">
-                <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold uppercase hidden sm:inline">
-                  Curr:
-                </span>
-                <select
-                  value={currency}
-                  onChange={(e) => onCurrencyChange(e.target.value)}
-                  className="bg-transparent text-emerald-400 font-bold text-xs cursor-pointer focus:outline-none border-none py-0.5 font-mono"
-                  aria-label="Select Currency"
-                >
-                  {SUPPORTED_CURRENCIES.map((c) => (
-                    <option key={c.code} value={c.code} className="bg-slate-900 text-white">
-                      {c.symbol} {c.code}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
               {/* New Account Button (Desktop) */}
               <button
                 onClick={onOpenNewAccount}
@@ -206,6 +187,26 @@ export const Navbar: React.FC<NavbarProps> = ({
                             )}
                           </div>
                         </div>
+                      </div>
+
+                      {/* Currency Preference Selector */}
+                      <div className="px-3.5 py-2 border-b border-slate-800 flex items-center justify-between bg-slate-950/40">
+                        <div className="flex items-center space-x-2 text-xs text-slate-300">
+                          <Coins className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span className="font-medium">Currency</span>
+                        </div>
+                        <select
+                          value={currency}
+                          onChange={(e) => onCurrencyChange(e.target.value)}
+                          className="bg-slate-800 hover:bg-slate-750 text-emerald-400 text-xs font-semibold rounded-md px-2 py-1 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono cursor-pointer transition"
+                          aria-label="Select Currency"
+                        >
+                          {SUPPORTED_CURRENCIES.map((c) => (
+                            <option key={c.code} value={c.code} className="bg-slate-900 text-white font-normal">
+                              {c.symbol} {c.code}
+                            </option>
+                          ))}
+                        </select>
                       </div>
 
                       {/* Dropdown Menu Items */}
@@ -325,6 +326,26 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <Upload className="w-4 h-4 text-sky-400 shrink-0" />
                 <span>Import .gnucash</span>
               </button>
+            </div>
+
+            {/* Mobile Currency Preference */}
+            <div className="flex items-center justify-between p-2.5 bg-slate-800/80 rounded-lg border border-slate-700">
+              <div className="flex items-center space-x-2 text-xs text-slate-200">
+                <Coins className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span className="font-medium">Currency</span>
+              </div>
+              <select
+                value={currency}
+                onChange={(e) => onCurrencyChange(e.target.value)}
+                className="bg-slate-900 text-emerald-400 text-xs font-semibold rounded-md px-2.5 py-1 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono cursor-pointer"
+                aria-label="Display Currency"
+              >
+                {SUPPORTED_CURRENCIES.map((c) => (
+                  <option key={c.code} value={c.code} className="bg-slate-900 text-white font-normal">
+                    {c.symbol} {c.code}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {/* Mobile User Profile & Password/Logout Actions */}
