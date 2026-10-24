@@ -19,6 +19,8 @@ import {
   Eye,
   EyeOff,
   Edit3,
+  ChevronsDownUp,
+  ChevronsUpDown,
 } from 'lucide-react';
 import { Account, AccountTreeNode } from '../types';
 import { formatCurrency } from '../api';
@@ -58,6 +60,40 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
 
   const toggleCollapse = (id: string) => {
     setCollapsed((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  // Recursively collect all account IDs that have children
+  const getAllParentIds = (nodes: AccountTreeNode[]): string[] => {
+    let ids: string[] = [];
+    for (const node of nodes) {
+      if (node.children && node.children.length > 0) {
+        ids.push(node.account.id);
+        ids = ids.concat(getAllParentIds(node.children));
+      }
+    }
+    return ids;
+  };
+
+  // Check if all first-level root accounts are currently collapsed
+  const allRootsCollapsed = useMemo(() => {
+    if (!tree || tree.length === 0) return false;
+    return tree.every((node) => collapsed[node.account.id]);
+  }, [tree, collapsed]);
+
+  // Toggle hiding / unhiding all sub-accounts (collapse tree to first level only vs expand all)
+  const handleToggleCollapseAll = () => {
+    if (allRootsCollapsed) {
+      // Unhide / Expand all accounts
+      setCollapsed({});
+    } else {
+      // Hide all sub-accounts: collapse tree so only the first level is showing
+      const parentIds = getAllParentIds(tree);
+      const newCollapsed: Record<string, boolean> = {};
+      parentIds.forEach((id) => {
+        newCollapsed[id] = true;
+      });
+      setCollapsed(newCollapsed);
+    }
   };
 
   // Count total hidden accounts in the tree
@@ -478,6 +514,29 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
                 className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
               />
             </div>
+
+            {/* Hide / Unhide Sub-accounts (Collapse to 1st Level / Expand All) */}
+            <button
+              type="button"
+              onClick={handleToggleCollapseAll}
+              className={`flex items-center space-x-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-lg border transition shrink-0 ${
+                allRootsCollapsed
+                  ? 'bg-slate-800 text-white border-slate-900 shadow-sm hover:bg-slate-700'
+                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+              }`}
+              title={
+                allRootsCollapsed
+                  ? 'Unhide / Expand all accounts (show full tree structure)'
+                  : 'Hide all sub-accounts (collapse tree to first level only)'
+              }
+            >
+              {allRootsCollapsed ? (
+                <ChevronsUpDown className="w-3.5 h-3.5 text-emerald-400" />
+              ) : (
+                <ChevronsDownUp className="w-3.5 h-3.5 text-slate-500" />
+              )}
+              <span>{allRootsCollapsed ? 'Show All Accounts' : 'Hide Subaccounts'}</span>
+            </button>
 
             {/* Show / Hide Hidden Accounts Toggle Button */}
             <button
