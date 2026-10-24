@@ -193,16 +193,22 @@ export const Navbar: React.FC<NavbarProps> = ({
                       <div className="px-3.5 py-2 border-b border-slate-800 flex items-center justify-between bg-slate-950/40">
                         <div className="flex items-center space-x-2 text-xs text-slate-300">
                           <Coins className="w-4 h-4 text-emerald-400 shrink-0" />
-                          <span className="font-medium">Currency</span>
+                          <span className="font-medium text-slate-200">Currency</span>
                         </div>
                         <select
                           value={currency}
                           onChange={(e) => onCurrencyChange(e.target.value)}
-                          className="bg-slate-800 hover:bg-slate-750 text-emerald-400 text-xs font-semibold rounded-md px-2 py-1 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono cursor-pointer transition"
+                          className="bg-slate-800 hover:bg-slate-700 !text-white text-white text-xs font-bold rounded-md px-2.5 py-1 border border-slate-600 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono cursor-pointer transition shadow-sm"
+                          style={{ color: '#ffffff' }}
                           aria-label="Select Currency"
                         >
                           {SUPPORTED_CURRENCIES.map((c) => (
-                            <option key={c.code} value={c.code} className="bg-slate-900 text-white font-normal">
+                            <option
+                              key={c.code}
+                              value={c.code}
+                              className="bg-slate-900 text-white font-normal"
+                              style={{ color: '#ffffff', backgroundColor: '#0f172a' }}
+                            >
                               {c.symbol} {c.code}
                             </option>
                           ))}
@@ -337,11 +343,17 @@ export const Navbar: React.FC<NavbarProps> = ({
               <select
                 value={currency}
                 onChange={(e) => onCurrencyChange(e.target.value)}
-                className="bg-slate-900 text-emerald-400 text-xs font-semibold rounded-md px-2.5 py-1 border border-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono cursor-pointer"
+                className="bg-slate-800 !text-white text-white text-xs font-bold rounded-md px-2.5 py-1 border border-slate-600 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono cursor-pointer"
+                style={{ color: '#ffffff' }}
                 aria-label="Display Currency"
               >
                 {SUPPORTED_CURRENCIES.map((c) => (
-                  <option key={c.code} value={c.code} className="bg-slate-900 text-white font-normal">
+                  <option
+                    key={c.code}
+                    value={c.code}
+                    className="bg-slate-900 text-white font-normal"
+                    style={{ color: '#ffffff', backgroundColor: '#0f172a' }}
+                  >
                     {c.symbol} {c.code}
                   </option>
                 ))}

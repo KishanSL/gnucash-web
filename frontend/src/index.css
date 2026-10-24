@@ -7,9 +7,16 @@
     @apply bg-slate-50 text-slate-800 text-sm selection:bg-emerald-500 selection:text-white;
   }
 
-  /* Ensure inputs, selects, and textareas always use high-contrast dark text */
+  /* Ensure inputs, selects, and textareas default to high-contrast dark text */
   input, select, textarea {
-    color: #0f172a !important; /* text-slate-900 */
+    color: #0f172a; /* text-slate-900 */
+  }
+
+  /* Allow dark-themed or explicitly styled controls to use white text */
+  input.text-white, select.text-white, textarea.text-white,
+  input[data-theme="dark"], select[data-theme="dark"],
+  .dark-control select, .dark-control input {
+    color: #ffffff !important;
   }
 
   input::placeholder, textarea::placeholder {
