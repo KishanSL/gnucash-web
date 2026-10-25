@@ -468,6 +468,7 @@ export const App: React.FC = () => {
         accounts={accounts}
         defaultAccountId={defaultTxAccountId}
         currentCurrency={currency}
+        transactions={transactions}
       />
 
       {/* New / Edit Account Modal */}

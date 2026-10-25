@@ -1,7 +1,18 @@
-import React, { useState, useEffect } from 'react';
-import { X, Plus, Trash2, CheckCircle2, AlertCircle, Wand2, Split } from 'lucide-react';
-import { Account, CreateTransactionPayload } from '../types';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import {
+  X,
+  Plus,
+  Trash2,
+  CheckCircle2,
+  AlertCircle,
+  Wand2,
+  Split,
+  Sparkles,
+  History,
+} from 'lucide-react';
+import { Account, CreateTransactionPayload, Transaction } from '../types';
 import { formatCurrency } from '../api';
+import { AccountAutocomplete } from './AccountAutocomplete';
 
 interface TransactionModalProps {
   isOpen: boolean;
@@ -10,6 +21,7 @@ interface TransactionModalProps {
   accounts: Account[];
   defaultAccountId?: string;
   currentCurrency: string;
+  transactions?: Transaction[];
 }
 
 interface SplitRowState {
@@ -27,6 +39,7 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
   accounts,
   defaultAccountId,
   currentCurrency,
+  transactions = [],
 }) => {
   const [postDate, setPostDate] = useState(new Date().toISOString().split('T')[0]);
   const [num, setNum] = useState('');
@@ -34,9 +47,71 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [autofillBanner, setAutofillBanner] = useState<string | null>(null);
+
+  // Payee autocomplete dropdown states
+  const [isPayeeDropdownOpen, setIsPayeeDropdownOpen] = useState(false);
+  const [payeeHighlightIndex, setPayeeHighlightIndex] = useState(0);
+  const payeeRef = useRef<HTMLDivElement>(null);
+  const payeeListRef = useRef<HTMLUListElement>(null);
 
   // Non-placeholder accounts only
   const validAccounts = accounts.filter((a) => !a.placeholder);
+
+  // Group distinct previous payees mapped to their latest transaction
+  const payeeHistory = useMemo(() => {
+    if (!transactions || transactions.length === 0) return [];
+
+    // Sort transactions by post_date DESC, then created_at DESC
+    const sorted = [...transactions].sort((a, b) => {
+      const timeA = new Date(a.post_date).getTime();
+      const timeB = new Date(b.post_date).getTime();
+      if (timeA !== timeB) return timeB - timeA;
+      return (b.created_at || '').localeCompare(a.created_at || '');
+    });
+
+    const map = new Map<string, { payee: string; latestTx: Transaction; count: number }>();
+    for (const tx of sorted) {
+      const p = (tx.description || '').trim();
+      if (!p) continue;
+      const key = p.toLowerCase();
+      if (!map.has(key)) {
+        map.set(key, { payee: p, latestTx: tx, count: 1 });
+      } else {
+        map.get(key)!.count += 1;
+      }
+    }
+
+    return Array.from(map.values());
+  }, [transactions]);
+
+  // Filtered payees matching current description input
+  const filteredPayees = useMemo(() => {
+    const q = description.trim().toLowerCase();
+    if (!q) {
+      return payeeHistory.slice(0, 8);
+    }
+    return payeeHistory
+      .filter((item) => item.payee.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [payeeHistory, description]);
+
+  useEffect(() => {
+    setPayeeHighlightIndex(0);
+  }, [filteredPayees]);
+
+  // Close payee dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (payeeRef.current && !payeeRef.current.contains(e.target as Node)) {
+        setIsPayeeDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   // Initialize splits
   const [splits, setSplits] = useState<SplitRowState[]>([
@@ -63,6 +138,8 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
       setDescription('');
       setNotes('');
       setError(null);
+      setAutofillBanner(null);
+      setIsPayeeDropdownOpen(false);
       setSplits([
         {
           id: '1',
@@ -81,6 +158,70 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
       ]);
     }
   }, [isOpen, defaultAccountId]);
+
+  const handleSelectPayee = (item: { payee: string; latestTx: Transaction; count: number }) => {
+    setDescription(item.payee);
+    if (item.latestTx.notes) {
+      setNotes(item.latestTx.notes);
+    }
+
+    // Autofill splits from latest transaction of this payee
+    if (item.latestTx.splits && item.latestTx.splits.length >= 2) {
+      const newSplits: SplitRowState[] = item.latestTx.splits.map((s) => {
+        const val = parseFloat(s.amount) || 0;
+        const debit = val > 0 ? val.toFixed(2) : '';
+        const credit = val < 0 ? Math.abs(val).toFixed(2) : '';
+
+        const exists = validAccounts.some((a) => a.id === s.account_id);
+        const finalAccId = exists ? s.account_id : validAccounts[0]?.id || '';
+
+        return {
+          id: Math.random().toString(),
+          account_id: finalAccId,
+          memo: s.memo || '',
+          debit,
+          credit,
+        };
+      });
+
+      setSplits(newSplits);
+      setAutofillBanner(
+        `Autofilled ${newSplits.length} splits and details from last transaction (${item.latestTx.post_date})`
+      );
+    }
+
+    setIsPayeeDropdownOpen(false);
+  };
+
+  const handlePayeeKeyDown = (e: React.KeyboardEvent) => {
+    if (!isPayeeDropdownOpen || filteredPayees.length === 0) {
+      if (e.key === 'ArrowDown' && filteredPayees.length > 0) {
+        e.preventDefault();
+        setIsPayeeDropdownOpen(true);
+      }
+      return;
+    }
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setPayeeHighlightIndex((prev) =>
+        prev < filteredPayees.length - 1 ? prev + 1 : 0
+      );
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setPayeeHighlightIndex((prev) =>
+        prev > 0 ? prev - 1 : filteredPayees.length - 1
+      );
+    } else if (e.key === 'Enter') {
+      if (filteredPayees[payeeHighlightIndex]) {
+        e.preventDefault();
+        handleSelectPayee(filteredPayees[payeeHighlightIndex]);
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setIsPayeeDropdownOpen(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -270,20 +411,120 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
               />
             </div>
 
-            <div className="sm:col-span-6">
-              <label className="block text-xs font-semibold text-slate-600 mb-1">
-                Description / Payee
-              </label>
-              <input
-                type="text"
-                required
-                placeholder="e.g. Grocery Store, Client Invoice, Payroll"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-              />
+            <div className="sm:col-span-6 relative" ref={payeeRef}>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-semibold text-slate-600">
+                  Description / Payee
+                </label>
+                {payeeHistory.length > 0 && (
+                  <span className="text-[10px] text-emerald-600 font-medium flex items-center space-x-1">
+                    <Sparkles className="w-3 h-3" />
+                    <span>Autofill on select</span>
+                  </span>
+                )}
+              </div>
+              <div className="relative">
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Grocery Store, Client Invoice, Payroll"
+                  value={description}
+                  onFocus={() => {
+                    if (payeeHistory.length > 0) {
+                      setIsPayeeDropdownOpen(true);
+                    }
+                  }}
+                  onClick={() => {
+                    if (payeeHistory.length > 0) {
+                      setIsPayeeDropdownOpen(true);
+                    }
+                  }}
+                  onChange={(e) => {
+                    setDescription(e.target.value);
+                    if (!isPayeeDropdownOpen && payeeHistory.length > 0) {
+                      setIsPayeeDropdownOpen(true);
+                    }
+                  }}
+                  onKeyDown={handlePayeeKeyDown}
+                  className="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-slate-900"
+                  aria-expanded={isPayeeDropdownOpen}
+                  aria-label="Description or Payee"
+                />
+                {description && (
+                  <button
+                    type="button"
+                    onClick={() => setDescription('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                    tabIndex={-1}
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+
+              {/* Payee Autocomplete Dropdown */}
+              {isPayeeDropdownOpen && filteredPayees.length > 0 && (
+                <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
+                  <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-[11px] text-slate-500 font-semibold">
+                    <span className="flex items-center space-x-1">
+                      <History className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Previous Payees</span>
+                    </span>
+                    <span className="text-[10px] text-slate-400">↵ to autofill splits</span>
+                  </div>
+                  <ul ref={payeeListRef} className="max-h-52 overflow-y-auto divide-y divide-slate-100 py-1" role="listbox">
+                    {filteredPayees.map((item, idx) => {
+                      const isHighlighted = idx === payeeHighlightIndex;
+                      return (
+                        <li
+                          key={item.payee}
+                          role="option"
+                          aria-selected={isHighlighted}
+                          onMouseEnter={() => setPayeeHighlightIndex(idx)}
+                          onClick={() => handleSelectPayee(item)}
+                          className={`px-3 py-2 text-xs cursor-pointer flex items-center justify-between transition-colors ${
+                            isHighlighted ? 'bg-emerald-50 text-emerald-900 font-medium' : 'hover:bg-slate-50 text-slate-800'
+                          }`}
+                        >
+                          <div className="flex items-center space-x-2 truncate pr-2">
+                            <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-[10px] font-bold shrink-0">
+                              {item.payee.charAt(0).toUpperCase()}
+                            </div>
+                            <div className="truncate">
+                              <div className="font-semibold text-slate-800 truncate">{item.payee}</div>
+                              <div className="text-[10px] text-slate-400">
+                                Last: {item.latestTx.post_date} • {item.latestTx.splits.length} splits
+                              </div>
+                            </div>
+                          </div>
+                          <span className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded font-medium shrink-0">
+                            Autofill
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
+
+          {/* Autofill Notification Banner */}
+          {autofillBanner && (
+            <div className="p-2.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-xs flex items-center justify-between animate-in fade-in duration-200">
+              <div className="flex items-center space-x-2">
+                <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span className="font-medium">{autofillBanner}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAutofillBanner(null)}
+                className="text-emerald-700 hover:text-emerald-900 text-xs font-bold"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
 
           {/* Splits Section */}
           <div className="space-y-2">
@@ -331,18 +572,11 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
 
                   <div>
                     <label className="block text-[10px] uppercase font-semibold text-slate-400 mb-0.5">Account</label>
-                    <select
+                    <AccountAutocomplete
+                      accounts={validAccounts}
                       value={s.account_id}
-                      onChange={(e) => handleSplitChange(idx, 'account_id', e.target.value)}
-                      className="w-full py-1.5 px-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 font-medium"
-                    >
-                      {validAccounts.map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.code ? `${a.code} - ` : ''}
-                          {a.name} ({a.account_type}){a.hidden ? ' [Hidden]' : ''}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(accountId) => handleSplitChange(idx, 'account_id', accountId)}
+                    />
                   </div>
 
                   <div>
@@ -387,11 +621,11 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
             </div>
 
             {/* Desktop View: Split Table (>= sm) */}
-            <div className="hidden sm:block border border-slate-200 rounded-xl overflow-x-auto shadow-sm">
+            <div className="hidden sm:block border border-slate-200 rounded-xl shadow-sm min-h-[160px]">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="bg-slate-100 text-slate-600 font-semibold border-b border-slate-200">
-                    <th className="py-2 px-3 text-left w-56">Account</th>
+                    <th className="py-2 px-3 text-left min-w-[240px]">Account</th>
                     <th className="py-2 px-2 text-left">Memo</th>
                     <th className="py-2 px-2 text-right w-28">Debit</th>
                     <th className="py-2 px-2 text-right w-28">Credit</th>
@@ -402,19 +636,12 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
                   {splits.map((s, idx) => (
                     <tr key={s.id} className="hover:bg-slate-50">
                       {/* Account Selector */}
-                      <td className="py-1.5 px-3">
-                        <select
+                      <td className="py-1.5 px-3 min-w-[240px]">
+                        <AccountAutocomplete
+                          accounts={validAccounts}
                           value={s.account_id}
-                          onChange={(e) => handleSplitChange(idx, 'account_id', e.target.value)}
-                          className="w-full py-1 px-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500 font-medium"
-                        >
-                          {validAccounts.map((a) => (
-                            <option key={a.id} value={a.id}>
-                              {a.code ? `${a.code} - ` : ''}
-                              {a.name} ({a.account_type}){a.hidden ? ' [Hidden]' : ''}
-                            </option>
-                          ))}
-                        </select>
+                          onChange={(accountId) => handleSplitChange(idx, 'account_id', accountId)}
+                        />
                       </td>
 
                       {/* Memo */}

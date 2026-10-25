@@ -137,6 +137,8 @@ export const Navbar: React.FC<NavbarProps> = ({
 
               {/* New Transaction Button */}
               <button
+                type="button"
+                aria-label="New Entry"
                 onClick={onOpenNewTx}
                 className="flex items-center space-x-1 sm:space-x-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition shadow-md shadow-emerald-900/40 active:scale-95"
               >
