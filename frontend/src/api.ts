@@ -390,6 +390,36 @@ export async function importFromPath(
   return res.json();
 }
 
+// --- Export GnuCash SQLite ---
+
+export async function exportGnucashSqlite(): Promise<void> {
+  const res = await fetchWithAuth(`${API_BASE}/export/gnucash-sqlite`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to export GnuCash SQLite file');
+  }
+
+  // Extract filename from Content-Disposition header if available
+  let filename = 'gnucash_export.gnucash';
+  const disposition = res.headers.get('Content-Disposition') || res.headers.get('content-disposition');
+  if (disposition && disposition.includes('filename=')) {
+    const match = disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+    if (match && match[1]) {
+      filename = match[1].replace(/['"]/g, '').trim();
+    }
+  }
+
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 export const SUPPORTED_CURRENCIES = [
   { code: 'INR', symbol: '₹', name: 'Indian Rupee (INR)' },
   { code: 'USD', symbol: '$', name: 'US Dollar (USD)' },

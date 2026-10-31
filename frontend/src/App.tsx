@@ -31,6 +31,7 @@ import {
   fetchAccountTree,
   fetchAccountRegister,
   fetchTransactions,
+  exportGnucashSqlite,
   seedDatabase,
   resetDataset,
   updateAccount,
@@ -258,6 +259,19 @@ export const App: React.FC = () => {
     }
   };
 
+  // Export GnuCash SQLite
+  const handleExport = async () => {
+    try {
+      setStatusMessage('Generating GnuCash SQLite export (.gnucash)...');
+      await exportGnucashSqlite();
+      setStatusMessage('GnuCash SQLite file exported successfully!');
+      setTimeout(() => setStatusMessage(null), 3500);
+    } catch (err: any) {
+      alert(err.message || 'Export failed');
+      setStatusMessage(null);
+    }
+  };
+
   // Reset Entire Database
   const handleResetDataset = async () => {
     const confirmed = confirm(
@@ -314,6 +328,7 @@ export const App: React.FC = () => {
           setIsAccountModalOpen(true);
         }}
         onOpenImport={() => setIsImportModalOpen(true)}
+        onExport={handleExport}
         onSeedData={handleSeedData}
         onResetDataset={handleResetDataset}
         backendOnline={backendOnline}

@@ -10,6 +10,7 @@ import {
   RefreshCw,
   Coins,
   Upload,
+  Download,
   Menu,
   X,
   ChevronDown,
@@ -29,6 +30,7 @@ interface NavbarProps {
   onOpenNewTx: () => void;
   onOpenNewAccount: () => void;
   onOpenImport: () => void;
+  onExport: () => void;
   onSeedData: () => void;
   onResetDataset?: () => void;
   backendOnline: boolean;
@@ -45,6 +47,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenNewTx,
   onOpenNewAccount,
   onOpenImport,
+  onExport,
   onSeedData,
   onResetDataset,
   backendOnline,
@@ -236,6 +239,19 @@ export const Navbar: React.FC<NavbarProps> = ({
                           type="button"
                           onClick={() => {
                             setIsUserMenuOpen(false);
+                            onExport();
+                          }}
+                          className="w-full flex items-center space-x-2 px-3.5 py-2 text-xs text-slate-300 hover:text-white hover:bg-slate-800 transition text-left"
+                          title="Export database as standard GnuCash SQLite file (.gnucash)"
+                        >
+                          <Download className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span>Export .gnucash</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsUserMenuOpen(false);
                             onSeedData();
                           }}
                           className="w-full flex items-center space-x-2 px-3.5 py-2 text-xs text-slate-300 hover:text-white hover:bg-slate-800 transition text-left"
@@ -333,6 +349,17 @@ export const Navbar: React.FC<NavbarProps> = ({
               >
                 <Upload className="w-4 h-4 text-sky-400 shrink-0" />
                 <span>Import .gnucash</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  onExport();
+                  setIsMobileMenuOpen(false);
+                }}
+                className="col-span-2 flex items-center justify-center space-x-2 p-2.5 text-xs font-medium bg-slate-800/80 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 text-center"
+              >
+                <Download className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>Export .gnucash (SQLite)</span>
               </button>
             </div>
 

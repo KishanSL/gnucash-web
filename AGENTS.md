@@ -53,10 +53,11 @@ A Puppeteer testing suite is configured in `frontend/scripts/test_ui.mjs` (and a
     1. User Profile info (`username`, `email`)
     2. **Currency Preference** (relocated from header into dropdown for cleaner aesthetics)
     3. **Import .gnucash** (opens GnuCash SQLite / XML import modal — *never place on main navbar*)
-    4. **Seed Sample Data** (seeds chart of accounts & realistic sample transactions)
-    5. **Change Password** (opens credentials modal)
-    6. **Reset Entire Database** (warning amber button with `RotateCcw` icon)
-    7. **Log Out**
+    4. **Export .gnucash** (downloads database as standard SQLite file formatted `username_yyyyMMddhhmmss.gnucash`)
+    5. **Seed Sample Data** (seeds chart of accounts & realistic sample transactions)
+    6. **Change Password** (opens credentials modal)
+    7. **Reset Entire Database** (warning amber button with `RotateCcw` icon)
+    8. **Log Out**
 - **Mobile Slide-down Drawer**:
   - Must mirror all actions and preferences available in the desktop user dropdown.
 
@@ -124,3 +125,4 @@ curl -s http://localhost:8081/api/health
 | `/api/seed` | `POST` | Seeds standard accounts & transactions |
 | `/api/reset-data` | `POST` | Wipes all accounts and transactions to zero |
 | `/api/import/gnucash-sqlite` | `POST` | Imports native GnuCash SQLite databases |
+| `/api/export/gnucash-sqlite` | `GET` | Exports database as GnuCash SQLite (`username_yyyyMMddhhmmss.gnucash`) |

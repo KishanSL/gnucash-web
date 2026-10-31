@@ -81,12 +81,16 @@ pub fn create_app(pool: sqlx::PgPool) -> Router {
             "/api/reports/trial-balance",
             get(handlers::reports::get_trial_balance),
         )
-        // Seed & Import
+        // Seed, Import & Export
         .route("/api/seed", post(handlers::seed::seed_database))
         .route("/api/reset-data", post(handlers::seed::reset_dataset))
         .route(
             "/api/import/gnucash-sqlite",
             post(handlers::importer::import_gnucash_sqlite),
+        )
+        .route(
+            "/api/export/gnucash-sqlite",
+            get(handlers::exporter::export_gnucash_sqlite),
         )
         .route(
             "/api/import/local-files",
