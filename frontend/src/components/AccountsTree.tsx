@@ -47,7 +47,16 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
   onToggleHideAccount,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try {
+      const savedMap = localStorage.getItem('gnucash_accounts_collapsed_map');
+      if (savedMap) return JSON.parse(savedMap);
+    } catch (e) {}
+    return {};
+  });
+  const [hideSubaccounts, setHideSubaccounts] = useState<boolean>(() => {
+    return localStorage.getItem('gnucash_accounts_hide_subaccounts') === 'true';
+  });
   const [showHidden, setShowHidden] = useState<boolean>(() => {
     return localStorage.getItem('gnucash_show_hidden') === 'true';
   });
@@ -59,7 +68,11 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
   };
 
   const toggleCollapse = (id: string) => {
-    setCollapsed((prev) => ({ ...prev, [id]: !prev[id] }));
+    setCollapsed((prev) => {
+      const next = { ...prev, [id]: !prev[id] };
+      localStorage.setItem('gnucash_accounts_collapsed_map', JSON.stringify(next));
+      return next;
+    });
   };
 
   // Recursively collect all account IDs that have children
@@ -74,6 +87,19 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
     return ids;
   };
 
+  // Synchronize collapsed state on initial load / refresh if hideSubaccounts was requested
+  React.useEffect(() => {
+    if (tree.length > 0 && hideSubaccounts) {
+      const parentIds = getAllParentIds(tree);
+      const newCollapsed: Record<string, boolean> = {};
+      parentIds.forEach((id) => {
+        newCollapsed[id] = true;
+      });
+      setCollapsed(newCollapsed);
+      localStorage.setItem('gnucash_accounts_collapsed_map', JSON.stringify(newCollapsed));
+    }
+  }, [tree, hideSubaccounts]);
+
   // Check if all first-level root accounts are currently collapsed
   const allRootsCollapsed = useMemo(() => {
     if (!tree || tree.length === 0) return false;
@@ -85,6 +111,9 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
     if (allRootsCollapsed) {
       // Unhide / Expand all accounts
       setCollapsed({});
+      setHideSubaccounts(false);
+      localStorage.setItem('gnucash_accounts_hide_subaccounts', 'false');
+      localStorage.setItem('gnucash_accounts_collapsed_map', JSON.stringify({}));
     } else {
       // Hide all sub-accounts: collapse tree so only the first level is showing
       const parentIds = getAllParentIds(tree);
@@ -93,6 +122,9 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
         newCollapsed[id] = true;
       });
       setCollapsed(newCollapsed);
+      setHideSubaccounts(true);
+      localStorage.setItem('gnucash_accounts_hide_subaccounts', 'true');
+      localStorage.setItem('gnucash_accounts_collapsed_map', JSON.stringify(newCollapsed));
     }
   };
 
@@ -213,12 +245,24 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
     return (
       <React.Fragment key={account.id}>
         <tr
-          className={`border-b border-slate-100 transition-colors ${
+          onDoubleClick={() => {
+            if (!account.placeholder) {
+              onSelectAccountForRegister(account);
+            } else {
+              toggleCollapse(account.id);
+            }
+          }}
+          title={
+            account.placeholder
+              ? 'Double-click to expand / collapse folder'
+              : 'Double-click to open ledger register'
+          }
+          className={`border-b border-slate-100 transition-colors select-none ${
             isHiddenAccount
-              ? 'bg-amber-50/50 hover:bg-amber-100/40 text-slate-600 italic'
+              ? 'bg-amber-50/50 hover:bg-amber-100/40 text-slate-600 italic cursor-pointer'
               : account.placeholder
-              ? 'bg-slate-50/80 font-semibold text-slate-800'
-              : 'hover:bg-emerald-50/40 text-slate-700'
+              ? 'bg-slate-50/80 font-semibold text-slate-800 cursor-pointer'
+              : 'hover:bg-emerald-50/40 text-slate-700 cursor-pointer'
           }`}
         >
           {/* Account Name with responsive tree indentation */}

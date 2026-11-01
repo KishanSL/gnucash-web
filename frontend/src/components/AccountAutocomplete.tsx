@@ -9,6 +9,7 @@ interface AccountAutocompleteProps {
   placeholder?: string;
   className?: string;
   autoFocus?: boolean;
+  dropdownPosition?: 'top' | 'bottom' | 'auto';
 }
 
 export const AccountAutocomplete: React.FC<AccountAutocompleteProps> = ({
@@ -18,6 +19,7 @@ export const AccountAutocomplete: React.FC<AccountAutocompleteProps> = ({
   placeholder = 'Select or search account...',
   className = '',
   autoFocus = false,
+  dropdownPosition = 'auto',
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -213,7 +215,13 @@ export const AccountAutocomplete: React.FC<AccountAutocompleteProps> = ({
 
       {/* Autocomplete Dropdown List */}
       {isOpen && (
-        <div className="absolute z-50 left-0 mt-1 min-w-[280px] sm:min-w-[320px] max-w-md w-full bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden animate-in fade-in slide-in-from-top-1 duration-150">
+        <div
+          className={`absolute z-50 left-0 min-w-[280px] sm:min-w-[320px] max-w-md w-full bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden animate-in fade-in duration-150 ${
+            dropdownPosition === 'top'
+              ? 'bottom-full mb-1 slide-in-from-bottom-1'
+              : 'top-full mt-1 slide-in-from-top-1'
+          }`}
+        >
           <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-[11px] text-slate-500 font-semibold">
             <span className="flex items-center space-x-1">
               <FolderTree className="w-3.5 h-3.5 text-emerald-600" />

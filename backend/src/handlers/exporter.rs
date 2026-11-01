@@ -203,15 +203,40 @@ pub async fn export_gnucash_sqlite(
             timespec_val text(14),
             guid_val text(32),
             numeric_val_num integer,
-            numeric_val_denom integer
+            numeric_val_denom integer,
+            gdate_val text(8)
         );
 
-        INSERT INTO versions VALUES ('accounts', 1);
-        INSERT INTO versions VALUES ('books', 1);
-        INSERT INTO versions VALUES ('commodities', 1);
-        INSERT INTO versions VALUES ('transactions', 2);
-        INSERT INTO versions VALUES ('splits', 1);
-        INSERT INTO versions VALUES ('slots', 2);
+        CREATE INDEX tx_post_date_index ON transactions (post_date);
+        CREATE INDEX splits_tx_guid_index ON splits (tx_guid);
+        CREATE INDEX splits_account_guid_index ON splits (account_guid);
+        CREATE INDEX slots_guid_index ON slots (obj_guid);
+
+        INSERT INTO versions (table_name, table_version) VALUES
+            ('Gnucash', 5000017),
+            ('Gnucash-Resave', 19920),
+            ('accounts', 1),
+            ('books', 1),
+            ('commodities', 1),
+            ('transactions', 4),
+            ('splits', 5),
+            ('slots', 4),
+            ('prices', 3),
+            ('recurrences', 2),
+            ('lots', 2),
+            ('billterms', 2),
+            ('customers', 2),
+            ('employees', 2),
+            ('entries', 4),
+            ('invoices', 4),
+            ('jobs', 1),
+            ('orders', 1),
+            ('taxtables', 2),
+            ('taxtable_entries', 3),
+            ('vendors', 1),
+            ('budgets', 1),
+            ('budget_amounts', 1),
+            ('schedxactions', 1);
         "#
     ).map_err(|e| {
         (
@@ -232,6 +257,18 @@ pub async fn export_gnucash_sqlite(
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Failed to insert book: {}", e) })),
+        )
+    })?;
+
+    // Insert SQLite3 ISO dates feature slot on the book
+    conn.execute(
+        "INSERT INTO slots (obj_guid, name, slot_type, string_val)
+         VALUES (?1, 'features/ISO-8601 formatted date strings in SQLite3 databases.', 4, 'Use ISO formatted date-time strings in SQLite3 databases (requires at least GnuCash 2.6.20)')",
+        params![book_guid],
+    ).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to insert book feature slot: {}", e) })),
         )
     })?;
 

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   BookOpen,
   PlusCircle,
@@ -11,9 +11,16 @@ import {
   Search,
   Eye,
   EyeOff,
+  Check,
+  X,
+  Sparkles,
+  History,
+  AlertCircle,
+  Plus,
 } from 'lucide-react';
-import { Account, RegisterEntry } from '../types';
+import { Account, CreateTransactionPayload, RegisterEntry, Transaction } from '../types';
 import { formatCurrency } from '../api';
+import { AccountAutocomplete } from './AccountAutocomplete';
 
 interface AccountRegisterProps {
   account: Account;
@@ -25,6 +32,8 @@ interface AccountRegisterProps {
   onOpenReconcile: (acc: Account) => void;
   onDeleteTransaction: (txId: string) => void;
   onToggleHideAccount?: (acc: Account) => void;
+  onCreateTransaction?: (payload: CreateTransactionPayload) => Promise<void>;
+  transactions?: Transaction[];
 }
 
 export const AccountRegister: React.FC<AccountRegisterProps> = ({
@@ -37,6 +46,8 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
   onOpenReconcile,
   onDeleteTransaction,
   onToggleHideAccount,
+  onCreateTransaction,
+  transactions = [],
 }) => {
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -92,6 +103,240 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
   const isAsset = ['asset', 'bank', 'cash', 'receivable'].includes(account.account_type.toLowerCase());
   const debitHeader = isAsset ? 'Deposit / Increase' : 'Payment / Decrease';
   const creditHeader = isAsset ? 'Withdrawal / Decrease' : 'Charge / Increase';
+
+  // Inline blank new transaction row state
+  const [newDate, setNewDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [newNum, setNewNum] = useState('');
+  const [newDescription, setNewDescription] = useState('');
+  const [newTransferAccountId, setNewTransferAccountId] = useState('');
+  const [newDebit, setNewDebit] = useState('');
+  const [newCredit, setNewCredit] = useState('');
+  const [mobileAmount, setMobileAmount] = useState('');
+  const [mobileAmountType, setMobileAmountType] = useState<'debit' | 'credit'>('debit');
+  const [isSubmittingNew, setIsSubmittingNew] = useState(false);
+  const [newRowError, setNewRowError] = useState<string | null>(null);
+
+  // Payee autocomplete dropdown states for new row
+  const [isPayeeDropdownOpen, setIsPayeeDropdownOpen] = useState(false);
+  const [payeeHighlightIndex, setPayeeHighlightIndex] = useState(0);
+  const payeeRef = useRef<HTMLDivElement>(null);
+  const payeeListRef = useRef<HTMLUListElement>(null);
+
+  // Bottom scroll refs for auto-scrolling to the end
+  const tableBottomRef = useRef<HTMLTableRowElement | null>(null);
+  const mobileBottomRef = useRef<HTMLDivElement | null>(null);
+
+  // Transfer accounts (all non-placeholder accounts except current)
+  const transferAccounts = useMemo(() => {
+    return allAccounts.filter((a) => !a.placeholder && a.id !== account.id);
+  }, [allAccounts, account.id]);
+
+  // Group distinct previous payees mapped to their latest transaction
+  const payeeHistory = useMemo(() => {
+    if (!transactions || transactions.length === 0) return [];
+    const sorted = [...transactions].sort((a, b) => {
+      const timeA = new Date(a.post_date).getTime();
+      const timeB = new Date(b.post_date).getTime();
+      if (timeA !== timeB) return timeB - timeA;
+      return (b.created_at || '').localeCompare(a.created_at || '');
+    });
+
+    const map = new Map<string, { payee: string; latestTx: Transaction; count: number }>();
+    for (const tx of sorted) {
+      const p = (tx.description || '').trim();
+      if (!p) continue;
+      const key = p.toLowerCase();
+      if (!map.has(key)) {
+        map.set(key, { payee: p, latestTx: tx, count: 1 });
+      } else {
+        map.get(key)!.count += 1;
+      }
+    }
+    return Array.from(map.values());
+  }, [transactions]);
+
+  // Filtered payees matching current description input
+  const filteredPayees = useMemo(() => {
+    const q = newDescription.trim().toLowerCase();
+    if (!q) return payeeHistory.slice(0, 8);
+    return payeeHistory
+      .filter((item) => item.payee.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [payeeHistory, newDescription]);
+
+  useEffect(() => {
+    setPayeeHighlightIndex(0);
+  }, [filteredPayees]);
+
+  // Close payee dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (payeeRef.current && !payeeRef.current.contains(e.target as Node)) {
+        setIsPayeeDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+  // Handle payee selection: sets description and autofills transfer account
+  const handleSelectPayee = (item: { payee: string; latestTx: Transaction }) => {
+    setNewDescription(item.payee);
+    setIsPayeeDropdownOpen(false);
+
+    // Find the other split account in the previous transaction
+    const otherSplit = item.latestTx.splits.find((s) => s.account_id !== account.id);
+    if (otherSplit) {
+      setNewTransferAccountId(otherSplit.account_id);
+    }
+  };
+
+  // Automatically scroll to the end with the extra blank row
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (tableBottomRef.current) {
+        tableBottomRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      if (mobileBottomRef.current) {
+        mobileBottomRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [account.id, registerEntries.length]);
+
+  const handleResetNewRow = () => {
+    setNewDate(new Date().toISOString().split('T')[0]);
+    setNewNum('');
+    setNewDescription('');
+    setNewTransferAccountId('');
+    setNewDebit('');
+    setNewCredit('');
+    setMobileAmount('');
+    setMobileAmountType('debit');
+    setNewRowError(null);
+  };
+
+  // Desktop save handler
+  const handleSaveNewRow = async () => {
+    if (!onCreateTransaction) {
+      console.warn('handleSaveNewRow: onCreateTransaction prop is not defined');
+      return;
+    }
+
+    const debitNum = parseFloat(newDebit) || 0;
+    const creditNum = parseFloat(newCredit) || 0;
+    console.log('handleSaveNewRow called with:', { debitNum, creditNum, newDebit, newCredit, newTransferAccountId });
+
+    if (debitNum <= 0 && creditNum <= 0) {
+      setNewRowError(`Please enter an amount in either ${debitHeader} or ${creditHeader}`);
+      return;
+    }
+
+    if (!newTransferAccountId) {
+      setNewRowError('Please select a transfer account');
+      return;
+    }
+
+    const isDeposit = debitNum > 0;
+    const amountVal = isDeposit ? debitNum : creditNum;
+
+    // Strict double-entry: 2 splits, sum must equal 0.00
+    const currentSplitAmount = isDeposit ? amountVal : -amountVal;
+    const transferSplitAmount = isDeposit ? -amountVal : amountVal;
+
+    const payload: CreateTransactionPayload = {
+      post_date: newDate,
+      num: newNum.trim() || undefined,
+      description: newDescription.trim() || 'Transaction',
+      splits: [
+        {
+          account_id: account.id,
+          amount: currentSplitAmount.toFixed(2),
+          memo: '',
+        },
+        {
+          account_id: newTransferAccountId,
+          amount: transferSplitAmount.toFixed(2),
+          memo: '',
+        },
+      ],
+    };
+    console.log('Submitting payload:', payload);
+
+    try {
+      setIsSubmittingNew(true);
+      setNewRowError(null);
+      await onCreateTransaction(payload);
+      console.log('Transaction successfully created!');
+      handleResetNewRow();
+    } catch (err: any) {
+      console.error('Failed to create transaction:', err);
+      setNewRowError(err.message || 'Failed to record transaction');
+    } finally {
+      setIsSubmittingNew(false);
+    }
+  };
+
+  // Mobile save handler
+  const handleSaveMobileNewCard = async () => {
+    if (!onCreateTransaction) return;
+
+    const amtNum = parseFloat(mobileAmount) || 0;
+    if (amtNum <= 0) {
+      setNewRowError('Please enter a valid transaction amount');
+      return;
+    }
+
+    if (!newTransferAccountId) {
+      setNewRowError('Please select a transfer account');
+      return;
+    }
+
+    const isDeposit = mobileAmountType === 'debit';
+    const currentSplitAmount = isDeposit ? amtNum : -amtNum;
+    const transferSplitAmount = isDeposit ? -amtNum : amtNum;
+
+    const payload: CreateTransactionPayload = {
+      post_date: newDate,
+      num: newNum.trim() || undefined,
+      description: newDescription.trim() || 'Transaction',
+      splits: [
+        {
+          account_id: account.id,
+          amount: currentSplitAmount.toFixed(2),
+          memo: '',
+        },
+        {
+          account_id: newTransferAccountId,
+          amount: transferSplitAmount.toFixed(2),
+          memo: '',
+        },
+      ],
+    };
+
+    try {
+      setIsSubmittingNew(true);
+      setNewRowError(null);
+      await onCreateTransaction(payload);
+      handleResetNewRow();
+    } catch (err: any) {
+      setNewRowError(err.message || 'Failed to record transaction');
+    } finally {
+      setIsSubmittingNew(false);
+    }
+  };
+
+  const handleRowKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !isPayeeDropdownOpen) {
+      e.preventDefault();
+      handleSaveNewRow();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      handleResetNewRow();
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -328,6 +573,154 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
               );
             })
           )}
+
+          {/* Mobile View: Inline Blank New Transaction Card */}
+          <div ref={mobileBottomRef} className="p-3.5 bg-emerald-50/30 border-t-2 border-emerald-500/50 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-emerald-800 flex items-center space-x-1.5">
+                <Plus className="w-3.5 h-3.5" />
+                <span>New Transaction (Blank Entry)</span>
+              </span>
+              <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300">
+                2 Splits
+              </span>
+            </div>
+
+            {newRowError && (
+              <div className="flex items-center space-x-1.5 text-xs text-rose-700 bg-rose-50 border border-rose-200 p-2 rounded-lg">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>{newRowError}</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-2">
+                <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">Date</label>
+                <input
+                  type="date"
+                  value={newDate}
+                  onChange={(e) => setNewDate(e.target.value)}
+                  className="w-full text-xs font-mono py-1.5 px-2 border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">Num</label>
+                <input
+                  type="text"
+                  placeholder="# / Check"
+                  value={newNum}
+                  onChange={(e) => setNewNum(e.target.value)}
+                  className="w-full text-xs font-mono py-1.5 px-2 border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="relative">
+              <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">Payee / Description</label>
+              <input
+                type="text"
+                placeholder="Payee or description..."
+                value={newDescription}
+                onChange={(e) => {
+                  setNewDescription(e.target.value);
+                  setIsPayeeDropdownOpen(true);
+                }}
+                onFocus={() => setIsPayeeDropdownOpen(true)}
+                className="w-full text-xs py-1.5 px-2.5 border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 font-medium"
+              />
+              {/* Payee autocomplete suggestions (dropup) */}
+              {isPayeeDropdownOpen && filteredPayees.length > 0 && (
+                <div className="absolute z-50 left-0 right-0 bottom-full mb-1 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden max-h-48 overflow-y-auto">
+                  <div className="px-2.5 py-1 bg-slate-50 border-b border-slate-200 text-[10px] font-semibold text-slate-500 flex items-center justify-between">
+                    <span>Recent Payees ({filteredPayees.length})</span>
+                    <span className="text-emerald-700 font-medium">Autofills transfer</span>
+                  </div>
+                  {filteredPayees.map((item, idx) => (
+                    <button
+                      key={item.payee}
+                      type="button"
+                      onClick={() => handleSelectPayee(item)}
+                      className={`w-full text-left px-2.5 py-1.5 text-xs flex items-center justify-between hover:bg-emerald-50/80 transition ${
+                        idx === payeeHighlightIndex ? 'bg-emerald-50 text-emerald-900 font-medium' : 'text-slate-800'
+                      }`}
+                    >
+                      <span className="truncate">{item.payee}</span>
+                      <span className="text-[10px] text-slate-400 font-mono ml-2 shrink-0">{item.count}×</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">Transfer Account (Split 2)</label>
+              <AccountAutocomplete
+                accounts={transferAccounts}
+                value={newTransferAccountId}
+                onChange={setNewTransferAccountId}
+                placeholder="Select transfer account..."
+                dropdownPosition="top"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">Amount ({currentCurrency || account.currency})</label>
+              <div className="flex rounded-lg border border-slate-300 overflow-hidden bg-white focus-within:ring-1 focus-within:ring-emerald-500 focus-within:border-emerald-500">
+                <div className="flex bg-slate-100 border-r border-slate-300 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setMobileAmountType('debit')}
+                    className={`px-2 py-1 text-[11px] font-bold rounded transition ${
+                      mobileAmountType === 'debit'
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    + {debitHeader.split('/')[0].trim()}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMobileAmountType('credit')}
+                    className={`px-2 py-1 text-[11px] font-bold rounded transition ${
+                      mobileAmountType === 'credit'
+                        ? 'bg-rose-600 text-white shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    - {creditHeader.split('/')[0].trim()}
+                  </button>
+                </div>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  placeholder="0.00"
+                  value={mobileAmount}
+                  onChange={(e) => setMobileAmount(e.target.value)}
+                  className="flex-1 py-1.5 px-2.5 text-xs font-mono font-bold text-slate-800 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center space-x-2 pt-1">
+              <button
+                type="button"
+                onClick={handleSaveMobileNewCard}
+                disabled={isSubmittingNew}
+                className="flex-1 flex items-center justify-center space-x-1.5 py-2 px-3 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg shadow-sm transition disabled:opacity-50"
+              >
+                <Check className="w-4 h-4" />
+                <span>Record Transaction</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleResetNewRow}
+                className="py-2 px-3 text-xs font-semibold text-slate-500 hover:text-slate-700 bg-white border border-slate-300 rounded-lg transition"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
         </div>
 
         {/* Desktop View: Full Classic GnuCash Table (Visible on >= md) */}
@@ -522,6 +915,202 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
                     </React.Fragment>
                   );
                 })
+              )}
+
+              {/* Desktop View: Blank New Transaction Row at the End */}
+              <tr
+                ref={tableBottomRef}
+                className="bg-emerald-50/40 border-t-2 border-emerald-500 hover:bg-emerald-50/60 transition-colors"
+              >
+                {/* Date */}
+                <td className="py-2 px-2.5">
+                  <input
+                    type="date"
+                    value={newDate}
+                    onChange={(e) => setNewDate(e.target.value)}
+                    onKeyDown={handleRowKeyDown}
+                    className="w-full text-xs font-mono py-1 px-1.5 border border-slate-300 rounded focus:border-emerald-500 focus:outline-none bg-white shadow-inner"
+                    title="Transaction Date (defaults to today)"
+                  />
+                </td>
+
+                {/* Num */}
+                <td className="py-2 px-1.5">
+                  <input
+                    type="text"
+                    placeholder="Num"
+                    value={newNum}
+                    onChange={(e) => setNewNum(e.target.value)}
+                    onKeyDown={handleRowKeyDown}
+                    className="w-full text-xs font-mono py-1 px-1 border border-slate-300 rounded focus:border-emerald-500 focus:outline-none bg-white text-center shadow-inner"
+                    title="Transaction Number / Check #"
+                  />
+                </td>
+
+                {/* Description / Payee with dropup autocomplete */}
+                <td className="py-2 px-2.5 relative">
+                  <div className="relative" ref={payeeRef}>
+                    <input
+                      type="text"
+                      placeholder="Description / Payee (autocomplete)..."
+                      value={newDescription}
+                      onChange={(e) => {
+                        setNewDescription(e.target.value);
+                        setIsPayeeDropdownOpen(true);
+                      }}
+                      onFocus={() => setIsPayeeDropdownOpen(true)}
+                      onKeyDown={(e) => {
+                        if (isPayeeDropdownOpen && filteredPayees.length > 0) {
+                          if (e.key === 'ArrowDown') {
+                            e.preventDefault();
+                            setPayeeHighlightIndex((prev) =>
+                              prev < filteredPayees.length - 1 ? prev + 1 : 0
+                            );
+                            return;
+                          } else if (e.key === 'ArrowUp') {
+                            e.preventDefault();
+                            setPayeeHighlightIndex((prev) =>
+                              prev > 0 ? prev - 1 : filteredPayees.length - 1
+                            );
+                            return;
+                          } else if (e.key === 'Enter') {
+                            e.preventDefault();
+                            if (filteredPayees[payeeHighlightIndex]) {
+                              handleSelectPayee(filteredPayees[payeeHighlightIndex]);
+                            }
+                            return;
+                          } else if (e.key === 'Escape') {
+                            e.preventDefault();
+                            setIsPayeeDropdownOpen(false);
+                            return;
+                          }
+                        }
+                        handleRowKeyDown(e);
+                      }}
+                      className="w-full text-xs font-medium py-1 px-2 border border-slate-300 rounded focus:border-emerald-500 focus:outline-none bg-white shadow-inner"
+                    />
+
+                    {/* Payee dropup suggestions */}
+                    {isPayeeDropdownOpen && filteredPayees.length > 0 && (
+                      <div className="absolute z-50 left-0 right-0 bottom-full mb-1 bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden max-h-48 overflow-y-auto">
+                        <div className="px-2.5 py-1 bg-slate-50 border-b border-slate-200 text-[10px] font-semibold text-slate-500 flex items-center justify-between">
+                          <span>Payee History ({filteredPayees.length})</span>
+                          <span className="text-emerald-700 font-medium">Autofills transfer</span>
+                        </div>
+                        {filteredPayees.map((item, idx) => (
+                          <button
+                            key={item.payee}
+                            type="button"
+                            onClick={() => handleSelectPayee(item)}
+                            className={`w-full text-left px-2.5 py-1.5 text-xs flex items-center justify-between hover:bg-emerald-50/80 transition ${
+                              idx === payeeHighlightIndex ? 'bg-emerald-50 text-emerald-900 font-medium' : 'text-slate-800'
+                            }`}
+                          >
+                            <span className="truncate">{item.payee}</span>
+                            <span className="text-[10px] text-slate-400 font-mono ml-2 shrink-0">{item.count}×</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </td>
+
+                {/* Transfer Account with dropup autocomplete */}
+                <td className="py-2 px-2.5">
+                  <AccountAutocomplete
+                    accounts={transferAccounts}
+                    value={newTransferAccountId}
+                    onChange={setNewTransferAccountId}
+                    placeholder="Select transfer account..."
+                    dropdownPosition="top"
+                    className="text-xs"
+                  />
+                </td>
+
+                {/* Reconcile Status (Fixed 'n') */}
+                <td className="py-2 px-1 text-center">
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium text-slate-400 select-none" title="Not Reconciled (n)">
+                    n
+                  </span>
+                </td>
+
+                {/* Debit (Deposit / Increase) */}
+                <td className="py-2 px-2.5 text-right">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    value={newDebit}
+                    onChange={(e) => {
+                      setNewDebit(e.target.value);
+                      if (e.target.value) setNewCredit('');
+                      setNewRowError(null);
+                    }}
+                    onKeyDown={handleRowKeyDown}
+                    className="w-full text-right text-xs font-mono font-bold text-emerald-700 py-1 px-2 border border-slate-300 rounded focus:border-emerald-500 focus:outline-none bg-white shadow-inner"
+                    title={`Enter ${debitHeader}`}
+                  />
+                </td>
+
+                {/* Credit (Withdrawal / Decrease) */}
+                <td className="py-2 px-2.5 text-right">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    placeholder="0.00"
+                    value={newCredit}
+                    onChange={(e) => {
+                      setNewCredit(e.target.value);
+                      if (e.target.value) setNewDebit('');
+                      setNewRowError(null);
+                    }}
+                    onKeyDown={handleRowKeyDown}
+                    className="w-full text-right text-xs font-mono font-bold text-rose-700 py-1 px-2 border border-slate-300 rounded focus:border-emerald-500 focus:outline-none bg-white shadow-inner"
+                    title={`Enter ${creditHeader}`}
+                  />
+                </td>
+
+                {/* Balance placeholder */}
+                <td className="py-2 px-3 text-right font-mono text-[11px] text-slate-400 bg-slate-100/50 select-none">
+                  (New)
+                </td>
+
+                {/* Actions: Save / Enter & Clear */}
+                <td className="py-2 px-2 text-center">
+                  <div className="flex items-center justify-center space-x-1">
+                    <button
+                      type="button"
+                      onClick={handleSaveNewRow}
+                      disabled={isSubmittingNew}
+                      className="p-1 text-white bg-emerald-600 hover:bg-emerald-500 rounded transition shadow-sm disabled:opacity-50"
+                      title="Record Transaction (Enter)"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleResetNewRow}
+                      className="p-1 text-slate-400 hover:text-slate-600 rounded transition"
+                      title="Clear Row (Esc)"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+
+              {/* Error banner below new row if validation fails */}
+              {newRowError && (
+                <tr className="bg-rose-50 border-b border-rose-200">
+                  <td colSpan={9} className="py-2 px-4 text-xs text-rose-700 font-medium">
+                    <div className="flex items-center space-x-1.5">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{newRowError}</span>
+                    </div>
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
