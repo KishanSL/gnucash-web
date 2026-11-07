@@ -18,7 +18,7 @@ import puppeteer from 'puppeteer';
 
   // 2. Perform Login
   await page.type('input[placeholder="Enter your username or email"]', 'kishan');
-  await page.type('input[placeholder="••••••••"]', 'password123');
+  await page.type('input[placeholder="••••••••"]', 'Kishan@123');
   await page.click('button[type="submit"]');
 
   // 3. Wait for authenticated view navbar

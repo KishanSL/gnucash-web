@@ -136,37 +136,30 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
     return allAccounts.filter((a) => !a.placeholder && a.id !== account.id);
   }, [allAccounts, account.id]);
 
-  // Filter transactions belonging to THIS current account only
-  const accountTransactions = useMemo(() => {
-    if (!transactions || transactions.length === 0) return [];
-    return transactions.filter(
-      (tx) => tx.splits && tx.splits.some((s) => s.account_id === account.id)
-    );
-  }, [transactions, account.id]);
-
-  // Group distinct previous payees from THIS CURRENT ACCOUNT ONLY mapped to their latest transaction
+  // Group distinct previous payees from THIS CURRENT ACCOUNT's complete history (registerEntries) mapped to their latest entry
   const payeeHistory = useMemo(() => {
-    if (!accountTransactions || accountTransactions.length === 0) return [];
-    const sorted = [...accountTransactions].sort((a, b) => {
+    if (!registerEntries || registerEntries.length === 0) return [];
+    // Sort copy descending so the latest transaction for each payee is seen first
+    const sorted = [...registerEntries].sort((a, b) => {
       const timeA = new Date(a.post_date).getTime();
       const timeB = new Date(b.post_date).getTime();
       if (timeA !== timeB) return timeB - timeA;
-      return (b.created_at || '').localeCompare(a.created_at || '');
+      return (b.split_id || '').localeCompare(a.split_id || '');
     });
 
-    const map = new Map<string, { payee: string; latestTx: Transaction; count: number }>();
-    for (const tx of sorted) {
-      const p = (tx.description || '').trim();
+    const map = new Map<string, { payee: string; latestEntry: RegisterEntry; count: number }>();
+    for (const entry of sorted) {
+      const p = (entry.description || '').trim();
       if (!p) continue;
       const key = p.toLowerCase();
       if (!map.has(key)) {
-        map.set(key, { payee: p, latestTx: tx, count: 1 });
+        map.set(key, { payee: p, latestEntry: entry, count: 1 });
       } else {
         map.get(key)!.count += 1;
       }
     }
     return Array.from(map.values());
-  }, [accountTransactions]);
+  }, [registerEntries]);
 
   // Filtered payees matching current description input
   const filteredPayees = useMemo(() => {
@@ -194,26 +187,43 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
     };
   }, []);
 
-  // Handle payee selection: sets description and autofills transfer account, memo, and notes
-  const handleSelectPayee = (item: { payee: string; latestTx: Transaction }) => {
+  // Handle payee selection: sets description and autofills transfer account, memo, notes, and amount
+  const handleSelectPayee = (item: { payee: string; latestEntry: RegisterEntry; count?: number }) => {
     setNewDescription(item.payee);
     setIsPayeeDropdownOpen(false);
 
-    if (item.latestTx.notes) {
-      setNewNotes(item.latestTx.notes);
+    const entry = item.latestEntry;
+    if (entry.notes) {
+      setNewNotes(entry.notes);
+    }
+    if (entry.memo) {
+      setNewMemo(entry.memo);
     }
 
     // Find the other split account in the previous transaction
-    const otherSplit = item.latestTx.splits.find((s) => s.account_id !== account.id);
-    if (otherSplit) {
-      setNewTransferAccountId(otherSplit.account_id);
-      if (otherSplit.memo) {
-        setNewMemo(otherSplit.memo);
+    if (entry.all_splits && entry.all_splits.length >= 2) {
+      const otherSplit = entry.all_splits.find((s) => s.account_id !== account.id);
+      if (otherSplit) {
+        setNewTransferAccountId(otherSplit.account_id);
+        if (otherSplit.memo && !entry.memo) {
+          setNewMemo(otherSplit.memo);
+        }
       }
     }
-    const currentSplit = item.latestTx.splits.find((s) => s.account_id === account.id);
-    if (currentSplit && currentSplit.memo) {
-      setNewMemo(currentSplit.memo);
+
+    // Autofill debit/credit amount and mobile amount based on previous entry
+    if (entry.debit && Math.abs(parseFloat(entry.debit)) > 0.0001) {
+      const val = Math.abs(parseFloat(entry.debit)).toFixed(2);
+      setNewDebit(val);
+      setNewCredit('');
+      setMobileAmount(val);
+      setMobileAmountType('debit');
+    } else if (entry.credit && Math.abs(parseFloat(entry.credit)) > 0.0001) {
+      const val = Math.abs(parseFloat(entry.credit)).toFixed(2);
+      setNewCredit(val);
+      setNewDebit('');
+      setMobileAmount(val);
+      setMobileAmountType('credit');
     }
   };
 
@@ -684,11 +694,12 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
                   setIsPayeeDropdownOpen(true);
                 }}
                 onFocus={() => setIsPayeeDropdownOpen(true)}
+                onClick={() => setIsPayeeDropdownOpen(true)}
                 className="w-full text-xs py-1.5 px-2.5 border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 font-medium"
               />
               {/* Payee autocomplete suggestions (dropup) */}
               {isPayeeDropdownOpen && filteredPayees.length > 0 && (
-                <div className="absolute z-50 left-0 right-0 bottom-full mb-1 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden max-h-48 overflow-y-auto">
+                <div data-testid="mobile-payee-autocomplete-dropdown" className="absolute z-50 left-0 right-0 bottom-full mb-1 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden max-h-48 overflow-y-auto">
                   <div className="px-2.5 py-1 bg-slate-50 border-b border-slate-200 text-[10px] font-semibold text-slate-500 flex items-center justify-between">
                     <span>Recent Payees ({filteredPayees.length})</span>
                     <span className="text-emerald-700 font-medium">Autofills transfer</span>
@@ -1083,6 +1094,7 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
                         setIsPayeeDropdownOpen(true);
                       }}
                       onFocus={() => setIsPayeeDropdownOpen(true)}
+                      onClick={() => setIsPayeeDropdownOpen(true)}
                       onKeyDown={(e) => {
                         if (isPayeeDropdownOpen && filteredPayees.length > 0) {
                           if (e.key === 'ArrowDown') {
@@ -1116,7 +1128,7 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
 
                     {/* Payee dropup suggestions */}
                     {isPayeeDropdownOpen && filteredPayees.length > 0 && (
-                      <div className="absolute z-50 left-0 right-0 bottom-full mb-1 bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden max-h-48 overflow-y-auto">
+                      <div data-testid="payee-autocomplete-dropdown" className="absolute z-50 left-0 right-0 bottom-full mb-1 bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden max-h-48 overflow-y-auto">
                         <div className="px-2.5 py-1 bg-slate-50 border-b border-slate-200 text-[10px] font-semibold text-slate-500 flex items-center justify-between">
                           <span>Payee History ({filteredPayees.length})</span>
                           <span className="text-emerald-700 font-medium">Autofills transfer</span>
