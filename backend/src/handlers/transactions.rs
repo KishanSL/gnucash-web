@@ -596,8 +596,8 @@ pub async fn get_account_register(
     let (_, account_type) = account;
 
     // 2. Fetch all splits for this account ordered chronologically
-    let rows = sqlx::query_as::<_, (Uuid, Uuid, NaiveDate, chrono::DateTime<chrono::Utc>, Option<String>, String, Option<String>, String, Decimal)>(
-        r#"SELECT s.id, t.id, t.post_date, t.enter_date, t.num, t.description, s.memo, s.reconciled_state, s.amount
+    let rows = sqlx::query_as::<_, (Uuid, Uuid, NaiveDate, chrono::DateTime<chrono::Utc>, Option<String>, String, Option<String>, Option<String>, String, Decimal)>(
+        r#"SELECT s.id, t.id, t.post_date, t.enter_date, t.num, t.description, t.notes, s.memo, s.reconciled_state, s.amount
            FROM splits s
            JOIN transactions t ON s.transaction_id = t.id
            WHERE s.account_id = $1 AND t.user_id = $2
@@ -659,7 +659,7 @@ pub async fn get_account_register(
     let mut running_sum = Decimal::ZERO;
     let mut register_entries = Vec::new();
 
-    for (split_id, tx_id, post_date, _enter_date, num, description, memo, reconciled_state, amount) in rows {
+    for (split_id, tx_id, post_date, _enter_date, num, description, notes, memo, reconciled_state, amount) in rows {
         running_sum += amount;
         let display_running_balance = calculate_display_balance(&account_type, running_sum);
 
@@ -696,6 +696,7 @@ pub async fn get_account_register(
             post_date,
             num,
             description,
+            notes,
             transfer_account_name,
             memo,
             reconciled_state,

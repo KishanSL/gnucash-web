@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronUp,
   Trash2,
+  Pencil,
   PlusCircle,
   Split,
   CornerDownRight,
@@ -18,6 +19,7 @@ interface TransactionsJournalProps {
   currentCurrency: string;
   onOpenNewTx: () => void;
   onDeleteTransaction: (id: string) => void;
+  onEditTransaction?: (id: string) => void;
 }
 
 export const TransactionsJournal: React.FC<TransactionsJournalProps> = ({
@@ -25,6 +27,7 @@ export const TransactionsJournal: React.FC<TransactionsJournalProps> = ({
   currentCurrency,
   onOpenNewTx,
   onDeleteTransaction,
+  onEditTransaction,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -134,7 +137,7 @@ export const TransactionsJournal: React.FC<TransactionsJournalProps> = ({
                     ))}
                   </div>
 
-                  {/* Mobile Actions: View splits or delete */}
+                  {/* Mobile Actions: View splits or edit/delete */}
                   <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-xs">
                     <button
                       onClick={() => toggleExpand(tx.id)}
@@ -144,17 +147,28 @@ export const TransactionsJournal: React.FC<TransactionsJournalProps> = ({
                       <span>{isExpanded ? 'Hide Splits' : `View Splits (${tx.splits.length})`}</span>
                     </button>
 
-                    <button
-                      onClick={() => {
-                        if (confirm('Delete this transaction and its splits?')) {
-                          onDeleteTransaction(tx.id);
-                        }
-                      }}
-                      className="p-1 text-slate-400 hover:text-rose-600 transition"
-                      title="Delete"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center space-x-1">
+                      {onEditTransaction && (
+                        <button
+                          onClick={() => onEditTransaction(tx.id)}
+                          className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded transition"
+                          title="Edit Transaction"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          if (confirm('Delete this transaction and its splits?')) {
+                            onDeleteTransaction(tx.id);
+                          }
+                        }}
+                        className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Expanded Splits in Mobile Card */}
@@ -269,17 +283,28 @@ export const TransactionsJournal: React.FC<TransactionsJournalProps> = ({
                         </td>
 
                         <td className="py-2.5 px-3 text-center">
-                          <button
-                            onClick={() => {
-                              if (confirm('Delete this transaction?')) {
-                                onDeleteTransaction(tx.id);
-                              }
-                            }}
-                            className="p-1 text-slate-300 hover:text-rose-600 rounded transition"
-                            title="Delete"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="flex items-center justify-center space-x-1">
+                            {onEditTransaction && (
+                              <button
+                                onClick={() => onEditTransaction(tx.id)}
+                                className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded transition"
+                                title="Edit Transaction"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                if (confirm('Delete this transaction?')) {
+                                  onDeleteTransaction(tx.id);
+                                }
+                              }}
+                              className="p-1 text-slate-300 hover:text-rose-600 hover:bg-rose-50 rounded transition"
+                              title="Delete"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
 

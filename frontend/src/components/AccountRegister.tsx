@@ -17,6 +17,7 @@ import {
   History,
   AlertCircle,
   Plus,
+  Pencil,
 } from 'lucide-react';
 import { Account, CreateTransactionPayload, RegisterEntry, Transaction } from '../types';
 import { formatCurrency } from '../api';
@@ -31,6 +32,7 @@ interface AccountRegisterProps {
   onOpenNewTx: (defaultAccountId?: string) => void;
   onOpenReconcile: (acc: Account) => void;
   onDeleteTransaction: (txId: string) => void;
+  onEditTransaction?: (txId: string) => void;
   onToggleHideAccount?: (acc: Account) => void;
   onCreateTransaction?: (payload: CreateTransactionPayload) => Promise<void>;
   transactions?: Transaction[];
@@ -45,6 +47,7 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
   onOpenNewTx,
   onOpenReconcile,
   onDeleteTransaction,
+  onEditTransaction,
   onToggleHideAccount,
   onCreateTransaction,
   transactions = [],
@@ -108,6 +111,8 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
   const [newDate, setNewDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [newNum, setNewNum] = useState('');
   const [newDescription, setNewDescription] = useState('');
+  const [newNotes, setNewNotes] = useState('');
+  const [newMemo, setNewMemo] = useState('');
   const [newTransferAccountId, setNewTransferAccountId] = useState('');
   const [newDebit, setNewDebit] = useState('');
   const [newCredit, setNewCredit] = useState('');
@@ -131,10 +136,18 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
     return allAccounts.filter((a) => !a.placeholder && a.id !== account.id);
   }, [allAccounts, account.id]);
 
-  // Group distinct previous payees mapped to their latest transaction
-  const payeeHistory = useMemo(() => {
+  // Filter transactions belonging to THIS current account only
+  const accountTransactions = useMemo(() => {
     if (!transactions || transactions.length === 0) return [];
-    const sorted = [...transactions].sort((a, b) => {
+    return transactions.filter(
+      (tx) => tx.splits && tx.splits.some((s) => s.account_id === account.id)
+    );
+  }, [transactions, account.id]);
+
+  // Group distinct previous payees from THIS CURRENT ACCOUNT ONLY mapped to their latest transaction
+  const payeeHistory = useMemo(() => {
+    if (!accountTransactions || accountTransactions.length === 0) return [];
+    const sorted = [...accountTransactions].sort((a, b) => {
       const timeA = new Date(a.post_date).getTime();
       const timeB = new Date(b.post_date).getTime();
       if (timeA !== timeB) return timeB - timeA;
@@ -153,7 +166,7 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
       }
     }
     return Array.from(map.values());
-  }, [transactions]);
+  }, [accountTransactions]);
 
   // Filtered payees matching current description input
   const filteredPayees = useMemo(() => {
@@ -181,15 +194,26 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
     };
   }, []);
 
-  // Handle payee selection: sets description and autofills transfer account
+  // Handle payee selection: sets description and autofills transfer account, memo, and notes
   const handleSelectPayee = (item: { payee: string; latestTx: Transaction }) => {
     setNewDescription(item.payee);
     setIsPayeeDropdownOpen(false);
+
+    if (item.latestTx.notes) {
+      setNewNotes(item.latestTx.notes);
+    }
 
     // Find the other split account in the previous transaction
     const otherSplit = item.latestTx.splits.find((s) => s.account_id !== account.id);
     if (otherSplit) {
       setNewTransferAccountId(otherSplit.account_id);
+      if (otherSplit.memo) {
+        setNewMemo(otherSplit.memo);
+      }
+    }
+    const currentSplit = item.latestTx.splits.find((s) => s.account_id === account.id);
+    if (currentSplit && currentSplit.memo) {
+      setNewMemo(currentSplit.memo);
     }
   };
 
@@ -210,6 +234,8 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
     setNewDate(new Date().toISOString().split('T')[0]);
     setNewNum('');
     setNewDescription('');
+    setNewNotes('');
+    setNewMemo('');
     setNewTransferAccountId('');
     setNewDebit('');
     setNewCredit('');
@@ -250,16 +276,17 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
       post_date: newDate,
       num: newNum.trim() || undefined,
       description: newDescription.trim() || 'Transaction',
+      notes: newNotes.trim() || undefined,
       splits: [
         {
           account_id: account.id,
           amount: currentSplitAmount.toFixed(2),
-          memo: '',
+          memo: newMemo.trim() || undefined,
         },
         {
           account_id: newTransferAccountId,
           amount: transferSplitAmount.toFixed(2),
-          memo: '',
+          memo: newMemo.trim() || undefined,
         },
       ],
     };
@@ -302,16 +329,17 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
       post_date: newDate,
       num: newNum.trim() || undefined,
       description: newDescription.trim() || 'Transaction',
+      notes: newNotes.trim() || undefined,
       splits: [
         {
           account_id: account.id,
           amount: currentSplitAmount.toFixed(2),
-          memo: '',
+          memo: newMemo.trim() || undefined,
         },
         {
           account_id: newTransferAccountId,
           amount: transferSplitAmount.toFixed(2),
-          memo: '',
+          memo: newMemo.trim() || undefined,
         },
       ],
     };
@@ -509,7 +537,6 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
                         ) : (
                           entry.transfer_account_name
                         )}
-                        {entry.memo && <span className="text-slate-400 ml-1">({entry.memo})</span>}
                       </div>
                     </div>
 
@@ -521,7 +548,27 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
                     </div>
                   </div>
 
-                  {/* Mobile Actions: Expand splits or delete */}
+                  {/* Second Row with Details / Memo / Notes */}
+                  <div className="bg-slate-50 rounded-lg p-2 border border-slate-100 text-[11px] space-y-1">
+                    <div className="flex items-baseline space-x-1.5">
+                      <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider shrink-0">
+                        Notes:
+                      </span>
+                      <span className={entry.notes ? 'text-slate-700 font-medium' : 'text-slate-400 italic'}>
+                        {entry.notes || '—'}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline space-x-1.5">
+                      <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider shrink-0">
+                        Memo:
+                      </span>
+                      <span className={entry.memo || (entry.all_splits.find(s => s.memo)?.memo) ? 'text-slate-700 font-medium' : 'text-slate-400 italic'}>
+                        {entry.memo || (entry.all_splits.find(s => s.memo)?.memo) || '—'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Mobile Actions: Expand splits, Edit, or Delete */}
                   <div className="flex items-center justify-between pt-1 border-t border-slate-100 text-xs">
                     {isMultiSplit ? (
                       <button
@@ -535,17 +582,28 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
                       <span />
                     )}
 
-                    <button
-                      onClick={() => {
-                        if (confirm('Delete this transaction and all its splits?')) {
-                          onDeleteTransaction(entry.transaction_id);
-                        }
-                      }}
-                      className="p-1 text-slate-400 hover:text-rose-600 transition"
-                      title="Delete"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center space-x-1">
+                      {onEditTransaction && (
+                        <button
+                          onClick={() => onEditTransaction(entry.transaction_id)}
+                          className="p-1.5 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded transition"
+                          title="Edit Transaction"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          if (confirm('Delete this transaction and all its splits?')) {
+                            onDeleteTransaction(entry.transaction_id);
+                          }
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Expanded Splits in Mobile Card */}
@@ -702,6 +760,29 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
               </div>
             </div>
 
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">Notes (Optional)</label>
+                <input
+                  type="text"
+                  placeholder="Notes..."
+                  value={newNotes}
+                  onChange={(e) => setNewNotes(e.target.value)}
+                  className="w-full text-xs py-1.5 px-2 border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-semibold text-slate-500 mb-0.5">Memo (Optional)</label>
+                <input
+                  type="text"
+                  placeholder="Memo..."
+                  value={newMemo}
+                  onChange={(e) => setNewMemo(e.target.value)}
+                  className="w-full text-xs py-1.5 px-2 border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+            </div>
+
             <div className="flex items-center space-x-2 pt-1">
               <button
                 type="button"
@@ -830,18 +911,60 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
 
                         {/* Delete action */}
                         <td className="py-2 px-2 text-center">
-                          <button
-                            onClick={() => {
-                              if (confirm('Delete this transaction and all its splits?')) {
-                                onDeleteTransaction(entry.transaction_id);
-                              }
-                            }}
-                            className="p-1 text-slate-300 hover:text-rose-600 rounded transition"
-                            title="Delete Transaction"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="flex items-center justify-center space-x-1">
+                            {onEditTransaction && (
+                              <button
+                                onClick={() => onEditTransaction(entry.transaction_id)}
+                                className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded transition"
+                                title="Edit Transaction"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            <button
+                              onClick={() => {
+                                if (confirm('Delete this transaction and all its splits?')) {
+                                  onDeleteTransaction(entry.transaction_id);
+                                }
+                              }}
+                              className="p-1 text-slate-300 hover:text-rose-600 hover:bg-rose-50 rounded transition"
+                              title="Delete Transaction"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </td>
+                      </tr>
+
+                      {/* Second Row with Details / Memo / Notes text visible */}
+                      <tr
+                        className={`border-b border-slate-200 text-slate-500 text-[11px] transition-colors ${
+                          isExpanded ? 'bg-emerald-50/20' : 'bg-slate-50/50 hover:bg-amber-50/20'
+                        }`}
+                      >
+                        <td className="py-1 px-3 text-slate-400 font-mono text-[10px]"></td>
+                        <td className="py-1 px-2 text-slate-400 text-[10px]"></td>
+                        <td colSpan={6} className="py-1 px-3">
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-600">
+                            <div className="flex items-center space-x-1.5 min-w-0">
+                              <span className="font-semibold text-slate-400 uppercase text-[9px] tracking-wider shrink-0">
+                                Notes:
+                              </span>
+                              <span className={entry.notes ? 'text-slate-700 font-medium truncate' : 'text-slate-400 italic'}>
+                                {entry.notes || '—'}
+                              </span>
+                            </div>
+                            <div className="flex items-center space-x-1.5 min-w-0">
+                              <span className="font-semibold text-slate-400 uppercase text-[9px] tracking-wider shrink-0">
+                                Memo:
+                              </span>
+                              <span className={entry.memo || (entry.all_splits.find(s => s.memo)?.memo) ? 'text-slate-700 font-medium truncate' : 'text-slate-400 italic'}>
+                                {entry.memo || (entry.all_splits.find(s => s.memo)?.memo) || '—'}
+                              </span>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-1 px-2 text-center"></td>
                       </tr>
 
                       {/* Expanded Splits Row (Journal view inside register) */}
@@ -920,6 +1043,7 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
               {/* Desktop View: Blank New Transaction Row at the End */}
               <tr
                 ref={tableBottomRef}
+                data-testid="blank-new-row-main"
                 className="bg-emerald-50/40 border-t-2 border-emerald-500 hover:bg-emerald-50/60 transition-colors"
               >
                 {/* Date */}
@@ -1099,6 +1223,46 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
                     </button>
                   </div>
                 </td>
+              </tr>
+
+              {/* Desktop View: Blank New Transaction Row 2 (Notes & Memo) */}
+              <tr
+                data-testid="blank-new-row-notes"
+                className="bg-emerald-50/40 border-b-2 border-emerald-500/50"
+              >
+                <td className="py-1.5 px-3"></td>
+                <td className="py-1.5 px-2"></td>
+                <td colSpan={6} className="py-1.5 px-2.5">
+                  <div className="flex items-center space-x-3">
+                    <div className="flex-1 flex items-center space-x-1.5">
+                      <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider shrink-0">
+                        Notes:
+                      </span>
+                      <input
+                        type="text"
+                        placeholder="Transaction notes / details..."
+                        value={newNotes}
+                        onChange={(e) => setNewNotes(e.target.value)}
+                        onKeyDown={handleRowKeyDown}
+                        className="w-full text-xs py-1 px-2 border border-slate-300 rounded focus:border-emerald-500 focus:outline-none bg-white shadow-inner"
+                      />
+                    </div>
+                    <div className="flex-1 flex items-center space-x-1.5">
+                      <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider shrink-0">
+                        Memo:
+                      </span>
+                      <input
+                        type="text"
+                        placeholder="Split memo..."
+                        value={newMemo}
+                        onChange={(e) => setNewMemo(e.target.value)}
+                        onKeyDown={handleRowKeyDown}
+                        className="w-full text-xs py-1 px-2 border border-slate-300 rounded focus:border-emerald-500 focus:outline-none bg-white shadow-inner"
+                      />
+                    </div>
+                  </div>
+                </td>
+                <td className="py-1.5 px-2 text-center"></td>
               </tr>
 
               {/* Error banner below new row if validation fails */}

@@ -163,6 +163,7 @@ export const AccountAutocomplete: React.FC<AccountAutocompleteProps> = ({
           value={search}
           autoFocus={autoFocus}
           placeholder={placeholder}
+          onClick={() => setIsOpen(true)}
           onFocus={() => {
             setIsOpen(true);
             // Select text on focus for effortless replacement

@@ -13,6 +13,7 @@ import {
   Transaction,
   TrialBalanceReport,
   UpdateAccountPayload,
+  UpdateTransactionPayload,
   User,
 } from './types';
 
@@ -224,6 +225,12 @@ export async function fetchTransactions(params?: {
   return res.json();
 }
 
+export async function fetchTransactionById(id: string): Promise<Transaction> {
+  const res = await fetchWithAuth(`${API_BASE}/transactions/${id}`);
+  if (!res.ok) throw new Error('Failed to fetch transaction');
+  return res.json();
+}
+
 export async function fetchAccountRegister(accountId: string): Promise<RegisterEntry[]> {
   const res = await fetchWithAuth(`${API_BASE}/accounts/${accountId}/register`);
   if (!res.ok) throw new Error('Failed to fetch account register');
@@ -239,6 +246,22 @@ export async function createTransaction(payload: CreateTransactionPayload): Prom
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || 'Failed to create transaction');
+  }
+  return res.json();
+}
+
+export async function updateTransaction(
+  id: string,
+  payload: UpdateTransactionPayload
+): Promise<Transaction> {
+  const res = await fetchWithAuth(`${API_BASE}/transactions/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to update transaction');
   }
   return res.json();
 }

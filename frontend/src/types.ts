@@ -117,12 +117,21 @@ export interface CreateTransactionPayload {
   splits: CreateSplitPayload[];
 }
 
+export interface UpdateTransactionPayload {
+  post_date?: string;
+  num?: string | null;
+  description?: string;
+  notes?: string | null;
+  splits?: CreateSplitPayload[];
+}
+
 export interface RegisterEntry {
   transaction_id: string;
   split_id: string;
   post_date: string;
   num?: string | null;
   description: string;
+  notes?: string | null;
   transfer_account_name: string;
   memo?: string | null;
   reconciled_state: 'n' | 'c' | 'y';

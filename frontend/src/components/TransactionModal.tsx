@@ -10,7 +10,7 @@ import {
   Sparkles,
   History,
 } from 'lucide-react';
-import { Account, CreateTransactionPayload, Transaction } from '../types';
+import { Account, CreateTransactionPayload, Transaction, UpdateTransactionPayload } from '../types';
 import { formatCurrency } from '../api';
 import { AccountAutocomplete } from './AccountAutocomplete';
 
@@ -18,6 +18,8 @@ interface TransactionModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSubmit: (payload: CreateTransactionPayload) => Promise<void>;
+  onUpdate?: (id: string, payload: UpdateTransactionPayload) => Promise<void>;
+  editingTransaction?: Transaction | null;
   accounts: Account[];
   defaultAccountId?: string;
   currentCurrency: string;
@@ -36,6 +38,8 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
   isOpen,
   onClose,
   onSubmit,
+  onUpdate,
+  editingTransaction,
   accounts,
   defaultAccountId,
   currentCurrency,
@@ -133,31 +137,55 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      setPostDate(new Date().toISOString().split('T')[0]);
-      setNum('');
-      setDescription('');
-      setNotes('');
-      setError(null);
-      setAutofillBanner(null);
-      setIsPayeeDropdownOpen(false);
-      setSplits([
-        {
-          id: '1',
-          account_id: defaultAccountId || (validAccounts[0]?.id || ''),
-          memo: '',
-          debit: '',
-          credit: '',
-        },
-        {
-          id: '2',
-          account_id: validAccounts[1]?.id || '',
-          memo: '',
-          debit: '',
-          credit: '',
-        },
-      ]);
+      if (editingTransaction) {
+        setPostDate(editingTransaction.post_date);
+        setNum(editingTransaction.num || '');
+        setDescription(editingTransaction.description || '');
+        setNotes(editingTransaction.notes || '');
+        setError(null);
+        setAutofillBanner(null);
+        setIsPayeeDropdownOpen(false);
+        if (editingTransaction.splits && editingTransaction.splits.length >= 2) {
+          setSplits(
+            editingTransaction.splits.map((s, idx) => {
+              const amt = parseFloat(s.amount) || 0;
+              return {
+                id: s.id || String(idx + 1),
+                account_id: s.account_id,
+                memo: s.memo || '',
+                debit: amt > 0 ? amt.toFixed(2) : '',
+                credit: amt < 0 ? Math.abs(amt).toFixed(2) : '',
+              };
+            })
+          );
+        }
+      } else {
+        setPostDate(new Date().toISOString().split('T')[0]);
+        setNum('');
+        setDescription('');
+        setNotes('');
+        setError(null);
+        setAutofillBanner(null);
+        setIsPayeeDropdownOpen(false);
+        setSplits([
+          {
+            id: '1',
+            account_id: defaultAccountId || (validAccounts[0]?.id || ''),
+            memo: '',
+            debit: '',
+            credit: '',
+          },
+          {
+            id: '2',
+            account_id: validAccounts[1]?.id || '',
+            memo: '',
+            debit: '',
+            credit: '',
+          },
+        ]);
+      }
     }
-  }, [isOpen, defaultAccountId]);
+  }, [isOpen, defaultAccountId, editingTransaction]);
 
   const handleSelectPayee = (item: { payee: string; latestTx: Transaction; count: number }) => {
     setDescription(item.payee);
@@ -337,16 +365,26 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
 
     try {
       setSubmitting(true);
-      await onSubmit({
-        post_date: postDate,
-        num: num.trim() ? num.trim() : null,
-        description: description.trim(),
-        notes: notes.trim() ? notes.trim() : null,
-        splits: payloadSplits,
-      });
+      if (editingTransaction && onUpdate) {
+        await onUpdate(editingTransaction.id, {
+          post_date: postDate,
+          num: num.trim() ? num.trim() : null,
+          description: description.trim(),
+          notes: notes.trim() ? notes.trim() : null,
+          splits: payloadSplits,
+        });
+      } else {
+        await onSubmit({
+          post_date: postDate,
+          num: num.trim() ? num.trim() : null,
+          description: description.trim(),
+          notes: notes.trim() ? notes.trim() : null,
+          splits: payloadSplits,
+        });
+      }
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to create transaction');
+      setError(err.message || 'Failed to save transaction');
     } finally {
       setSubmitting(false);
     }
@@ -362,9 +400,13 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
               <Split className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="font-bold text-slate-800 text-sm sm:text-base">New Double-Entry Transaction</h3>
+              <h3 className="font-bold text-slate-800 text-sm sm:text-base">
+                {editingTransaction ? 'Edit Transaction' : 'New Double-Entry Transaction'}
+              </h3>
               <p className="text-[11px] sm:text-xs text-slate-400">
-                GnuCash multi-split transaction with balanced debits and credits
+                {editingTransaction
+                  ? 'Modify balanced splits and transaction details'
+                  : 'GnuCash multi-split transaction with balanced debits and credits'}
               </p>
             </div>
           </div>
@@ -759,7 +801,11 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
               disabled={submitting || !isBalanced}
               className="px-5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg shadow-sm transition active:scale-95 flex items-center space-x-1.5"
             >
-              {submitting ? 'Saving...' : 'Record Transaction'}
+              {submitting
+                ? 'Saving...'
+                : editingTransaction
+                ? 'Update Transaction'
+                : 'Record Transaction'}
             </button>
           </div>
         </form>

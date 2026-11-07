@@ -19,6 +19,7 @@ import {
   RegisterEntry,
   Transaction,
   UpdateAccountPayload,
+  UpdateTransactionPayload,
   User,
 } from './types';
 import {
@@ -31,10 +32,12 @@ import {
   fetchAccountTree,
   fetchAccountRegister,
   fetchTransactions,
+  fetchTransactionById,
   exportGnucashSqlite,
   seedDatabase,
   resetDataset,
   updateAccount,
+  updateTransaction,
   getStoredUser,
   getStoredToken,
   logout,
@@ -77,6 +80,7 @@ export const App: React.FC = () => {
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
   const [newAccountParentId, setNewAccountParentId] = useState<string | undefined>();
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
 
   // Logout handler
@@ -199,6 +203,28 @@ export const App: React.FC = () => {
   // Create Transaction
   const handleCreateTransaction = async (payload: CreateTransactionPayload) => {
     await createTransaction(payload);
+    await refreshData();
+  };
+
+  // Open Edit Transaction Modal
+  const handleOpenEditTransaction = async (txId: string) => {
+    let tx = transactions.find((t) => t.id === txId);
+    if (!tx) {
+      try {
+        tx = await fetchTransactionById(txId);
+      } catch (e) {
+        console.error('Failed to fetch transaction for edit:', e);
+      }
+    }
+    if (tx) {
+      setEditingTransaction(tx);
+      setIsTxModalOpen(true);
+    }
+  };
+
+  // Update Transaction
+  const handleUpdateTransaction = async (id: string, payload: UpdateTransactionPayload) => {
+    await updateTransaction(id, payload);
     await refreshData();
   };
 
@@ -387,10 +413,12 @@ export const App: React.FC = () => {
                     onSelectAccount={handleSelectAccountForRegister}
                     onOpenNewTx={(accId) => {
                       setDefaultTxAccountId(accId);
+                      setEditingTransaction(null);
                       setIsTxModalOpen(true);
                     }}
                     onOpenReconcile={handleSelectAccountForReconcile}
                     onDeleteTransaction={handleDeleteTransaction}
+                    onEditTransaction={handleOpenEditTransaction}
                     onToggleHideAccount={handleToggleHideAccount}
                     onCreateTransaction={handleCreateTransaction}
                     transactions={transactions}
@@ -410,9 +438,11 @@ export const App: React.FC = () => {
                 currentCurrency={currency}
                 onOpenNewTx={() => {
                   setDefaultTxAccountId(undefined);
+                  setEditingTransaction(null);
                   setIsTxModalOpen(true);
                 }}
                 onDeleteTransaction={handleDeleteTransaction}
+                onEditTransaction={handleOpenEditTransaction}
               />
             )}
 
@@ -480,8 +510,13 @@ export const App: React.FC = () => {
       {/* Transaction Modal */}
       <TransactionModal
         isOpen={isTxModalOpen}
-        onClose={() => setIsTxModalOpen(false)}
+        onClose={() => {
+          setIsTxModalOpen(false);
+          setEditingTransaction(null);
+        }}
         onSubmit={handleCreateTransaction}
+        onUpdate={handleUpdateTransaction}
+        editingTransaction={editingTransaction}
         accounts={accounts}
         defaultAccountId={defaultTxAccountId}
         currentCurrency={currency}

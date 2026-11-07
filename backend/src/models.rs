@@ -149,6 +149,7 @@ pub struct RegisterEntry {
     pub post_date: NaiveDate,
     pub num: Option<String>,
     pub description: String,
+    pub notes: Option<String>,
     pub transfer_account_name: String,
     pub memo: Option<String>,
     pub reconciled_state: String,
