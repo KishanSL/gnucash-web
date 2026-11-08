@@ -22,15 +22,31 @@ This file provides context, architectural constraints, and mandatory verificatio
 > Multi-modal AI models can and should capture and inspect screenshots to prevent UI regressions.
 
 ### How to Run Puppeteer Tests
-A Puppeteer testing suite is configured in `frontend/scripts/test_ui.mjs` (and available via the Puppeteer MCP server).
+Puppeteer testing suites are configured in `frontend/scripts/`:
+- `frontend/scripts/test_ui.mjs` — General UI layout, auth page, desktop user dropdown, and mobile drawer.
+- `frontend/scripts/test_register_autocomplete.mjs` — Complete account history autocomplete & autofill verification.
+- `frontend/scripts/test_register_enhancements.mjs` — Register 2-line mode, inline blank row, and transaction edit modal.
 
 - **Default Test Credentials**: `kishan` / `Kishan@123`
 - **Frontend URL**: `http://localhost:8081`
 - **Run the test script**:
   ```bash
   cd frontend && node scripts/test_ui.mjs
+  cd frontend && node scripts/test_register_autocomplete.mjs
   ```
 - **Screenshots Directory**: `frontend/screenshots/`
+
+### React 18 Event Handling & Puppeteer Testing Gotchas
+1. **Controlled Inputs Tracker Reset**:
+   React 18's internal `_valueTracker` ignores synthetic input events when typing into controlled number or text inputs. Always reset the tracker when programmatically setting values in Puppeteer:
+   ```js
+   const tracker = el._valueTracker;
+   if (tracker) tracker.setValue('');
+   Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(el, val);
+   el.dispatchEvent(new Event('input', { bubbles: true }));
+   ```
+2. **Dropdown Trigger Events**:
+   Always bind both `onClick` and `onFocus` (`onClick={() => setIsOpen(true)}`) on dropdown inputs (e.g. AccountAutocomplete, Payee Autocomplete) so clicking an already-focused input re-opens the dropdown.
 
 ### Key Viewport Requirements
 - **Desktop (1440×900 or 1920×1080)**:
@@ -51,7 +67,7 @@ A Puppeteer testing suite is configured in `frontend/scripts/test_ui.mjs` (and a
 - **User Account Menu Dropdown**:
   - All account, database, credential, and display preferences live inside the user dropdown:
     1. User Profile info (`username`, `email`)
-    2. **Currency Preference** (relocated from header into dropdown for cleaner aesthetics)
+    2. **Currency Preference** (white font in dropdown for high contrast against dark backgrounds)
     3. **Import .gnucash** (opens GnuCash SQLite / XML import modal — *never place on main navbar*)
     4. **Export .gnucash** (downloads database as standard SQLite file formatted `username_yyyyMMddhhmmss.gnucash`)
     5. **Seed Sample Data** (seeds chart of accounts & realistic sample transactions)
@@ -63,7 +79,30 @@ A Puppeteer testing suite is configured in `frontend/scripts/test_ui.mjs` (and a
 
 ---
 
-## 4. Database & Accounting Rules
+## 4. Accounts Tree & Account Register (Ledger) Guidelines
+
+- **Accounts Tree Stage Persistence**:
+  - Account tree expansion stage (`hide subaccounts` vs `show all accounts`) is preserved in `localStorage` (`gnucash_accounts_collapsed_keys`) across page refreshes.
+- **Double-Click to Open Register**:
+  - Double-clicking any account row in `AccountsTree` navigates directly to that account's ledger register.
+- **Auto-Scroll to Bottom & Inline Blank Entry Row**:
+  - The ledger register automatically scrolls to the end where an inline blank row is ready for fast keyboard-driven data entry.
+  - Transactions default to 2 splits (the current account + selectable transfer account).
+  - Deposit vs. withdrawal single-number entry enforces mutual exclusivity.
+- **Complete Historical Payee Autocomplete**:
+  - Autocomplete in the register sources from **100% of the account's historical transactions** (`registerEntries`), not limited to recent paginated transactions.
+  - Slices distinct payees sorted chronologically descending (most recent first) with occurrence counts (`Temple 3×`).
+  - Selecting a payee automatically autofills description, transfer account (from `all_splits`), notes, memo, and debit/credit amount and direction.
+- **Two-Line Ledger Mode**:
+  - Line 1: Date, Num/Check #, Description / Payee, Transfer Account, Reconciled state (`n`/`c`/`y`), Amount (Deposit/Withdrawal), Running Balance, and Actions.
+  - Line 2: Details / Memo / Notes text visibly displayed beneath the transaction.
+- **Transaction Edit Option**:
+  - An Edit (pencil icon) button is placed immediately next to the Delete (trash icon) button on each transaction row in both `AccountRegister` and `TransactionsJournal`.
+  - Clicking Edit opens `TransactionModal` pre-populated with all splits, accounts, amounts, notes, and memo for full modification via `PUT /api/transactions/:id`.
+
+---
+
+## 5. Database, Accounting & Export Rules
 
 1. **Strict Double-Entry Enforcement**:
    - Every transaction must balance: $\sum \text{Debits} + \sum \text{Credits} = 0$.
@@ -76,10 +115,20 @@ A Puppeteer testing suite is configured in `frontend/scripts/test_ui.mjs` (and a
    - Leaves the database completely empty ($0$ accounts, $0$ transactions) so the user can import a file or create accounts from scratch.
 4. **Seed Database (`POST /api/seed`)**:
    - Cleans existing user data and provisions the full 37-account standard Chart of Accounts with realistic sample journal transactions.
+5. **GnuCash 5.17+ SQLite File Compatibility**:
+   - Export endpoint (`GET /api/export/gnucash-sqlite`) writes a valid SQLite database with filename `username_yyyyMMddhhmmss.gnucash`.
+   - The `versions` table must populate standard GnuCash 5.17 version numbers to prevent "The database is from an older version of GnuCash" warnings:
+     - `table_name = 'Gnucash'`, `table_version = 5000017` (representing version 5.17)
+     - `table_name = 'Gnucash-Resave'`, `table_version = 19920`
+     - `table_name = 'transactions'`, `table_version = 4`
+     - `table_name = 'splits'`, `table_version = 5`
+     - `table_name = 'accounts'`, `table_version = 1`
+     - `table_name = 'commodities'`, `table_version = 1`
+     - `table_name = 'books'`, `table_version = 1`
 
 ---
 
-## 5. Build & Deployment Workflows
+## 6. Build & Deployment Workflows
 
 Because services run in Podman containers, rebuild and redeploy after code changes:
 
@@ -87,7 +136,7 @@ Because services run in Podman containers, rebuild and redeploy after code chang
 ```bash
 cd frontend && npm run build
 podman cp dist/. gnucash-frontend:/usr/share/nginx/html/
-podman build -t gnucash-frontend:latest ./frontend
+podman restart gnucash-frontend
 ```
 
 ### Backend Updates
@@ -107,7 +156,7 @@ curl -s http://localhost:8081/api/health
 
 ---
 
-## 6. Key API Endpoints Reference
+## 7. Key API Endpoints Reference
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
@@ -117,7 +166,9 @@ curl -s http://localhost:8081/api/health
 | `/api/auth/reset-password` | `POST` | Admin/recovery password reset |
 | `/api/auth/change-password` | `POST` | Authenticated password change |
 | `/api/accounts/tree` | `GET` | Hierarchical account tree with recursive balances |
+| `/api/accounts/:id/register` | `GET` | Full account ledger register with `all_splits`, notes, memo, running balance |
 | `/api/transactions` | `GET`, `POST` | Journal transactions with splits |
+| `/api/transactions/:id` | `GET`, `PUT`, `DELETE` | Retrieve, update splits/notes/memo, or delete transaction |
 | `/api/reconcile/:id` | `GET`, `POST` | Bank account reconciliation tool |
 | `/api/reports/balance-sheet` | `GET` | Balance Sheet financial statement |
 | `/api/reports/income-statement`| `GET` | Profit & Loss (P&L) statement |
