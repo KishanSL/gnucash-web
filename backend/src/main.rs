@@ -16,6 +16,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // Verify JWT_SECRET is configured and at least 32 characters; abort startup on failure
+    let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_default();
+    if jwt_secret.trim().len() < 32 {
+        tracing::error!(
+            "FATAL: JWT_SECRET environment variable is unset or shorter than 32 characters (found {} chars). Server startup aborted.",
+            jwt_secret.trim().len()
+        );
+        eprintln!(
+            "FATAL ERROR: JWT_SECRET environment variable is unset or shorter than 32 characters (found {} chars).\nA cryptographically secure secret of at least 32 characters (e.g., openssl rand -hex 32) is required.",
+            jwt_secret.trim().len()
+        );
+        std::process::exit(1);
+    }
+
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash".to_string());
 
@@ -31,10 +45,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let default_user_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001")
             .unwrap_or_else(|_| Uuid::new_v4());
         let mut imported_file = false;
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/kishan".to_string());
-        let codebase_dir = std::path::PathBuf::from(format!("{}/codebase", home));
+        let seed_dir_str = std::env::var("GNUCASH_SEED_DIR").unwrap_or_else(|_| "/app/data".to_string());
+        let seed_dir = std::path::PathBuf::from(seed_dir_str);
 
-        if let Ok(entries) = std::fs::read_dir(codebase_dir) {
+        if let Ok(entries) = std::fs::read_dir(seed_dir) {
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.is_file()

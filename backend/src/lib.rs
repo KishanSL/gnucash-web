@@ -92,23 +92,20 @@ pub fn create_app(pool: sqlx::PgPool) -> Router {
             "/api/export/gnucash-sqlite",
             get(handlers::exporter::export_gnucash_sqlite),
         )
-        .route(
-            "/api/import/local-files",
-            get(handlers::importer::list_local_gnucash_files),
-        )
-        .route(
-            "/api/import/from-path",
-            post(handlers::importer::import_from_path),
-        )
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(pool)
 }
 
 pub async fn health_check() -> Json<serde_json::Value> {
+    let allow_signup = std::env::var("ALLOW_SIGNUP")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
     Json(json!({
         "status": "ok",
         "service": "gnucash-backend",
-        "version": "0.1.0"
+        "version": "0.1.0",
+        "allow_signup": allow_signup
     }))
 }

@@ -15,6 +15,8 @@ if [[ "$TARGET" == "frontend" || "$TARGET" == "all" ]]; then
   echo "📦 [1/4] Building and deploying Frontend..."
   (cd frontend && npm run build)
   podman cp frontend/dist/. gnucash-frontend:/usr/share/nginx/html/
+  podman cp frontend/nginx.conf gnucash-frontend:/etc/nginx/conf.d/default.conf
+  podman exec gnucash-frontend nginx -t
   podman restart gnucash-frontend
 fi
 
@@ -43,6 +45,7 @@ fi
 echo "🎭 [4/4] Executing Puppeteer Verification Suites..."
 (cd frontend && node scripts/test_ui.mjs)
 (cd frontend && node scripts/test_register_autocomplete.mjs)
+(cd frontend && node scripts/test_reset_password.mjs)
 
 echo "========================================================"
 echo "  ✅ All Deployment & Verification Steps Succeeded!"

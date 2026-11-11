@@ -104,7 +104,7 @@ export async function login(payload: LoginPayload): Promise<AuthResponse> {
   return data;
 }
 
-export async function resetPassword(payload: { username: string; new_password: string }): Promise<{ success: boolean; message: string }> {
+export async function resetPassword(payload: { username: string; new_password?: string }): Promise<{ success: boolean; message: string }> {
   const res = await fetch(`${API_BASE}/auth/reset-password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -149,7 +149,7 @@ export function logout() {
 
 // --- General Health ---
 
-export async function checkHealth(): Promise<{ status: string; service: string }> {
+export async function checkHealth(): Promise<{ status: string; service: string; allow_signup?: boolean }> {
   const res = await fetch(`${API_BASE}/health`);
   if (!res.ok) throw new Error('Health check failed');
   return res.json();
@@ -374,42 +374,6 @@ export async function importGnuCashSqlite(
     throw new Error(err.error || 'Failed to import GnuCash database');
   }
 
-  return res.json();
-}
-
-export interface LocalGnuCashFile {
-  path: string;
-  filename: string;
-  size_bytes: number;
-}
-
-export async function fetchLocalGnuCashFiles(): Promise<LocalGnuCashFile[]> {
-  const res = await fetchWithAuth(`${API_BASE}/import/local-files`);
-  if (!res.ok) return [];
-  const data = await res.json().catch(() => ({ files: [] }));
-  return data.files || [];
-}
-
-export async function importFromPath(
-  path: string,
-  wipe: boolean = true,
-  defaultCurrency: string = 'INR'
-): Promise<{
-  success: boolean;
-  accounts_imported: number;
-  transactions_imported: number;
-  splits_imported: number;
-  message: string;
-}> {
-  const res = await fetchWithAuth(`${API_BASE}/import/from-path`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, wipe, default_currency: defaultCurrency }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to import GnuCash file from path');
-  }
   return res.json();
 }
 

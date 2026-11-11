@@ -135,14 +135,14 @@ async function testRegisterAutocomplete() {
     }
 
     // 6. Test typing in description to filter history
-    console.log('6. Testing typing "Tem" to filter payee history...');
+    console.log('6. Testing typing "Wal" to filter payee history...');
     await page.evaluate(() => {
       const input = document.querySelector('tr[data-testid="blank-new-row-main"] input[placeholder*="Description"]');
       if (input) {
         input.focus();
         const tracker = input._valueTracker;
         if (tracker) tracker.setValue('');
-        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, 'Tem');
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, 'Wal');
         input.dispatchEvent(new Event('input', { bubbles: true }));
       }
     });
@@ -153,9 +153,9 @@ async function testRegisterAutocomplete() {
       if (!dropdown) return [];
       return Array.from(dropdown.querySelectorAll('button span.truncate')).map((el) => el.textContent.trim());
     });
-    console.log('Filtered payee options for "Tem":', filteredItems);
-    if (!filteredItems.includes('Temple')) {
-      throw new Error('Filtering by "Tem" did not return "Temple"!');
+    console.log('Filtered payee options for "Wal":', filteredItems);
+    if (!filteredItems.some((name) => name.includes('Walgreens'))) {
+      throw new Error('Filtering by "Wal" did not return "Walgreens Pharmacy"!');
     }
 
     await page.screenshot({ path: path.join(screenshotsDir, '52-register-autocomplete-filtered.png') });

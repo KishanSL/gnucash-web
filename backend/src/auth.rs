@@ -57,7 +57,24 @@ pub struct Claims {
 }
 
 pub fn get_jwt_secret() -> String {
-    std::env::var("JWT_SECRET").unwrap_or_else(|_| "gnucash-super-secret-jwt-key-2026".to_string())
+    match std::env::var("JWT_SECRET") {
+        Ok(secret) if secret.trim().len() >= 32 => secret.trim().to_string(),
+        _ => {
+            #[cfg(test)]
+            {
+                // In test builds without an explicit environment secret, provide a safe test secret >= 32 chars
+                "test-secret-key-must-be-at-least-32-chars-long!".to_string()
+            }
+            #[cfg(not(test))]
+            {
+                if std::env::var("GNUCASH_TEST_MODE").map(|v| v == "1" || v == "true").unwrap_or(false) {
+                    "test-secret-key-must-be-at-least-32-chars-long!".to_string()
+                } else {
+                    panic!("FATAL: JWT_SECRET environment variable is unset or shorter than 32 characters. Server cannot start securely.");
+                }
+            }
+        }
+    }
 }
 
 pub fn create_jwt(user_id: Uuid, username: &str, email: &str) -> Result<String, jsonwebtoken::errors::Error> {
@@ -141,5 +158,24 @@ where
             username: claims.username,
             email: claims.email,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_jwt_secret_validation() {
+        let valid_secret = "0123456789abcdef0123456789abcdef";
+        std::env::set_var("JWT_SECRET", valid_secret);
+        assert_eq!(get_jwt_secret(), valid_secret);
+
+        // Short secret falls back to safe dummy in test mode
+        std::env::set_var("JWT_SECRET", "too-short");
+        assert_eq!(get_jwt_secret(), "test-secret-key-must-be-at-least-32-chars-long!");
+
+        // Restore valid secret
+        std::env::set_var("JWT_SECRET", valid_secret);
     }
 }

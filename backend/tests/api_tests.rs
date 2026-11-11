@@ -106,7 +106,7 @@ async fn test_double_entry_balance_validation() {
     let app = create_app(pool.clone());
 
     let accounts = sqlx::query_as::<_, (uuid::Uuid, String)>(
-        "SELECT id, name FROM accounts WHERE placeholder = FALSE LIMIT 2",
+        "SELECT id, name FROM accounts WHERE user_id = '00000000-0000-0000-0000-000000000001' AND placeholder = FALSE LIMIT 2",
     )
     .fetch_all(&pool)
     .await
@@ -149,7 +149,7 @@ async fn test_minimum_two_splits_validation() {
     let app = create_app(pool.clone());
 
     let accounts = sqlx::query_as::<_, (uuid::Uuid, String)>(
-        "SELECT id, name FROM accounts WHERE placeholder = FALSE LIMIT 1",
+        "SELECT id, name FROM accounts WHERE user_id = '00000000-0000-0000-0000-000000000001' AND placeholder = FALSE LIMIT 1",
     )
     .fetch_all(&pool)
     .await
@@ -186,14 +186,14 @@ async fn test_cannot_post_to_placeholder_account() {
     let app = create_app(pool.clone());
 
     let placeholder = sqlx::query_as::<_, (uuid::Uuid,)>(
-        "SELECT id FROM accounts WHERE placeholder = TRUE LIMIT 1",
+        "SELECT id FROM accounts WHERE user_id = '00000000-0000-0000-0000-000000000001' AND placeholder = TRUE LIMIT 1",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
 
     let regular = sqlx::query_as::<_, (uuid::Uuid,)>(
-        "SELECT id FROM accounts WHERE placeholder = FALSE LIMIT 1",
+        "SELECT id FROM accounts WHERE user_id = '00000000-0000-0000-0000-000000000001' AND placeholder = FALSE LIMIT 1",
     )
     .fetch_one(&pool)
     .await
@@ -229,14 +229,14 @@ async fn test_valid_double_entry_transaction_and_balances() {
     let app = create_app(pool.clone());
 
     let checking = sqlx::query_as::<_, (uuid::Uuid,)>(
-        "SELECT id FROM accounts WHERE placeholder = FALSE AND (account_type = 'bank' OR name ILIKE '%Checking%' OR name ILIKE '%Bank%' OR name ILIKE '%Cash%') LIMIT 1",
+        "SELECT id FROM accounts WHERE user_id = '00000000-0000-0000-0000-000000000001' AND placeholder = FALSE AND (account_type = 'bank' OR name ILIKE '%Checking%' OR name ILIKE '%Bank%' OR name ILIKE '%Cash%') LIMIT 1",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
 
     let groceries = sqlx::query_as::<_, (uuid::Uuid,)>(
-        "SELECT id FROM accounts WHERE name ILIKE '%Groceries%' LIMIT 1",
+        "SELECT id FROM accounts WHERE user_id = '00000000-0000-0000-0000-000000000001' AND name ILIKE '%Groceries%' LIMIT 1",
     )
     .fetch_one(&pool)
     .await
@@ -275,7 +275,7 @@ async fn test_account_register_running_balance() {
     let app = create_app(pool.clone());
 
     let checking = sqlx::query_as::<_, (uuid::Uuid,)>(
-        "SELECT id FROM accounts WHERE placeholder = FALSE AND (account_type = 'bank' OR name ILIKE '%Checking%' OR name ILIKE '%Bank%' OR name ILIKE '%Cash%') LIMIT 1",
+        "SELECT id FROM accounts WHERE user_id = '00000000-0000-0000-0000-000000000001' AND placeholder = FALSE AND (account_type = 'bank' OR name ILIKE '%Checking%' OR name ILIKE '%Bank%' OR name ILIKE '%Cash%') LIMIT 1",
     )
     .fetch_one(&pool)
     .await
@@ -309,7 +309,7 @@ async fn test_reconciliation_endpoint() {
     let app = create_app(pool.clone());
 
     let checking = sqlx::query_as::<_, (uuid::Uuid,)>(
-        "SELECT id FROM accounts WHERE placeholder = FALSE AND (account_type = 'bank' OR name ILIKE '%Checking%' OR name ILIKE '%Bank%' OR name ILIKE '%Cash%') LIMIT 1",
+        "SELECT id FROM accounts WHERE user_id = '00000000-0000-0000-0000-000000000001' AND placeholder = FALSE AND (account_type = 'bank' OR name ILIKE '%Checking%' OR name ILIKE '%Bank%' OR name ILIKE '%Cash%') LIMIT 1",
     )
     .fetch_one(&pool)
     .await
@@ -583,84 +583,12 @@ async fn test_import_gnucash_compressed_xml() {
 }
 
 #[tokio::test]
-async fn test_list_local_files_and_import_path() {
+async fn test_import_from_path_is_disabled() {
     let pool = get_test_pool().await;
-    let app = create_app(pool.clone());
-
-    // 1. List local files
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/import/local-files")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert!(json["files"].is_array());
-
-    // 2. Import a temp .gnucash file via path
-    use flate2::write::GzEncoder;
-    use flate2::Compression;
-    use std::io::Write;
-
-    let xml_data = r#"<?xml version="1.0" encoding="utf-8" ?>
-<gnc-v2 xmlns:gnc="http://www.gnucash.org/XML/gnc" xmlns:act="http://www.gnucash.org/XML/act" xmlns:trn="http://www.gnucash.org/XML/trn" xmlns:split="http://www.gnucash.org/XML/split" xmlns:cmdty="http://www.gnucash.org/XML/cmdty" xmlns:ts="http://www.gnucash.org/XML/ts">
-<gnc:book version="2.0.0">
-  <gnc:account version="2.0.0">
-    <act:name>Root Account</act:name>
-    <act:id type="guid">50000000000000000000000000000000</act:id>
-    <act:type>ROOT</act:type>
-  </gnc:account>
-  <gnc:account version="2.0.0">
-    <act:name>Wallet Cash</act:name>
-    <act:id type="guid">50000000000000000000000000000001</act:id>
-    <act:type>CASH</act:type>
-    <act:parent type="guid">50000000000000000000000000000000</act:parent>
-  </gnc:account>
-  <gnc:account version="2.0.0">
-    <act:name>Food Expense</act:name>
-    <act:id type="guid">50000000000000000000000000000002</act:id>
-    <act:type>EXPENSE</act:type>
-    <act:parent type="guid">50000000000000000000000000000000</act:parent>
-  </gnc:account>
-  <gnc:transaction version="2.0.0">
-    <trn:id type="guid">50000000000000000000000000000003</trn:id>
-    <trn:description>Lunch</trn:description>
-    <trn:splits>
-      <trn:split>
-        <split:id type="guid">50000000000000000000000000000004</split:id>
-        <split:reconciled-state>n</split:reconciled-state>
-        <split:value>250/1</split:value>
-        <split:account type="guid">50000000000000000000000000000002</split:account>
-      </trn:split>
-      <trn:split>
-        <split:id type="guid">50000000000000000000000000000005</split:id>
-        <split:reconciled-state>n</split:reconciled-state>
-        <split:value>-250/1</split:value>
-        <split:account type="guid">50000000000000000000000000000001</split:account>
-      </trn:split>
-    </trn:splits>
-  </gnc:transaction>
-</gnc:book>
-</gnc-v2>"#;
-
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(xml_data.as_bytes()).unwrap();
-    let gzip_bytes = encoder.finish().unwrap();
-
-    let mut temp_file = tempfile::Builder::new().suffix(".gnucash").tempfile().unwrap();
-    temp_file.write_all(&gzip_bytes).unwrap();
-    let temp_path = temp_file.path().to_str().unwrap().to_string();
+    let app = create_app(pool);
 
     let payload = json!({
-        "path": temp_path,
+        "path": "/etc/passwd",
         "wipe": false,
         "default_currency": "INR"
     });
@@ -677,13 +605,7 @@ async fn test_list_local_files_and_import_path() {
         .await
         .unwrap();
 
-    assert_eq!(res.status(), StatusCode::OK);
-    let body = res.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["success"], true);
-    assert_eq!(json["accounts_imported"], 2);
-    assert_eq!(json["transactions_imported"], 1);
-    assert_eq!(json["splits_imported"], 2);
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -691,13 +613,13 @@ async fn test_auth_login_and_reset_password() {
     let pool = get_test_pool().await;
     let app = create_app(pool.clone());
 
-    // 1. Successful login with default user
-    let login_payload = json!({
+    // 1. Successful login with default user (tries Kishan@123 then password123)
+    let mut login_payload = json!({
         "username": "kishan",
-        "password": "password123"
+        "password": "Kishan@123"
     });
 
-    let res = app
+    let mut res = app
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -709,20 +631,38 @@ async fn test_auth_login_and_reset_password() {
         .await
         .unwrap();
 
+    if res.status() == StatusCode::UNAUTHORIZED {
+        let app_fallback = create_app(pool.clone());
+        login_payload = json!({
+            "username": "kishan",
+            "password": "password123"
+        });
+        res = app_fallback
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&login_payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
     assert_eq!(res.status(), StatusCode::OK);
     let body = res.into_body().collect().await.unwrap().to_bytes();
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert!(json.get("token").is_some());
     assert_eq!(json["user"]["username"], "kishan");
 
-    // 2. Reset password endpoint
+    // 2. Request password reset without admin key (must be rejected 403 Forbidden)
     let reset_payload = json!({
-        "username": "kishan",
-        "new_password": "new_password_2026"
+        "username": "kishan"
     });
 
-    let app2 = create_app(pool.clone());
-    let reset_res = app2
+    let app_forbidden = create_app(pool.clone());
+    let res_forbidden = app_forbidden
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -734,13 +674,39 @@ async fn test_auth_login_and_reset_password() {
         .await
         .unwrap();
 
+    assert_eq!(res_forbidden.status(), StatusCode::FORBIDDEN);
+    let forbidden_body = res_forbidden.into_body().collect().await.unwrap().to_bytes();
+    let forbidden_json: Value = serde_json::from_slice(&forbidden_body).unwrap();
+    assert!(forbidden_json["error"].as_str().unwrap().contains("disabled"));
+
+    // 2b. Request password reset with X-Admin-Key (authorized CLI administrator)
+    let jwt_secret = gnucash_backend::auth::get_jwt_secret();
+    let app2 = create_app(pool.clone());
+    let reset_res = app2
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/reset-password")
+                .header("content-type", "application/json")
+                .header("x-admin-key", jwt_secret)
+                .body(Body::from(serde_json::to_vec(&reset_payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
     assert_eq!(reset_res.status(), StatusCode::OK);
 
-    // 3. Login with new password
+    // Retrieve generated temporary password written to server file
+    let temp_password = gnucash_backend::handlers::auth::read_latest_temporary_password()
+        .expect("Temporary password file should be written on server");
+    assert!(temp_password.starts_with("TempPass-"));
+
+    // 3. Login with temporary password retrieved from server file
     let app3 = create_app(pool.clone());
-    let new_login_payload = json!({
+    let temp_login_payload = json!({
         "username": "kishan",
-        "password": "new_password_2026"
+        "password": temp_password
     });
 
     let res3 = app3
@@ -749,58 +715,82 @@ async fn test_auth_login_and_reset_password() {
                 .method("POST")
                 .uri("/api/auth/login")
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&new_login_payload).unwrap()))
+                .body(Body::from(serde_json::to_vec(&temp_login_payload).unwrap()))
                 .unwrap(),
         )
         .await
         .unwrap();
 
     assert_eq!(res3.status(), StatusCode::OK);
+    let temp_login_body = res3.into_body().collect().await.unwrap().to_bytes();
+    let temp_login_json: Value = serde_json::from_slice(&temp_login_body).unwrap();
+    let temp_token = temp_login_json["token"].as_str().unwrap();
 
-    // 4. Reset back to password123 for consistency
+    // 4. In logged-in user space, change password back to Kishan@123
     let app4 = create_app(pool);
-    let reset_back_payload = json!({
-        "username": "kishan",
-        "new_password": "password123"
+    let change_pwd_payload = json!({
+        "current_password": temp_password,
+        "new_password": "Kishan@123"
     });
 
-    let _ = app4
+    let res4 = app4
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/auth/reset-password")
+                .uri("/api/auth/change-password")
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&reset_back_payload).unwrap()))
+                .header("authorization", format!("Bearer {}", temp_token))
+                .body(Body::from(serde_json::to_vec(&change_pwd_payload).unwrap()))
                 .unwrap(),
         )
         .await
         .unwrap();
+
+    assert_eq!(res4.status(), StatusCode::OK);
 }
 
 #[tokio::test]
 async fn test_auth_change_password() {
     let pool = get_test_pool().await;
 
-    // Login to get token
+    // Login to get token (try Kishan@123, then password123)
     let app1 = create_app(pool.clone());
-    let login_res = app1
+    let mut login_payload = json!({
+        "username": "kishan",
+        "password": "Kishan@123"
+    });
+    let mut login_res = app1
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/api/auth/login")
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "username": "kishan",
-                        "password": "password123"
-                    }))
-                    .unwrap(),
-                ))
+                .body(Body::from(serde_json::to_vec(&login_payload).unwrap()))
                 .unwrap(),
         )
         .await
         .unwrap();
+
+    if login_res.status() == StatusCode::UNAUTHORIZED {
+        let app_fallback = create_app(pool.clone());
+        login_payload = json!({
+            "username": "kishan",
+            "password": "password123"
+        });
+        login_res = app_fallback
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&login_payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
     assert_eq!(login_res.status(), StatusCode::OK);
+    let current_pwd = login_payload["password"].as_str().unwrap().to_string();
     let body = login_res.into_body().collect().await.unwrap().to_bytes();
     let login_data: Value = serde_json::from_slice(&body).unwrap();
     let token = login_data["token"].as_str().unwrap();
@@ -838,7 +828,7 @@ async fn test_auth_change_password() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
-                        "current_password": "password123",
+                        "current_password": current_pwd,
                         "new_password": "updated_password_456"
                     }))
                     .unwrap(),
@@ -869,19 +859,23 @@ async fn test_auth_change_password() {
         .await
         .unwrap();
     assert_eq!(new_login.status(), StatusCode::OK);
+    let new_login_body = new_login.into_body().collect().await.unwrap().to_bytes();
+    let new_login_data: Value = serde_json::from_slice(&new_login_body).unwrap();
+    let updated_token = new_login_data["token"].as_str().unwrap();
 
-    // Change back to password123
+    // Change back to Kishan@123 via authenticated change-password endpoint
     let app5 = create_app(pool);
-    let _ = app5
+    let reset_back_res = app5
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/auth/reset-password")
+                .uri("/api/auth/change-password")
                 .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", updated_token))
                 .body(Body::from(
                     serde_json::to_vec(&json!({
-                        "username": "kishan",
-                        "new_password": "password123"
+                        "current_password": "updated_password_456",
+                        "new_password": "Kishan@123"
                     }))
                     .unwrap(),
                 ))
@@ -889,4 +883,120 @@ async fn test_auth_change_password() {
         )
         .await
         .unwrap();
+    assert_eq!(reset_back_res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_signup_disabled_by_default() {
+    let pool = get_test_pool().await;
+    let app = create_app(pool);
+
+    let signup_payload = json!({
+        "username": "random_attacker",
+        "email": "attacker@example.com",
+        "password": "password123"
+    });
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/signup")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&signup_payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["error"].as_str().unwrap().contains("disabled"));
+}
+
+#[tokio::test]
+async fn test_signup_with_admin_key() {
+    let pool = get_test_pool().await;
+    let _ = sqlx::query("DELETE FROM users WHERE username = 'admin_provisioned_user' OR email = 'provisioned@example.com'")
+        .execute(&pool)
+        .await;
+    let app = create_app(pool);
+
+    let signup_payload = json!({
+        "username": "admin_provisioned_user",
+        "email": "provisioned@example.com",
+        "password": "password123"
+    });
+
+    let jwt_secret = gnucash_backend::auth::get_jwt_secret();
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/signup")
+                .header("content-type", "application/json")
+                .header("x-admin-key", jwt_secret)
+                .body(Body::from(serde_json::to_vec(&signup_payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert!(json.get("token").is_some());
+    assert_eq!(json["user"]["username"], "admin_provisioned_user");
+}
+
+#[tokio::test]
+async fn test_login_non_enumeration() {
+    let pool = get_test_pool().await;
+    let app1 = create_app(pool.clone());
+
+    // 1. Non-existent username
+    let res1 = app1
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&json!({
+                    "username": "totally_non_existent_user_9999",
+                    "password": "wrongpassword123"
+                })).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res1.status(), StatusCode::UNAUTHORIZED);
+    let body1 = res1.into_body().collect().await.unwrap().to_bytes();
+    let json1: Value = serde_json::from_slice(&body1).unwrap();
+    assert_eq!(json1["error"], "Invalid username or password");
+
+    // 2. Existing username with wrong password
+    let app2 = create_app(pool);
+    let res2 = app2
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&json!({
+                    "username": "kishan",
+                    "password": "WrongPassword@999"
+                })).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res2.status(), StatusCode::UNAUTHORIZED);
+    let body2 = res2.into_body().collect().await.unwrap().to_bytes();
+    let json2: Value = serde_json::from_slice(&body2).unwrap();
+    // Verify identical error message is returned
+    assert_eq!(json2["error"], "Invalid username or password");
 }

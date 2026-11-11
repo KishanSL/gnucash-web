@@ -88,12 +88,14 @@ docker compose up -d
 
 | Service | Container Name | Port Exposure | Description |
 | :--- | :--- | :--- | :--- |
-| **Frontend UI** | `gnucash-frontend` | `8081` (Host) | React 18 SPA served via Nginx reverse proxy |
-| **Rust Backend** | `gnucash-backend` | Internal (`8082`) | Axum REST API server (accessible via Nginx `/api/`) |
-| **PostgreSQL DB** | `gnucash-postgres` | Internal (`5432`) | PostgreSQL 16 database (isolated within Docker network) |
+| **Frontend UI** | `gnucash-frontend` | `127.0.0.1:8081` (Localhost only) | React 18 SPA served via Nginx reverse proxy |
+| **Rust Backend** | `gnucash-backend` | `127.0.0.1:8082` (Localhost only) | Axum REST API server (accessible via Nginx `/api/`) |
+| **PostgreSQL DB** | `gnucash-postgres` | `127.0.0.1:5432` (Localhost only) | PostgreSQL 16 database |
 
 > [!NOTE]
-> For security and clean architecture, only the frontend is exposed on port `8081`. All API calls (`/api/...`) are securely proxied by Nginx internally to the backend, and PostgreSQL is isolated from the host.
+> All services bind strictly to `127.0.0.1` (localhost only). If exposing via Cloudflare Tunnel or reverse proxy, point your tunnel to `http://127.0.0.1:8081` without exposing raw container ports to public interfaces or `0.0.0.0`.
+>
+> File imports are restricted strictly to direct browser multipart file uploads (`POST /api/import/gnucash-sqlite`). Server-side path imports have been completely removed for security.
 
 ### Automatic GnuCash File Import:
 - On startup, if the database is uninitialized, the backend automatically scans `~/codebase` (mounted into the container) for any `.gnucash` files (such as `KishanSenLaskar-2026-27.gnucash`) and auto-imports them on first boot!
@@ -129,6 +131,24 @@ docker compose down -v
 ---
 
 ## REST API Reference
+
+### Authentication & Admin CLI
+- Public user registration and public password reset are disabled to prevent brute force, account lockout, and username enumeration attacks over the network.
+- **Admin User Creation**:
+  ```bash
+  ./scripts/create_user.sh <username> <email> <password>
+  ```
+- **Admin Password Reset**:
+  ```bash
+  # Generate random temporary password written to server file:
+  ./scripts/reset_password.sh <username_or_email>
+
+  # Or set permanent password directly from server CLI:
+  ./scripts/reset_password.sh <username_or_email> 'NewPassword@123'
+  ```
+- `POST /api/auth/login` - Authenticate and obtain 30-day JWT token (protected by constant-time verification)
+- `POST /api/auth/change-password` - Update password in authenticated user space
+- `GET /api/auth/me` - Get current authenticated user profile
 
 ### Health & Seed
 - `GET /api/health` - Service health status

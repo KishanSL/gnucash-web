@@ -36,6 +36,7 @@ struct TransactionExportRow {
     enter_date: chrono::DateTime<chrono::Utc>,
     num: Option<String>,
     description: String,
+    #[allow(dead_code)]
     notes: Option<String>,
 }
 

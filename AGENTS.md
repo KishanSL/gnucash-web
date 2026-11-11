@@ -26,6 +26,7 @@ Puppeteer testing suites are configured in `frontend/scripts/`:
 - `frontend/scripts/test_ui.mjs` — General UI layout, auth page, desktop user dropdown, and mobile drawer.
 - `frontend/scripts/test_register_autocomplete.mjs` — Complete account history autocomplete & autofill verification.
 - `frontend/scripts/test_register_enhancements.mjs` — Register 2-line mode, inline blank row, and transaction edit modal.
+- `frontend/scripts/test_reset_password.mjs` — Server-secured password reset flow, server notice file extraction, and logged-in password update.
 
 - **Default Test Credentials**: `kishan` / `Kishan@123`
 - **Frontend URL**: `http://localhost:8081`
@@ -33,8 +34,38 @@ Puppeteer testing suites are configured in `frontend/scripts/`:
   ```bash
   cd frontend && node scripts/test_ui.mjs
   cd frontend && node scripts/test_register_autocomplete.mjs
+  cd frontend && node scripts/test_reset_password.mjs
   ```
 - **Screenshots Directory**: `frontend/screenshots/`
+
+### Security & Password Reset Architecture
+- **Admin User Creation**:
+  - Because public registration is disabled (`ALLOW_SIGNUP=false`), new accounts are created securely via the admin CLI script:
+    ```bash
+    ./scripts/create_user.sh <username> <email> <password>
+    ```
+    This script authenticates using the server's `JWT_SECRET` (`X-Admin-Key` header) and initializes the standard starter Chart of Accounts.
+  - Alternatively, public signup can be temporarily enabled by setting `ALLOW_SIGNUP=true` in `.env` and restarting the backend.
+- **Localhost Only Port Bindings**:
+  - `docker-compose.yml` binds all ports exclusively to `127.0.0.1` (`127.0.0.1:8081:80`, `127.0.0.1:8082:8082`, `127.0.0.1:5432:5432`) so that external access is prevented unless proxied via Cloudflare Tunnel or local SSH port forwarding.
+- **Multipart Only File Import**:
+  - Arbitrary server path import (`POST /api/import/from-path`) and local file scanning (`GET /api/import/local-files`) have been completely removed.
+  - GnuCash files (SQLite or XML) are uploaded solely through authenticated browser multipart upload (`POST /api/import/gnucash-sqlite`).
+
+- **CLI-Only Password Reset & Non-Enumeration Protection**:
+  - The public `POST /api/auth/reset-password` endpoint is strictly disabled for anonymous callers and returns `403 Forbidden` (`{"error": "Public password reset is disabled..."}`).
+  - Password reset is restricted exclusively to the server CLI script using the server's `JWT_SECRET` (`X-Admin-Key`):
+    ```bash
+    # Generate random temporary password written to server files
+    ./scripts/reset_password.sh <username_or_email>
+
+    # Or set permanent password directly from server CLI
+    ./scripts/reset_password.sh <username_or_email> 'NewPassword@123'
+    ```
+  - **Non-Enumeration Protection**:
+    - `POST /api/auth/login` uses constant-time bcrypt verification against a precomputed dummy hash when a user is not found, eliminating timing side-channels.
+    - Failed logins return identical generic `401 Unauthorized` (`{"error": "Invalid username or password"}`) whether the user exists or not.
+    - Public reset requests return `403 Forbidden` upfront before any database query is executed, preventing username/email probing.
 
 ### React 18 Event Handling & Puppeteer Testing Gotchas
 1. **Controlled Inputs Tracker Reset**:

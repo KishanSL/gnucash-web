@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   X,
   Upload,
@@ -7,13 +7,9 @@ import {
   AlertCircle,
   CheckCircle2,
   HelpCircle,
-  Folder,
 } from 'lucide-react';
 import {
   importGnuCashSqlite,
-  importFromPath,
-  fetchLocalGnuCashFiles,
-  LocalGnuCashFile,
   SUPPORTED_CURRENCIES,
 } from '../api';
 
@@ -31,8 +27,6 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   currentCurrency,
 }) => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [detectedFiles, setDetectedFiles] = useState<LocalGnuCashFile[]>([]);
-  const [customPath, setCustomPath] = useState('');
   const [wipeExisting, setWipeExisting] = useState(true);
   const [defaultCurrency, setDefaultCurrency] = useState(currentCurrency || 'INR');
   const [submitting, setSubmitting] = useState(false);
@@ -45,14 +39,6 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (isOpen) {
-      fetchLocalGnuCashFiles()
-        .then((files) => setDetectedFiles(files))
-        .catch(() => {});
-    }
-  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -77,32 +63,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     e.preventDefault();
   };
 
-  const handleImportPath = async (filePath: string) => {
-    try {
-      setSubmitting(true);
-      setError(null);
-      const res = await importFromPath(filePath, wipeExisting, defaultCurrency);
-      setResult({
-        accounts: res.accounts_imported,
-        transactions: res.transactions_imported,
-        splits: res.splits_imported,
-        message: res.message,
-      });
-      onImportSuccess();
-    } catch (err: any) {
-      setError(err.message || 'Failed to import GnuCash file from path');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    if (customPath.trim()) {
-      await handleImportPath(customPath.trim());
-      return;
-    }
 
     if (!selectedFile) {
       setError('Please select a .gnucash file to import.');
@@ -194,48 +156,6 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                     {result.splits}
                   </span>
                 </div>
-              </div>
-            </div>
-          )}
-
-          {/* Detected Local Files in ~/codebase */}
-          {detectedFiles.length > 0 && (
-            <div className="bg-emerald-50/70 border border-emerald-200 rounded-xl p-3 sm:p-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-emerald-900 flex items-center space-x-1.5">
-                  <Folder className="w-4 h-4 text-emerald-600" />
-                  <span>Found GnuCash File in ~/codebase</span>
-                </span>
-                <span className="text-[10px] text-emerald-700 font-mono bg-emerald-100 px-2 py-0.5 rounded-full font-semibold">
-                  1-Click Import
-                </span>
-              </div>
-              <p className="text-[11px] text-emerald-700">
-                Found in <code className="font-mono bg-emerald-100/70 px-1 py-0.5 rounded">~/codebase</code>. Click to import directly:
-              </p>
-              <div className="space-y-1.5 pt-1">
-                {detectedFiles.map((df) => (
-                  <div
-                    key={df.path}
-                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-white p-2.5 rounded-lg border border-emerald-200/80 shadow-xs"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-bold text-slate-800 font-mono truncate">{df.filename}</p>
-                      <p className="text-[10px] text-slate-400 font-mono truncate">
-                        {df.path} • {(df.size_bytes / 1024).toFixed(1)} KB
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={submitting}
-                      onClick={() => handleImportPath(df.path)}
-                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow-xs flex items-center justify-center space-x-1.5 transition active:scale-95 disabled:opacity-50 shrink-0"
-                    >
-                      <FileCheck className="w-3.5 h-3.5" />
-                      <span>{submitting ? 'Importing...' : 'Import This File'}</span>
-                    </button>
-                  </div>
-                ))}
               </div>
             </div>
           )}
@@ -360,29 +280,6 @@ export const ImportModal: React.FC<ImportModalProps> = ({
             </div>
           </div>
 
-          {/* Custom server path */}
-          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-1.5">
-            <label className="block font-semibold text-slate-700">
-              Or specify server file path (.gnucash)
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={customPath}
-                onChange={(e) => setCustomPath(e.target.value)}
-                placeholder="/home/kishan/codebase/KishanSenLaskar-2026-27.gnucash"
-                className="flex-1 px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg font-mono focus:ring-emerald-500"
-              />
-              <button
-                type="button"
-                disabled={submitting || !customPath.trim()}
-                onClick={() => handleImportPath(customPath.trim())}
-                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold disabled:opacity-40 transition"
-              >
-                Import Path
-              </button>
-            </div>
-          </div>
 
           {/* Help tip */}
           <div className="flex items-start space-x-2 text-[11px] text-slate-400 bg-slate-100/60 p-2.5 rounded-lg">
@@ -405,7 +302,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
             {!result && (
               <button
                 type="submit"
-                disabled={submitting || (!selectedFile && !customPath.trim())}
+                disabled={submitting || !selectedFile}
                 className="px-5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg shadow-sm transition active:scale-95 flex items-center space-x-2"
               >
                 <Upload className="w-4 h-4" />

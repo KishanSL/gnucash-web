@@ -20,9 +20,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Create dedicated non-root system user (UID 10001, GID 10001)
+RUN groupadd -g 10001 gnucash && \
+    useradd -u 10001 -g gnucash -d /app -s /usr/sbin/nologin gnucash && \
+    mkdir -p /app/data /app/security && \
+    chown -R gnucash:gnucash /app
+
 WORKDIR /app
-COPY --from=builder /usr/src/gnucash-backend/target/release/gnucash-backend /app/gnucash-backend
-COPY --from=builder /usr/src/gnucash-backend/migrations /app/migrations
+COPY --from=builder --chown=gnucash:gnucash /usr/src/gnucash-backend/target/release/gnucash-backend /app/gnucash-backend
+COPY --from=builder --chown=gnucash:gnucash /usr/src/gnucash-backend/migrations /app/migrations
+
+USER 10001:10001
 
 ENV PORT=8082
 EXPOSE 8082

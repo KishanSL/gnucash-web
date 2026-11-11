@@ -11,3 +11,7 @@ frontend/dist/
 **/.env.local
 *.sqlite
 *.gnucash
+
+# Security & temporary passwords
+security/
+*password_reset*.txt

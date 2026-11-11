@@ -10,7 +10,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gnucash_secret}
       POSTGRES_DB: ${POSTGRES_DB:-gnucash}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     expose:
       - "5432"
     volumes:
@@ -25,21 +25,25 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    image: gnucash-backend:latest
+    image: kishansl/gnucash-backend:latest
     container_name: gnucash-backend
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-gnucash}:${POSTGRES_PASSWORD:-gnucash_secret}@postgres:5432/${POSTGRES_DB:-gnucash}
       PORT: 8082
       RUST_LOG: info
-      HOME: /home/kishan
+      GNUCASH_SEED_DIR: /app/data
+      JWT_SECRET: ${JWT_SECRET:-b88caf1e27ae5f4f518317a4a9c4c71b67b274dac5f8028a6c3a741b490d0813}
+      ALLOW_SIGNUP: ${ALLOW_SIGNUP:-false}
     ports:
-      - "${BACKEND_PORT:-8082}:8082"
+      - "127.0.0.1:${BACKEND_PORT:-8082}:8082"
     expose:
       - "8082"
     volumes:
-      # Mount host codebase directory into container to allow detecting and importing .gnucash files
-      - ../:/home/kishan/codebase:ro,z
+      # Standardized container data directory for optional .gnucash auto-seed
+      - ./data:/app/data:ro,z
+      # Mount host security directory for password reset notices
+      - ./security:/app/security:rw,z
     depends_on:
       - postgres
 
@@ -47,7 +51,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: gnucash-frontend:latest
+    image: kishansl/gnucash-frontend:latest
     container_name: gnucash-frontend
     restart: unless-stopped
     ports:
