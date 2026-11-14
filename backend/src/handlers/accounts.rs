@@ -38,13 +38,19 @@ pub async fn list_accounts(
         )
     })?;
 
-    // Fetch direct balances for user's accounts
+    // Fetch direct balances for user's accounts (Issue #9: stock/mutual funds balance is shares/units)
     let balances: Vec<(Uuid, Decimal)> = sqlx::query_as::<_, (Uuid, Decimal)>(
-        r#"SELECT s.account_id, COALESCE(SUM(s.amount), 0) as balance
+        r#"SELECT s.account_id,
+                  COALESCE(
+                      CASE WHEN a.commodity_namespace NOT IN ('CURRENCY', 'ISO4217') OR a.account_type IN ('stock', 'mutual')
+                           THEN SUM(COALESCE(s.quantity, s.amount))
+                           ELSE SUM(s.amount) END,
+                      0
+                  ) as balance
            FROM splits s
            JOIN accounts a ON s.account_id = a.id
            WHERE a.user_id = $1
-           GROUP BY s.account_id"#,
+           GROUP BY s.account_id, a.commodity_namespace, a.account_type"#,
     )
     .bind(auth.id)
     .fetch_all(&pool)
@@ -81,11 +87,17 @@ pub async fn get_account_tree(
     })?;
 
     let balances: Vec<(Uuid, Decimal)> = sqlx::query_as::<_, (Uuid, Decimal)>(
-        r#"SELECT s.account_id, COALESCE(SUM(s.amount), 0) as balance
+        r#"SELECT s.account_id,
+                  COALESCE(
+                      CASE WHEN a.commodity_namespace NOT IN ('CURRENCY', 'ISO4217') OR a.account_type IN ('stock', 'mutual')
+                           THEN SUM(COALESCE(s.quantity, s.amount))
+                           ELSE SUM(s.amount) END,
+                      0
+                  ) as balance
            FROM splits s
            JOIN accounts a ON s.account_id = a.id
            WHERE a.user_id = $1
-           GROUP BY s.account_id"#,
+           GROUP BY s.account_id, a.commodity_namespace, a.account_type"#,
     )
     .bind(auth.id)
     .fetch_all(&pool)
@@ -130,13 +142,28 @@ pub async fn get_account(
         )
     })?;
 
-    let balance_row: Option<(Decimal,)> = sqlx::query_as(
-        "SELECT COALESCE(SUM(amount), 0) FROM splits WHERE account_id = $1",
+    let is_stock = sqlx::query_scalar::<_, bool>(
+        "SELECT COALESCE(commodity_namespace NOT IN ('CURRENCY', 'ISO4217'), false) OR account_type IN ('stock', 'mutual') FROM accounts WHERE id = $1"
     )
     .bind(id)
     .fetch_optional(&pool)
     .await
-    .unwrap_or(None);
+    .unwrap_or(Some(false))
+    .unwrap_or(false);
+
+    let balance_row: Option<(Decimal,)> = if is_stock {
+        sqlx::query_as("SELECT COALESCE(SUM(COALESCE(quantity, amount)), 0) FROM splits WHERE account_id = $1")
+            .bind(id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap_or(None)
+    } else {
+        sqlx::query_as("SELECT COALESCE(SUM(amount), 0) FROM splits WHERE account_id = $1")
+            .bind(id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap_or(None)
+    };
 
     let balance = balance_row.map(|r| r.0).unwrap_or(Decimal::ZERO);
     let display_balance = calculate_display_balance(&row.account_type, balance);
@@ -367,12 +394,12 @@ pub async fn update_account(
             ));
         }
 
-        // Cycle check: verify that 'id' is NOT an ancestor of 'pid'
+        // Cycle check: verify that 'id' is NOT an ancestor of 'pid' (Issue #18)
         let has_cycle = sqlx::query_scalar::<_, bool>(
             r#"WITH RECURSIVE anc AS (
-                SELECT id, parent_id FROM accounts WHERE id = $1 AND user_id = $2
-                UNION ALL
-                SELECT a.id, a.parent_id FROM accounts a JOIN anc ON a.id = anc.parent_id
+                SELECT id, parent_id, 1 as depth FROM accounts WHERE id = $1 AND user_id = $2
+                UNION
+                SELECT a.id, a.parent_id, anc.depth + 1 FROM accounts a JOIN anc ON a.id = anc.parent_id WHERE anc.depth < 100
             )
             SELECT EXISTS (SELECT 1 FROM anc WHERE id = $3)"#
         )
@@ -417,13 +444,28 @@ pub async fn update_account(
         )
     })?;
 
-    let balance_row: Option<(Decimal,)> = sqlx::query_as(
-        "SELECT COALESCE(SUM(amount), 0) FROM splits WHERE account_id = $1",
+    let is_stock = sqlx::query_scalar::<_, bool>(
+        "SELECT COALESCE(commodity_namespace NOT IN ('CURRENCY', 'ISO4217'), false) OR account_type IN ('stock', 'mutual') FROM accounts WHERE id = $1"
     )
     .bind(id)
     .fetch_optional(&pool)
     .await
-    .unwrap_or(None);
+    .unwrap_or(Some(false))
+    .unwrap_or(false);
+
+    let balance_row: Option<(Decimal,)> = if is_stock {
+        sqlx::query_as("SELECT COALESCE(SUM(COALESCE(quantity, amount)), 0) FROM splits WHERE account_id = $1")
+            .bind(id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap_or(None)
+    } else {
+        sqlx::query_as("SELECT COALESCE(SUM(amount), 0) FROM splits WHERE account_id = $1")
+            .bind(id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap_or(None)
+    };
 
     let balance = balance_row.map(|r| r.0).unwrap_or(Decimal::ZERO);
     let display_balance = calculate_display_balance(&updated.account_type, balance);

@@ -2162,7 +2162,24 @@ async fn test_stock_foreign_commodity_import_and_export() {
         .unwrap();
     assert_eq!(stock_currency, "INF209K01VA3");
 
-    // Export again and verify FUND namespace
+    // Verify account balance reflects units (10 shares), not currency cost (Issue #9)
+    let app = create_app(pool.clone());
+    let resp = app.oneshot(
+        Request::builder()
+            .method("GET")
+            .uri("/api/accounts")
+            .header("authorization", format!("Bearer {}", user_token))
+            .body(Body::empty())
+            .unwrap()
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let accs: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    let stock_acc = accs.iter().find(|a| a["name"] == "Mutual Fund Investment").unwrap();
+    let bal: rust_decimal::Decimal = stock_acc["balance"].as_str().unwrap().parse().unwrap();
+    assert_eq!(bal, rust_decimal::Decimal::from(10), "Stock account balance must show units/shares");
+
+    // Export again and verify FUND namespace and faithful quantities
     let app = create_app(pool.clone());
     let resp = app.oneshot(
         Request::builder()
@@ -2178,10 +2195,180 @@ async fn test_stock_foreign_commodity_import_and_export() {
     let temp_exp = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(temp_exp.path(), &exported_bytes).unwrap();
     let exp_conn = rusqlite::Connection::open(temp_exp.path()).unwrap();
-    let namespace: String = exp_conn.query_row(
-        "SELECT namespace FROM commodities WHERE mnemonic = 'INF209K01VA3'",
+    let (namespace, fraction): (String, i64) = exp_conn.query_row(
+        "SELECT namespace, fraction FROM commodities WHERE mnemonic = 'INF209K01VA3'",
         [],
-        |row| row.get(0)
+        |row| Ok((row.get(0)?, row.get(1)?))
     ).unwrap();
     assert_eq!(namespace, "FUND", "Exported commodity with >3 chars must have namespace FUND");
+    assert_eq!(fraction, 1000, "Exported commodity fraction must be preserved");
+
+    let (val_num, val_denom, qty_num, qty_denom): (i64, i64, i64, i64) = exp_conn.query_row(
+        "SELECT s.value_num, s.value_denom, s.quantity_num, s.quantity_denom
+         FROM splits s
+         JOIN accounts a ON s.account_guid = a.guid
+         WHERE a.name = 'Mutual Fund Investment'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    ).unwrap();
+    assert_eq!(val_num, 150000);
+    assert_eq!(val_denom, 100);
+    assert_eq!(qty_num, 10000, "Split quantity_num must be preserved on export");
+    assert_eq!(qty_denom, 1000, "Split quantity_denom must be preserved on export");
+}
+
+#[tokio::test]
+async fn test_issue_19_reject_unbalanced_import() {
+    // Issue #19: Importer must strictly reject transactions unbalanced by even 0.01
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("unbal_{}", &user_id.to_string()[..8]);
+    let email = format!("{}@example.com", username);
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')")
+        .bind(user_id)
+        .bind(&username)
+        .bind(&email)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let user_token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    let temp_db = tempfile::NamedTempFile::new().unwrap();
+    let conn = rusqlite::Connection::open(temp_db.path()).unwrap();
+    conn.execute_batch(r#"
+        CREATE TABLE accounts (guid TEXT PRIMARY KEY, name TEXT, account_type TEXT, commodity_guid TEXT, parent_guid TEXT, code TEXT, description TEXT, hidden INT, placeholder INT);
+        CREATE TABLE transactions (guid TEXT PRIMARY KEY, currency_guid TEXT, num TEXT, post_date TEXT, enter_date TEXT, description TEXT);
+        CREATE TABLE splits (guid TEXT PRIMARY KEY, tx_guid TEXT, account_guid TEXT, memo TEXT, action TEXT, reconcile_state TEXT, reconcile_date TEXT, value_num INT, value_denom INT, quantity_num INT, quantity_denom INT, lot_guid TEXT);
+        CREATE TABLE commodities (guid TEXT PRIMARY KEY, namespace TEXT, mnemonic TEXT, fullname TEXT, cusip TEXT, fraction INT, quote_flag INT, quote_source TEXT);
+
+        INSERT INTO commodities VALUES ('c_inr', 'CURRENCY', 'INR', 'INR', '', 100, 1, 'currency');
+        INSERT INTO accounts VALUES ('a1', 'Assets', 'BANK', 'c_inr', NULL, NULL, NULL, 0, 0);
+        INSERT INTO accounts VALUES ('a2', 'Expenses', 'EXPENSE', 'c_inr', NULL, NULL, NULL, 0, 0);
+
+        INSERT INTO transactions VALUES ('t1', 'c_inr', '', '20261101105900', '20261101105900', 'Unbalanced tx');
+        -- Off by 0.01: -50.00 and +50.01
+        INSERT INTO splits VALUES ('s1', 't1', 'a1', '', '', 'n', NULL, -5000, 100, -5000, 100, NULL);
+        INSERT INTO splits VALUES ('s2', 't1', 'a2', '', '', 'n', NULL, 5001, 100, 5001, 100, NULL);
+    "#).unwrap();
+
+    let bytes = std::fs::read(temp_db.path()).unwrap();
+    let boundary = "---------------------------11223344556677889900";
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"file\"; filename=\"unbalanced.gnucash\"\r\nContent-Type: application/x-sqlite3\r\n\r\n");
+    body.extend_from_slice(&bytes);
+    body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
+
+    let app = create_app(pool.clone());
+    let resp = app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/import/gnucash-sqlite?wipe=true")
+            .header("authorization", format!("Bearer {}", user_token))
+            .header("content-type", format!("multipart/form-data; boundary={}", boundary))
+            .body(Body::from(body))
+            .unwrap()
+    ).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "Importing transaction off by 0.01 must return 400 Bad Request");
+    let resp_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let resp_json: serde_json::Value = serde_json::from_slice(&resp_bytes).unwrap();
+    assert!(resp_json["error"].as_str().unwrap().contains("Double-entry violation"));
+}
+
+#[tokio::test]
+async fn test_issue_18_prevent_parent_cycle_hang() {
+    // Issue #18: Importer detects and breaks parent cycles; update_account cycle check bounds recursion
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("cycle_{}", &user_id.to_string()[..8]);
+    let email = format!("{}@example.com", username);
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')")
+        .bind(user_id)
+        .bind(&username)
+        .bind(&email)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let user_token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    let temp_db = tempfile::NamedTempFile::new().unwrap();
+    let conn = rusqlite::Connection::open(temp_db.path()).unwrap();
+    conn.execute_batch(r#"
+        CREATE TABLE accounts (guid TEXT PRIMARY KEY, name TEXT, account_type TEXT, commodity_guid TEXT, parent_guid TEXT, code TEXT, description TEXT, hidden INT, placeholder INT);
+        CREATE TABLE transactions (guid TEXT PRIMARY KEY, currency_guid TEXT, num TEXT, post_date TEXT, enter_date TEXT, description TEXT);
+        CREATE TABLE splits (guid TEXT PRIMARY KEY, tx_guid TEXT, account_guid TEXT, memo TEXT, action TEXT, reconcile_state TEXT, reconcile_date TEXT, value_num INT, value_denom INT, quantity_num INT, quantity_denom INT, lot_guid TEXT);
+        CREATE TABLE commodities (guid TEXT PRIMARY KEY, namespace TEXT, mnemonic TEXT, fullname TEXT, cusip TEXT, fraction INT, quote_flag INT, quote_source TEXT);
+
+        INSERT INTO commodities VALUES ('c_inr', 'CURRENCY', 'INR', 'INR', '', 100, 1, 'currency');
+        -- Mutual cycle: Cycle A has parent Cycle B; Cycle B has parent Cycle A
+        INSERT INTO accounts VALUES ('a_cycle1', 'Cycle A', 'BANK', 'c_inr', 'a_cycle2', NULL, NULL, 0, 0);
+        INSERT INTO accounts VALUES ('a_cycle2', 'Cycle B', 'BANK', 'c_inr', 'a_cycle1', NULL, NULL, 0, 0);
+    "#).unwrap();
+
+    let bytes = std::fs::read(temp_db.path()).unwrap();
+    let boundary = "---------------------------55443322110099887766";
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"file\"; filename=\"cycle.gnucash\"\r\nContent-Type: application/x-sqlite3\r\n\r\n");
+    body.extend_from_slice(&bytes);
+    body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
+
+    let app = create_app(pool.clone());
+    let resp = app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/import/gnucash-sqlite?wipe=true")
+            .header("authorization", format!("Bearer {}", user_token))
+            .header("content-type", format!("multipart/form-data; boundary={}", boundary))
+            .body(Body::from(body))
+            .unwrap()
+    ).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK, "Import must break cycle without failing");
+
+    // Verify at least one of the two accounts has parent_id IS NULL in Postgres
+    let root_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM accounts WHERE user_id = $1 AND parent_id IS NULL AND name IN ('Cycle A', 'Cycle B')"
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(root_count >= 1, "At least one cyclic account must have its parent broken to NULL");
+
+    // Query account tree: must succeed and not loop infinitely
+    let app = create_app(pool.clone());
+    let resp = app.oneshot(
+        Request::builder()
+            .method("GET")
+            .uri("/api/accounts/tree")
+            .header("authorization", format!("Bearer {}", user_token))
+            .body(Body::empty())
+            .unwrap()
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_issue_1_default_user_password123_fails() {
+    // Issue #1: Verify that login with default kishan/password123 returns 401 Unauthorized
+    let pool = get_test_pool().await;
+    let app = create_app(pool.clone());
+
+    let login_payload = json!({
+        "username": "kishan",
+        "password": "password123"
+    });
+
+    let resp = app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header("content-type", "application/json")
+            .body(Body::from(login_payload.to_string()))
+            .unwrap()
+    ).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "Default password123 must be rejected");
 }

@@ -117,6 +117,8 @@ pub struct RawAccount {
     pub hidden: bool,
     pub placeholder: bool,
     pub currency: String,
+    pub commodity_namespace: String,
+    pub commodity_fraction: i64,
 }
 
 #[derive(Debug, Default)]
@@ -136,6 +138,7 @@ pub struct RawSplit {
     pub memo: Option<String>,
     pub reconciled_state: String,
     pub amount: Decimal,
+    pub quantity: Decimal,
 }
 
 fn parse_gnucash_xml(
@@ -216,6 +219,9 @@ fn parse_gnucash_xml(
                     "trn:split" => {
                         if let Some(mut sp) = curr_split.take() {
                             if !sp.guid.is_empty() && !sp.account_guid.is_empty() {
+                                if sp.quantity == Decimal::ZERO && sp.amount != Decimal::ZERO {
+                                    sp.quantity = sp.amount;
+                                }
                                 if sp.tx_guid.is_empty() {
                                     if let Some(ref tx) = curr_tx {
                                         sp.tx_guid = tx.guid.clone();
@@ -259,6 +265,16 @@ fn parse_gnucash_xml(
                                 acc.currency = text.clone();
                             }
                         }
+                        "cmdty:space" => {
+                            if parent_tag == "act:commodity" {
+                                acc.commodity_namespace = text.clone();
+                            }
+                        }
+                        "act:commodity-scu" => {
+                            if let Ok(scu) = text.parse::<i64>() {
+                                acc.commodity_fraction = scu;
+                            }
+                        }
                         "slot:key" => {
                             curr_slot_key = Some(text.clone());
                         }
@@ -287,6 +303,11 @@ fn parse_gnucash_xml(
                         "split:value" => {
                             if let Some(dec) = parse_fraction(&text) {
                                 sp.amount = dec;
+                            }
+                        }
+                        "split:quantity" => {
+                            if let Some(dec) = parse_fraction(&text) {
+                                sp.quantity = dec;
                             }
                         }
                         _ => {}
@@ -355,14 +376,29 @@ fn parse_gnucash_sqlite(
         return Err("Uploaded database is not a valid GnuCash SQLite file (missing accounts, transactions, or splits tables).".to_string());
     }
 
-    // Fetch commodities if present
-    let mut commodity_map: HashMap<String, String> = HashMap::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT guid, mnemonic FROM commodities") {
+    // Fetch commodities if present (Issue #9)
+    #[derive(Clone)]
+    struct CommInfo {
+        namespace: String,
+        mnemonic: String,
+        fraction: i64,
+    }
+    let mut commodity_map: HashMap<String, CommInfo> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare("SELECT guid, namespace, mnemonic, fraction FROM commodities") {
         if let Ok(rows) = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3).unwrap_or(100),
+            ))
         }) {
             for r in rows.flatten() {
-                commodity_map.insert(r.0, r.1);
+                commodity_map.insert(r.0, CommInfo {
+                    namespace: r.1,
+                    mnemonic: r.2,
+                    fraction: r.3,
+                });
             }
         }
     }
@@ -402,9 +438,16 @@ fn parse_gnucash_sqlite(
     for r in acc_rows.flatten() {
         let (guid, name, acc_type, commodity_guid, parent_guid, code, desc, hidden, placeholder) = r;
 
-        let currency = commodity_guid
-            .and_then(|cg| commodity_map.get(&cg).cloned())
+        let comm_info = commodity_guid.as_ref().and_then(|cg| commodity_map.get(cg));
+        let currency = comm_info
+            .map(|c| c.mnemonic.clone())
             .unwrap_or_else(|| default_curr.to_string());
+        let commodity_namespace = comm_info
+            .map(|c| c.namespace.clone())
+            .unwrap_or_else(|| "CURRENCY".to_string());
+        let commodity_fraction = comm_info
+            .map(|c| c.fraction)
+            .unwrap_or(100);
 
         raw_accounts.push(RawAccount {
             guid,
@@ -416,6 +459,8 @@ fn parse_gnucash_sqlite(
             hidden: hidden.map(|h| h != 0).unwrap_or(false),
             placeholder: placeholder.map(|p| p != 0).unwrap_or(false),
             currency,
+            commodity_namespace,
+            commodity_fraction,
         });
     }
 
@@ -457,9 +502,9 @@ fn parse_gnucash_sqlite(
         });
     }
 
-    // Read Splits
+    // Read Splits (Issue #9: query both value and quantity)
     let mut split_stmt = conn.prepare(
-        "SELECT guid, tx_guid, account_guid, memo, reconcile_state, value_num, value_denom FROM splits"
+        "SELECT guid, tx_guid, account_guid, memo, reconcile_state, value_num, value_denom, quantity_num, quantity_denom FROM splits"
     ).map_err(|e| format!("Failed to prepare splits query: {}", e))?;
 
     let mut raw_splits = Vec::new();
@@ -472,13 +517,21 @@ fn parse_gnucash_sqlite(
             row.get::<_, Option<String>>(4)?,
             row.get::<_, i64>(5)?,
             row.get::<_, i64>(6)?,
+            row.get::<_, i64>(7).unwrap_or(0),
+            row.get::<_, i64>(8).unwrap_or(0),
         ))
     }).map_err(|e| format!("Failed to query splits: {}", e))?;
 
     for r in split_rows.flatten() {
-        let (guid, tx_guid, account_guid, memo, rec_state, val_num, val_denom) = r;
+        let (guid, tx_guid, account_guid, memo, rec_state, val_num, val_denom, qty_num, qty_denom) = r;
         let denom = if val_denom == 0 { 100 } else { val_denom };
         let amount = Decimal::from(val_num) / Decimal::from(denom);
+
+        let quantity = if qty_denom != 0 {
+            Decimal::from(qty_num) / Decimal::from(qty_denom)
+        } else {
+            amount
+        };
 
         raw_splits.push(RawSplit {
             guid,
@@ -487,6 +540,7 @@ fn parse_gnucash_sqlite(
             memo: memo.filter(|s| !s.trim().is_empty()),
             reconciled_state: rec_state.unwrap_or_else(|| "n".to_string()),
             amount,
+            quantity,
         });
     }
 
@@ -659,13 +713,13 @@ pub async fn save_gnucash_data_to_db(
     raw_splits: Vec<RawSplit>,
     format_desc: &str,
 ) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
-    // 1. Verify double-entry invariant: sum of splits for each transaction must equal 0
+    // 1. Verify double-entry invariant: sum of splits for each transaction must equal 0 exactly (Issue #19)
     let mut tx_sums: HashMap<String, Decimal> = HashMap::new();
     for s in &raw_splits {
         *tx_sums.entry(s.tx_guid.clone()).or_insert(Decimal::ZERO) += s.amount;
     }
     for (tx_guid, sum) in &tx_sums {
-        if sum.abs() > Decimal::new(1, 2) {
+        if *sum != Decimal::ZERO {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(json!({
@@ -698,7 +752,7 @@ pub async fn save_gnucash_data_to_db(
         account_guid_to_uuid.insert(acc.guid.clone(), parse_gnucash_guid_for_user(&acc.guid, &user_id));
     }
 
-    // 4. In-memory topological sort for accounts (Issue #13)
+    // 4. In-memory topological sort for accounts with cycle detection (Issue #13 & Issue #18)
     let account_guid_set: HashSet<String> = raw_accounts.iter().map(|a| a.guid.clone()).collect();
     for acc in &mut raw_accounts {
         if let Some(ref pg) = acc.parent_guid {
@@ -708,10 +762,41 @@ pub async fn save_gnucash_data_to_db(
         }
     }
 
-    let parent_map: HashMap<String, Option<String>> = raw_accounts
+    // Detect and break parent cycles (Issue #18)
+    let mut parent_map: HashMap<String, Option<String>> = raw_accounts
         .iter()
         .map(|a| (a.guid.clone(), a.parent_guid.clone()))
         .collect();
+
+    let mut cyclic_accounts = HashSet::new();
+    for acc in &raw_accounts {
+        let mut curr = acc.guid.clone();
+        let mut visited = HashSet::new();
+        visited.insert(curr.clone());
+
+        while let Some(Some(ref p)) = parent_map.get(&curr) {
+            if visited.contains(p) {
+                // p is an ancestor already seen in this walk; break the cycle by making curr a root account
+                cyclic_accounts.insert(curr.clone());
+                break;
+            }
+            visited.insert(p.clone());
+            curr = p.clone();
+        }
+    }
+
+    if !cyclic_accounts.is_empty() {
+        for acc in &mut raw_accounts {
+            if cyclic_accounts.contains(&acc.guid) {
+                acc.parent_guid = None;
+            }
+        }
+        // Refresh parent_map after breaking cycles
+        parent_map = raw_accounts
+            .iter()
+            .map(|a| (a.guid.clone(), a.parent_guid.clone()))
+            .collect();
+    }
 
     let mut depth_map: HashMap<String, usize> = HashMap::new();
     for acc in &raw_accounts {
@@ -786,9 +871,11 @@ pub async fn save_gnucash_data_to_db(
             let placeholders: Vec<bool> = chunk.iter().map(|a| a.placeholder).collect();
             let hiddens: Vec<bool> = chunk.iter().map(|a| a.hidden).collect();
             let user_ids: Vec<Uuid> = vec![user_id; chunk.len()];
+            let namespaces: Vec<String> = chunk.iter().map(|a| if a.commodity_namespace.is_empty() { "CURRENCY".to_string() } else { a.commodity_namespace.clone() }).collect();
+            let fractions: Vec<i64> = chunk.iter().map(|a| if a.commodity_fraction == 0 { 100 } else { a.commodity_fraction }).collect();
 
             sqlx::query(
-                r#"INSERT INTO accounts (id, name, code, account_type, parent_id, currency, description, placeholder, hidden, user_id)
+                r#"INSERT INTO accounts (id, name, code, account_type, parent_id, currency, description, placeholder, hidden, user_id, commodity_namespace, commodity_fraction)
                    SELECT * FROM UNNEST(
                        $1::uuid[],
                        $2::varchar[],
@@ -799,7 +886,9 @@ pub async fn save_gnucash_data_to_db(
                        $7::text[],
                        $8::boolean[],
                        $9::boolean[],
-                       $10::uuid[]
+                       $10::uuid[],
+                       $11::varchar[],
+                       $12::bigint[]
                    )
                    ON CONFLICT (id) DO UPDATE SET
                        name = EXCLUDED.name,
@@ -809,7 +898,9 @@ pub async fn save_gnucash_data_to_db(
                        currency = EXCLUDED.currency,
                        description = EXCLUDED.description,
                        placeholder = EXCLUDED.placeholder,
-                       hidden = EXCLUDED.hidden
+                       hidden = EXCLUDED.hidden,
+                       commodity_namespace = EXCLUDED.commodity_namespace,
+                       commodity_fraction = EXCLUDED.commodity_fraction
                    WHERE accounts.user_id = EXCLUDED.user_id"#
             )
             .bind(&ids)
@@ -822,6 +913,8 @@ pub async fn save_gnucash_data_to_db(
             .bind(&placeholders)
             .bind(&hiddens)
             .bind(&user_ids)
+            .bind(&namespaces)
+            .bind(&fractions)
             .execute(&mut *tx)
             .await
             .map_err(|e| {
@@ -912,6 +1005,7 @@ pub async fn save_gnucash_data_to_db(
         let tx_ids: Vec<Uuid> = chunk.iter().map(|s| *tx_guid_to_uuid.get(&s.tx_guid).unwrap()).collect();
         let acc_ids: Vec<Uuid> = chunk.iter().map(|s| *account_guid_to_uuid.get(&s.account_guid).unwrap()).collect();
         let amounts: Vec<Decimal> = chunk.iter().map(|s| s.amount).collect();
+        let quantities: Vec<Decimal> = chunk.iter().map(|s| s.quantity).collect();
         let memos: Vec<Option<String>> = chunk.iter().map(|s| s.memo.clone()).collect();
         let rec_states: Vec<String> = chunk.iter().map(|s| {
             match s.reconciled_state.to_lowercase().as_str() {
@@ -922,18 +1016,20 @@ pub async fn save_gnucash_data_to_db(
         }).collect();
 
         sqlx::query(
-            r#"INSERT INTO splits (id, transaction_id, account_id, amount, memo, reconciled_state)
+            r#"INSERT INTO splits (id, transaction_id, account_id, amount, quantity, memo, reconciled_state)
                SELECT * FROM UNNEST(
                    $1::uuid[],
                    $2::uuid[],
                    $3::uuid[],
                    $4::numeric[],
-                   $5::varchar[],
-                   $6::varchar[]
+                   $5::numeric[],
+                   $6::varchar[],
+                   $7::varchar[]
                )
                ON CONFLICT (id) DO UPDATE SET
                    account_id = EXCLUDED.account_id,
                    amount = EXCLUDED.amount,
+                   quantity = EXCLUDED.quantity,
                    memo = EXCLUDED.memo,
                    reconciled_state = EXCLUDED.reconciled_state"#
         )
@@ -941,6 +1037,7 @@ pub async fn save_gnucash_data_to_db(
         .bind(&tx_ids)
         .bind(&acc_ids)
         .bind(&amounts)
+        .bind(&quantities)
         .bind(&memos)
         .bind(&rec_states)
         .execute(&mut *tx)

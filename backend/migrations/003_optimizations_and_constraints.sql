@@ -13,6 +13,12 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAUL
 -- Widen currency for non-currency commodities / ISINs (Issue #9)
 ALTER TABLE accounts ALTER COLUMN currency TYPE VARCHAR(64);
 
+-- Support commodities namespace/fraction and split quantities (Issue #9)
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS commodity_namespace VARCHAR(32) DEFAULT 'CURRENCY';
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS commodity_fraction BIGINT DEFAULT 100;
+ALTER TABLE splits ADD COLUMN IF NOT EXISTS quantity NUMERIC(20, 6);
+UPDATE splits SET quantity = amount WHERE quantity IS NULL;
+
 -- Enforce normalized reconciled states (Issue #14)
 ALTER TABLE splits DROP CONSTRAINT IF EXISTS chk_splits_reconciled_state;
 ALTER TABLE splits ADD CONSTRAINT chk_splits_reconciled_state CHECK (reconciled_state IN ('n', 'c', 'y'));

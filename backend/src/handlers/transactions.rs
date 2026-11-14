@@ -360,8 +360,8 @@ pub async fn create_transaction(
         let rec_date = if rec_state == "y" { Some(chrono::Utc::now()) } else { None };
 
         let split_row = sqlx::query_as::<_, SplitRow>(
-            r#"INSERT INTO splits (transaction_id, account_id, amount, memo, reconciled_state, reconciled_date)
-               VALUES ($1, $2, $3, $4, $5, $6)
+            r#"INSERT INTO splits (transaction_id, account_id, amount, quantity, memo, reconciled_state, reconciled_date)
+               VALUES ($1, $2, $3, $3, $4, $5, $6)
                RETURNING id, transaction_id, account_id, amount, memo, reconciled_state, reconciled_date"#
         )
         .bind(tx_row.id)
@@ -674,7 +674,7 @@ pub async fn update_transaction(
                 // Update split in place
                 sqlx::query(
                     r#"UPDATE splits
-                       SET account_id = $1, amount = $2, memo = $3, reconciled_state = $4, reconciled_date = $5
+                       SET account_id = $1, amount = $2, quantity = $2, memo = $3, reconciled_state = $4, reconciled_date = $5
                        WHERE id = $6"#,
                 )
                 .bind(s.account_id)
@@ -696,8 +696,8 @@ pub async fn update_transaction(
                 // Issue #17: Never use client-supplied split id as primary key on insert; always generate fresh UUID
                 let split_id = Uuid::new_v4();
                 sqlx::query(
-                    r#"INSERT INTO splits (id, transaction_id, account_id, amount, memo, reconciled_state, reconciled_date)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+                    r#"INSERT INTO splits (id, transaction_id, account_id, amount, quantity, memo, reconciled_state, reconciled_date)
+                       VALUES ($1, $2, $3, $4, $4, $5, $6, $7)"#,
                 )
                 .bind(split_id)
                 .bind(id)

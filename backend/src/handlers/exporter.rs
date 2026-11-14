@@ -27,6 +27,8 @@ struct AccountExportRow {
     description: Option<String>,
     placeholder: bool,
     hidden: bool,
+    commodity_namespace: Option<String>,
+    commodity_fraction: Option<i64>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -45,6 +47,7 @@ struct SplitExportRow {
     transaction_id: Uuid,
     account_id: Uuid,
     amount: Decimal,
+    quantity: Option<Decimal>,
     memo: Option<String>,
     reconciled_state: String,
     reconciled_date: Option<chrono::DateTime<chrono::Utc>>,
@@ -58,7 +61,7 @@ pub async fn export_gnucash_sqlite(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     // 1. Fetch user accounts
     let accounts = sqlx::query_as::<_, AccountExportRow>(
-        r#"SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden
+        r#"SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, commodity_namespace, commodity_fraction
            FROM accounts
            WHERE user_id = $1
            ORDER BY code ASC NULLS LAST, name ASC"#
@@ -92,7 +95,7 @@ pub async fn export_gnucash_sqlite(
 
     // 3. Fetch user splits
     let splits = sqlx::query_as::<_, SplitExportRow>(
-        r#"SELECT s.id, s.transaction_id, s.account_id, s.amount, s.memo, s.reconciled_state, s.reconciled_date
+        r#"SELECT s.id, s.transaction_id, s.account_id, s.amount, s.quantity, s.memo, s.reconciled_state, s.reconciled_date
            FROM splits s
            JOIN transactions t ON s.transaction_id = t.id
            WHERE t.user_id = $1
@@ -292,13 +295,24 @@ pub async fn export_gnucash_sqlite(
     currencies.sort();
     currencies.dedup();
 
+    let mut currency_meta: HashMap<String, (String, i64)> = HashMap::new();
+    for acc in &accounts {
+        let is_iso_currency = acc.currency.len() == 3 && acc.currency.chars().all(|c| c.is_ascii_alphabetic());
+        let default_ns = if is_iso_currency { "CURRENCY".to_string() } else { "FUND".to_string() };
+        let ns = acc.commodity_namespace.clone().unwrap_or(default_ns);
+        let fr = acc.commodity_fraction.unwrap_or(if ns == "CURRENCY" { 100 } else { 1000 });
+        currency_meta.insert(acc.currency.clone(), (ns, fr));
+    }
+
     for curr in &currencies {
         let comm_guid = Uuid::new_v5(&Uuid::NAMESPACE_DNS, curr.as_bytes()).to_string().replace('-', "");
         commodity_map.insert(curr.clone(), comm_guid.clone());
 
-        let is_iso_currency = curr.len() == 3 && curr.chars().all(|c| c.is_ascii_alphabetic());
-        let namespace = if is_iso_currency { "CURRENCY" } else { "FUND" };
-        let quote_source = if is_iso_currency { "currency" } else { "financequote" };
+        let (namespace, fraction) = currency_meta.get(curr).cloned().unwrap_or_else(|| {
+            let is_iso = curr.len() == 3 && curr.chars().all(|c| c.is_ascii_alphabetic());
+            (if is_iso { "CURRENCY".to_string() } else { "FUND".to_string() }, 100)
+        });
+        let quote_source = if namespace == "CURRENCY" { "currency" } else { "financequote" };
 
         sqlite_tx.execute(
             "INSERT INTO commodities (guid, namespace, mnemonic, fullname, cusip, fraction, quote_flag, quote_source)
@@ -309,7 +323,7 @@ pub async fn export_gnucash_sqlite(
                 curr,
                 curr,
                 "",
-                100,
+                fraction,
                 1,
                 quote_source
             ],
@@ -433,6 +447,12 @@ pub async fn export_gnucash_sqlite(
         }
     }
 
+    // Map account_id -> commodity fraction
+    let account_fraction_map: HashMap<Uuid, i64> = accounts
+        .iter()
+        .map(|a| (a.id, a.commodity_fraction.unwrap_or(100)))
+        .collect();
+
     // Insert Splits
     for sp in &splits {
         let sp_guid = sp.id.to_string().replace('-', "");
@@ -441,6 +461,9 @@ pub async fn export_gnucash_sqlite(
 
         let val_num = (sp.amount * Decimal::from(100)).round().to_i64().unwrap_or(0);
         let val_denom = 100i64;
+        let qty_denom = account_fraction_map.get(&sp.account_id).copied().unwrap_or(100);
+        let qty = sp.quantity.unwrap_or(sp.amount);
+        let qty_num = (qty * Decimal::from(qty_denom)).round().to_i64().unwrap_or(0);
         let rec_date_str = sp.reconciled_date.map(|d| d.format("%Y%m%d%H%M%S").to_string());
 
         sqlite_tx.execute(
@@ -456,8 +479,8 @@ pub async fn export_gnucash_sqlite(
                 rec_date_str,
                 val_num,
                 val_denom,
-                val_num,
-                val_denom,
+                qty_num,
+                qty_denom,
             ],
         ).map_err(|e| {
             (

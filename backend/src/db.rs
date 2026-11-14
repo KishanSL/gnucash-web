@@ -42,11 +42,24 @@ pub async fn init_db(database_url: &str) -> Result<PgPool, sqlx::Error> {
 
     if user_count == 0 {
         let initial_username = std::env::var("INITIAL_ADMIN_USER")
-            .unwrap_or_else(|_| "kishan".to_string());
+            .ok()
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| "kishan".to_string());
 
-        let (raw_password, is_generated) = if let Ok(env_pw) = std::env::var("INITIAL_ADMIN_PASSWORD") {
-            (env_pw, false)
-        } else if cfg!(debug_assertions) {
+        let env_pw = std::env::var("INITIAL_ADMIN_PASSWORD")
+            .ok()
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty());
+
+        let is_test_mode = cfg!(test)
+            || std::env::var("GNUCASH_TEST_MODE")
+                .map(|v| v == "1" || v == "true")
+                .unwrap_or(false);
+
+        let (raw_password, is_generated) = if let Some(pw) = env_pw {
+            (pw, false)
+        } else if is_test_mode {
             ("Kishan@123".to_string(), false)
         } else {
             let gen = format!("admin_{}", Uuid::new_v4().simple());
