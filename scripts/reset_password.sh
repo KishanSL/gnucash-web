@@ -24,29 +24,32 @@ IDENTIFIER="$1"
 CUSTOM_PASSWORD="${2:-}"
 
 if [ -f "$ENV_FILE" ]; then
-  JWT_SECRET=$(grep -E "^JWT_SECRET=" "$ENV_FILE" | cut -d'=' -f2- | tr -d ' "\r\n')
+  ADMIN_KEY=$(grep -E "^ADMIN_API_KEY=" "$ENV_FILE" | cut -d'=' -f2- | tr -d ' "\r\n' || true)
+  if [ -z "$ADMIN_KEY" ]; then
+    ADMIN_KEY=$(grep -E "^JWT_SECRET=" "$ENV_FILE" | cut -d'=' -f2- | tr -d ' "\r\n' || true)
+  fi
 else
   echo "❌ Error: .env file not found at $ENV_FILE"
   exit 1
 fi
 
-if [ -z "$JWT_SECRET" ]; then
-  echo "❌ Error: JWT_SECRET not found in $ENV_FILE"
+if [ -z "$ADMIN_KEY" ]; then
+  echo "❌ Error: ADMIN_API_KEY or JWT_SECRET not found in $ENV_FILE"
   exit 1
 fi
 
 if [ -n "$CUSTOM_PASSWORD" ]; then
-  PAYLOAD="{\"username\":\"$IDENTIFIER\",\"new_password\":\"$CUSTOM_PASSWORD\"}"
+  PAYLOAD=$(jq -n --arg username "$IDENTIFIER" --arg new_password "$CUSTOM_PASSWORD" '{username: $username, new_password: $new_password}')
 else
-  PAYLOAD="{\"username\":\"$IDENTIFIER\"}"
+  PAYLOAD=$(jq -n --arg username "$IDENTIFIER" '{username: $username}')
 fi
 
 echo "Resetting password for '$IDENTIFIER'..."
 
-RES=$(curl -s -X POST http://localhost:8081/api/auth/reset-password \
+RES=$(echo "$PAYLOAD" | curl -s -X POST http://localhost:8081/api/auth/reset-password \
   -H "Content-Type: application/json" \
-  -H "X-Admin-Key: ${JWT_SECRET}" \
-  -d "$PAYLOAD")
+  -H "X-Admin-Key: ${ADMIN_KEY}" \
+  -d @-)
 
 if echo "$RES" | grep -q '"success":true'; then
   TEMP_PASS=$(echo "$RES" | grep -o '"temp_password":"[^"]*"' | cut -d':' -f2- | tr -d '"' || true)

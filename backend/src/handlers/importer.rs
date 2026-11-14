@@ -26,11 +26,10 @@ pub struct ImportQuery {
     pub default_currency: Option<String>,
 }
 
-fn parse_gnucash_guid(guid_str: &str) -> Uuid {
+fn parse_gnucash_guid_for_user(guid_str: &str, user_id: &Uuid) -> Uuid {
     let clean = guid_str.trim().replace('-', "");
-    Uuid::parse_str(&clean).unwrap_or_else(|_| {
-        Uuid::new_v5(&Uuid::NAMESPACE_OID, guid_str.as_bytes())
-    })
+    // User-scoped namespace prevents any cross-tenant ID collision or takeover
+    Uuid::new_v5(user_id, clean.as_bytes())
 }
 
 fn parse_gnucash_date(date_str: &str) -> NaiveDate {
@@ -322,7 +321,9 @@ fn parse_gnucash_sqlite(
     temp_file.write_all(file_bytes).map_err(|e| format!("Failed to write temp file: {}", e))?;
     let temp_path = temp_file.path().to_path_buf();
 
-    let conn = Connection::open(&temp_path).map_err(|e| format!("Invalid SQLite file: {}", e))?;
+    let conn = Connection::open_with_flags(&temp_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| format!("Invalid SQLite file: {}", e))?;
+    conn.pragma_update(None, "trusted_schema", "OFF").ok();
 
     // Verify GnuCash tables exist
     let mut check_stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('accounts', 'transactions', 'splits')")
@@ -504,7 +505,7 @@ pub async fn import_gnucash_sqlite(
     Query(query): Query<ImportQuery>,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let wipe = query.wipe.unwrap_or(true);
+    let wipe = query.wipe.unwrap_or(false);
     let default_curr = query.default_currency.unwrap_or_else(|| "INR".to_string());
 
     // 1. Read file bytes from multipart form
@@ -624,7 +625,7 @@ pub async fn save_gnucash_data_to_db(
     // Map of GnuCash GUID string -> Postgres UUID
     let mut account_guid_to_uuid: HashMap<String, Uuid> = HashMap::new();
     for acc in &raw_accounts {
-        account_guid_to_uuid.insert(acc.guid.clone(), parse_gnucash_guid(&acc.guid));
+        account_guid_to_uuid.insert(acc.guid.clone(), parse_gnucash_guid_for_user(&acc.guid, &user_id));
     }
 
     // Insert Accounts (First insert parents, then children to satisfy foreign keys)
@@ -651,7 +652,8 @@ pub async fn save_gnucash_data_to_db(
                        ON CONFLICT (id) DO UPDATE SET
                            name = EXCLUDED.name, code = EXCLUDED.code, account_type = EXCLUDED.account_type,
                            parent_id = EXCLUDED.parent_id, currency = EXCLUDED.currency, description = EXCLUDED.description,
-                           placeholder = EXCLUDED.placeholder, hidden = EXCLUDED.hidden, user_id = EXCLUDED.user_id"#
+                           placeholder = EXCLUDED.placeholder, hidden = EXCLUDED.hidden
+                       WHERE accounts.user_id = EXCLUDED.user_id"#
                 )
                 .bind(acc_id)
                 .bind(&acc.name)
@@ -686,7 +688,11 @@ pub async fn save_gnucash_data_to_db(
         sqlx::query(
             r#"INSERT INTO accounts (id, name, code, account_type, parent_id, currency, description, placeholder, hidden, user_id)
                VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9)
-               ON CONFLICT (id) DO UPDATE SET user_id = EXCLUDED.user_id"#
+               ON CONFLICT (id) DO UPDATE SET
+                   name = EXCLUDED.name, code = EXCLUDED.code, account_type = EXCLUDED.account_type,
+                   currency = EXCLUDED.currency, description = EXCLUDED.description,
+                   placeholder = EXCLUDED.placeholder, hidden = EXCLUDED.hidden
+               WHERE accounts.user_id = EXCLUDED.user_id"#
         )
         .bind(acc_id)
         .bind(&acc.name)
@@ -699,7 +705,12 @@ pub async fn save_gnucash_data_to_db(
         .bind(user_id)
         .execute(&mut *tx)
         .await
-        .ok();
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Failed to insert fallback account '{}': {}", acc.name, e) })),
+            )
+        })?;
         inserted_acc_ids.insert(acc_id);
     }
 
@@ -708,25 +719,21 @@ pub async fn save_gnucash_data_to_db(
     let mut tx_count = 0;
 
     for t in &raw_transactions {
-        let tx_id = parse_gnucash_guid(&t.guid);
+        let tx_id = parse_gnucash_guid_for_user(&t.guid, &user_id);
         tx_guid_to_uuid.insert(t.guid.clone(), tx_id);
 
         sqlx::query(
             r#"INSERT INTO transactions (id, post_date, num, description, user_id)
                VALUES ($1, $2, $3, $4, $5)
                ON CONFLICT (id) DO UPDATE SET
-                   post_date = EXCLUDED.post_date, num = EXCLUDED.num, description = EXCLUDED.description,
-                   user_id = EXCLUDED.user_id"#
+                   post_date = EXCLUDED.post_date, num = EXCLUDED.num, description = EXCLUDED.description
+               WHERE transactions.user_id = EXCLUDED.user_id"#
         )
         .bind(tx_id)
         .bind(t.post_date)
         .bind(&t.num)
         .bind(&t.description)
         .bind(user_id)
-        .bind(tx_id)
-        .bind(t.post_date)
-        .bind(&t.num)
-        .bind(&t.description)
         .execute(&mut *tx)
         .await
         .map_err(|e| {
@@ -752,7 +759,7 @@ pub async fn save_gnucash_data_to_db(
             None => continue, // orphaned split
         };
 
-        let split_id = parse_gnucash_guid(&s.guid);
+        let split_id = parse_gnucash_guid_for_user(&s.guid, &user_id);
         let rec_state = match s.reconciled_state.to_lowercase().as_str() {
             "y" => "y",
             "c" => "c",

@@ -118,7 +118,7 @@ export async function resetPassword(payload: { username: string; new_password?: 
 }
 
 export async function changePassword(payload: {
-  current_password?: string;
+  current_password: string;
   new_password: string;
 }): Promise<{ success: boolean; message: string }> {
   const res = await fetchWithAuth(`${API_BASE}/auth/change-password`, {

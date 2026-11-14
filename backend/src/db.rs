@@ -30,6 +30,9 @@ pub async fn init_db(database_url: &str) -> Result<PgPool, sqlx::Error> {
     let migration_2 = include_str!("../migrations/002_multi_user.sql");
     sqlx::raw_sql(migration_2).execute(&pool).await?;
 
+    let migration_3 = include_str!("../migrations/003_optimizations_and_constraints.sql");
+    sqlx::raw_sql(migration_3).execute(&pool).await?;
+
     // Ensure at least one default user exists for pre-existing or imported data
     let user_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
         .fetch_one(&pool)
@@ -37,8 +40,12 @@ pub async fn init_db(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .unwrap_or(0);
 
     if user_count == 0 {
-        let password_hash = bcrypt::hash("password123", bcrypt::DEFAULT_COST)
-            .unwrap_or_else(|_| "$2b$12$e8YgN17Pj9QGqZ2eCq.X3OMWj944j/mYFkU5nZ7cI19j1r5u0gJvG".to_string());
+        let password_hash = tokio::task::spawn_blocking(|| {
+            bcrypt::hash("password123", bcrypt::DEFAULT_COST)
+                .unwrap_or_else(|_| "$2b$12$e8YgN17Pj9QGqZ2eCq.X3OMWj944j/mYFkU5nZ7cI19j1r5u0gJvG".to_string())
+        })
+        .await
+        .unwrap_or_else(|_| "$2b$12$e8YgN17Pj9QGqZ2eCq.X3OMWj944j/mYFkU5nZ7cI19j1r5u0gJvG".to_string());
 
         sqlx::query(
             r#"INSERT INTO users (id, username, email, password_hash)
@@ -48,7 +55,7 @@ pub async fn init_db(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .bind(password_hash)
         .execute(&pool)
         .await?;
-        info!("Created default user: kishan (password: password123)");
+        info!("Created default initial user: kishan");
     }
 
     // Assign existing orphaned accounts/transactions to the first user

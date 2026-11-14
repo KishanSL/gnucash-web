@@ -6,9 +6,47 @@ use axum::{
 };
 use serde_json::json;
 use sqlx::PgPool;
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::auth::{create_jwt, AuthResponse, AuthUser, LoginRequest, SignupRequest, User, UserWithPassword};
+
+fn verify_admin_key(header_key: Option<&str>) -> bool {
+    let header_key = match header_key {
+        Some(k) if !k.is_empty() => k,
+        _ => return false,
+    };
+    let expected_key = std::env::var("ADMIN_API_KEY")
+        .unwrap_or_else(|_| crate::auth::get_jwt_secret());
+
+    if header_key.len() != expected_key.len() {
+        return false;
+    }
+    header_key.as_bytes().ct_eq(expected_key.as_bytes()).into()
+}
+
+async fn hash_password_async(password: String) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    tokio::task::spawn_blocking(move || bcrypt::hash(password, bcrypt::DEFAULT_COST))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Password hashing task failed: {}", e) })),
+            )
+        })?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Password hashing failed: {}", e) })),
+            )
+        })
+}
+
+async fn verify_password_async(password: String, hash: String) -> bool {
+    tokio::task::spawn_blocking(move || bcrypt::verify(password, &hash).unwrap_or(false))
+        .await
+        .unwrap_or(false)
+}
 
 pub async fn signup(
     headers: axum::http::HeaderMap,
@@ -20,8 +58,7 @@ pub async fn signup(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.trim());
 
-    let jwt_secret = crate::auth::get_jwt_secret();
-    let is_authorized_admin = admin_key.map(|k| k == jwt_secret).unwrap_or(false);
+    let is_authorized_admin = verify_admin_key(admin_key);
 
     let allow_signup = std::env::var("ALLOW_SIGNUP")
         .map(|v| v == "true" || v == "1")
@@ -36,7 +73,7 @@ pub async fn signup(
 
     let username = payload.username.trim();
     let email = payload.email.trim().to_lowercase();
-    let password = payload.password.trim();
+    let password = payload.password;
 
     if username.len() < 3 {
         return Err((
@@ -56,6 +93,13 @@ pub async fn signup(
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "Password must be at least 6 characters long" })),
+        ));
+    }
+
+    if password.len() > 72 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Password cannot exceed 72 characters" })),
         ));
     }
 
@@ -81,12 +125,7 @@ pub async fn signup(
         ));
     }
 
-    let password_hash = bcrypt::hash(password, bcrypt::DEFAULT_COST).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Password hashing failed: {}", e) })),
-        )
-    })?;
+    let password_hash = hash_password_async(password).await?;
 
     let user = sqlx::query_as::<_, User>(
         r#"INSERT INTO users (username, email, password_hash)
@@ -125,7 +164,7 @@ pub async fn login(
     Json(payload): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let identifier = payload.username.trim();
-    let password = payload.password.trim();
+    let password = payload.password;
 
     if identifier.is_empty() || password.is_empty() {
         return Err((
@@ -153,10 +192,10 @@ pub async fn login(
     // DUMMY_HASH is a valid bcrypt hash so verify performs identical work when user does not exist
     const DUMMY_HASH: &str = "$2b$12$yfdyhpFIw7xpXN2Fz9mv4OJH1E3CRg/wSi/eHQAy.kESbVIcWB8Jm";
     let hash_to_verify = match &user_row {
-        Some(u) => &u.password_hash,
-        None => DUMMY_HASH,
+        Some(u) => u.password_hash.clone(),
+        None => DUMMY_HASH.to_string(),
     };
-    let valid = bcrypt::verify(password, hash_to_verify).unwrap_or(false);
+    let valid = verify_password_async(password, hash_to_verify).await;
 
     let user_row = match user_row {
         Some(u) if valid => u,
@@ -226,49 +265,28 @@ pub fn write_reset_notice(content: &str, _temp_password: &str) {
         if write_file_secure(&std::path::PathBuf::from(&env_path), content) {
             written_paths.push(env_path);
         }
-    }
-
-    // 2. Container mapped security directory /app/security
-    let sec_dir = std::path::Path::new("/app/security");
-    if sec_dir.is_dir() || std::fs::create_dir_all(sec_dir).is_ok() {
-        let p = sec_dir.join("password_reset.txt");
-        if write_file_secure(&p, content) {
-            written_paths.push(p.to_string_lossy().to_string());
+    } else {
+        // 2. Standard container security directory /app/security
+        let sec_dir = std::path::Path::new("/app/security");
+        if sec_dir.is_dir() || std::fs::create_dir_all(sec_dir).is_ok() {
+            let p = sec_dir.join("password_reset.txt");
+            if write_file_secure(&p, content) {
+                written_paths.push(p.to_string_lossy().to_string());
+            }
+        } else {
+            // 3. Fallback to local security directory
+            let repo_sec_dir = std::path::Path::new("security");
+            if repo_sec_dir.is_dir() || std::fs::create_dir_all(repo_sec_dir).is_ok() {
+                let p = repo_sec_dir.join("password_reset.txt");
+                if write_file_secure(&p, content) {
+                    written_paths.push(p.to_string_lossy().to_string());
+                }
+            }
         }
     }
 
-    // 3. /app directory
-    let app_dir = std::path::Path::new("/app");
-    if app_dir.is_dir() {
-        let p = app_dir.join("password_reset.txt");
-        if write_file_secure(&p, content) {
-            written_paths.push(p.to_string_lossy().to_string());
-        }
-    }
-
-    // 4. Local relative password_reset.txt (for local development & tests)
-    let local_path = std::path::PathBuf::from("password_reset.txt");
-    if write_file_secure(&local_path, content) {
-        written_paths.push("password_reset.txt".to_string());
-    }
-
-    // 5. Host repository security dir if available relative to current dir
-    let repo_sec_dir = std::path::Path::new("security");
-    if repo_sec_dir.is_dir() {
-        let p = repo_sec_dir.join("password_reset.txt");
-        if write_file_secure(&p, content) {
-            written_paths.push(p.to_string_lossy().to_string());
-        }
-    }
-
-    // 6. /tmp directory as fallback
-    let tmp_path = std::path::PathBuf::from("/tmp/gnucash_password_reset.txt");
-    if write_file_secure(&tmp_path, content) {
-        written_paths.push("/tmp/gnucash_password_reset.txt".to_string());
-    }
-
-    tracing::warn!(
-        "SECURITY: Temporary password generated for user and saved to server file(s): {:?}",
+    tracing::info!(
+        "SECURITY: Password reset notice written to: {:?}",
         written_paths
     );
 }
@@ -301,11 +319,8 @@ fn write_file_secure(path: &std::path::Path, content: &str) -> bool {
 pub fn read_latest_temporary_password() -> Option<String> {
     let candidate_paths = vec![
         std::env::var("PASSWORD_RESET_FILE").unwrap_or_default(),
-        "password_reset.txt".to_string(),
-        "security/password_reset.txt".to_string(),
         "/app/security/password_reset.txt".to_string(),
-        "/app/password_reset.txt".to_string(),
-        "/tmp/gnucash_password_reset.txt".to_string(),
+        "security/password_reset.txt".to_string(),
     ];
 
     for p in candidate_paths {
@@ -333,11 +348,9 @@ pub async fn reset_password(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let admin_key = headers
         .get("x-admin-key")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+        .and_then(|v| v.to_str().ok());
 
-    let jwt_secret = crate::auth::get_jwt_secret();
-    let is_admin = !admin_key.is_empty() && admin_key == jwt_secret;
+    let is_admin = verify_admin_key(admin_key);
 
     if !is_admin {
         return Err((
@@ -393,12 +406,7 @@ pub async fn reset_password(
         }
     };
 
-    let password_hash = bcrypt::hash(&target_password, bcrypt::DEFAULT_COST).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Password hashing failed: {}", e) })),
-        )
-    })?;
+    let password_hash = hash_password_async(target_password.clone()).await?;
 
     sqlx::query(
         r#"UPDATE users
@@ -416,15 +424,12 @@ pub async fn reset_password(
         )
     })?;
 
-    // 3. Write new password notice to secure file on server
-    let timestamp = chrono::Utc::now().to_rfc3339();
-    let notice_title = if is_temporary {
-        "GNUCASH WEB - TEMPORARY PASSWORD RESET NOTICE"
-    } else {
-        "GNUCASH WEB - ADMIN PASSWORD RESET NOTICE"
-    };
-    let pass_label = if is_temporary { "Temporary Pass" } else { "New Password  " };
-    let notice_content = format!(
+    // 3. Write new password notice to secure file on server only if temporary password was generated
+    if is_temporary {
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let notice_title = "GNUCASH WEB - TEMPORARY PASSWORD RESET NOTICE";
+        let pass_label = "Temporary Pass";
+        let notice_content = format!(
 r#"================================================================================
 {}
 ================================================================================
@@ -434,15 +439,16 @@ Email           : {}
 {}  : {}
 ================================================================================
 Next Steps:
-1. Log in to GnuCash Web with your username and this password.
-2. In the top-right user menu, select "Change Password" to set your permanent password if needed.
+1. Log in to GnuCash Web with your username and this temporary password.
+2. In the top-right user menu, select "Change Password" to set your permanent password.
 3. Delete this file after successful login.
 ================================================================================
 "#,
-        notice_title, timestamp, user.username, user.email, pass_label, target_password
-    );
+            notice_title, timestamp, user.username, user.email, pass_label, target_password
+        );
 
-    write_reset_notice(&notice_content, &target_password);
+        write_reset_notice(&notice_content, &target_password);
+    }
 
     Ok(Json(json!({
         "success": true,
@@ -455,7 +461,7 @@ Next Steps:
 
 #[derive(Debug, serde::Deserialize)]
 pub struct ChangePasswordRequest {
-    pub current_password: Option<String>,
+    pub current_password: String,
     pub new_password: String,
 }
 
@@ -464,12 +470,27 @@ pub async fn change_password(
     State(pool): State<PgPool>,
     Json(payload): Json<ChangePasswordRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let new_password = payload.new_password.trim();
+    let current_password = payload.current_password;
+    let new_password = payload.new_password;
+
+    if current_password.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Current password is required" })),
+        ));
+    }
 
     if new_password.len() < 6 {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "New password must be at least 6 characters long" })),
+        ));
+    }
+
+    if new_password.len() > 72 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "New password cannot exceed 72 characters" })),
         ));
     }
 
@@ -497,26 +518,15 @@ pub async fn change_password(
         }
     };
 
-    // If current_password was supplied, verify it
-    if let Some(curr) = payload.current_password {
-        let curr = curr.trim();
-        if !curr.is_empty() {
-            let valid = bcrypt::verify(curr, &existing_hash).unwrap_or(false);
-            if !valid {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "Incorrect current password" })),
-                ));
-            }
-        }
+    let valid = verify_password_async(current_password, existing_hash).await;
+    if !valid {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Incorrect current password" })),
+        ));
     }
 
-    let password_hash = bcrypt::hash(new_password, bcrypt::DEFAULT_COST).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Password hashing failed: {}", e) })),
-        )
-    })?;
+    let password_hash = hash_password_async(new_password).await?;
 
     sqlx::query(
         "UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2"

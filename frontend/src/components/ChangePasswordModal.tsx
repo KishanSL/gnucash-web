@@ -32,8 +32,18 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
     setError(null);
     setSuccess(null);
 
+    if (!currentPassword) {
+      setError('Please enter your current password.');
+      return;
+    }
+
     if (newPassword.length < 6) {
       setError('New password must be at least 6 characters long.');
+      return;
+    }
+
+    if (newPassword.length > 72) {
+      setError('New password cannot exceed 72 characters.');
       return;
     }
 
@@ -45,8 +55,8 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
     try {
       setLoading(true);
       const res = await changePassword({
-        current_password: currentPassword.trim() ? currentPassword.trim() : undefined,
-        new_password: newPassword.trim(),
+        current_password: currentPassword,
+        new_password: newPassword,
       });
       setSuccess(res.message || 'Password changed successfully!');
       setTimeout(() => {

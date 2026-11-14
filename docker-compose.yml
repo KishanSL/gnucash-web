@@ -33,7 +33,8 @@ services:
       PORT: 8082
       RUST_LOG: info
       GNUCASH_SEED_DIR: /app/data
-      JWT_SECRET: ${JWT_SECRET:-b88caf1e27ae5f4f518317a4a9c4c71b67b274dac5f8028a6c3a741b490d0813}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set and at least 32 characters}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
       ALLOW_SIGNUP: ${ALLOW_SIGNUP:-false}
     ports:
       - "127.0.0.1:${BACKEND_PORT:-8082}:8082"

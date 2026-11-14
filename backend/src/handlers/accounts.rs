@@ -7,7 +7,7 @@ use axum::{
 use rust_decimal::Decimal;
 use serde_json::json;
 use sqlx::PgPool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
@@ -15,6 +15,10 @@ use crate::models::{
     calculate_display_balance, Account, AccountRow, AccountTreeNode, CreateAccountRequest,
     UpdateAccountRequest,
 };
+
+const VALID_ACCOUNT_TYPES: &[&str] = &[
+    "bank", "cash", "asset", "credit", "liability", "equity", "income", "expense", "receivable", "payable", "root"
+];
 
 pub async fn list_accounts(
     auth: AuthUser,
@@ -45,7 +49,12 @@ pub async fn list_accounts(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .unwrap_or_default();
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to fetch account balances: {}", e) })),
+        )
+    })?;
 
     let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().collect();
     let accounts = build_account_list(rows, &balance_map);
@@ -81,7 +90,12 @@ pub async fn get_account_tree(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .unwrap_or_default();
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to fetch account tree balances: {}", e) })),
+        )
+    })?;
 
     let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().collect();
     let accounts = build_account_list(rows, &balance_map);
@@ -152,10 +166,27 @@ pub async fn create_account(
     State(pool): State<PgPool>,
     Json(payload): Json<CreateAccountRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    if payload.name.trim().is_empty() {
+    let name = payload.name.trim();
+    if name.is_empty() || name.len() > 255 {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Account name cannot be empty" })),
+            Json(json!({ "error": "Account name must be between 1 and 255 characters" })),
+        ));
+    }
+
+    let acc_type = payload.account_type.trim().to_lowercase();
+    if !VALID_ACCOUNT_TYPES.contains(&acc_type.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("Invalid account type '{}'", acc_type) })),
+        ));
+    }
+
+    let currency = payload.currency.unwrap_or_else(|| "INR".to_string()).trim().to_uppercase();
+    if currency.len() != 3 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Currency must be a valid 3-letter code (e.g. INR, USD)" })),
         ));
     }
 
@@ -178,7 +209,6 @@ pub async fn create_account(
         }
     }
 
-    let currency = payload.currency.unwrap_or_else(|| "INR".to_string());
     let placeholder = payload.placeholder.unwrap_or(false);
     let hidden = payload.hidden.unwrap_or(false);
 
@@ -187,9 +217,9 @@ pub async fn create_account(
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            RETURNING id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at"#
     )
-    .bind(payload.name.trim())
+    .bind(name)
     .bind(payload.code.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
-    .bind(payload.account_type.trim().to_lowercase())
+    .bind(&acc_type)
     .bind(payload.parent_id)
     .bind(currency)
     .bind(payload.description)
@@ -285,6 +315,29 @@ pub async fn update_account(
                 Json(json!({ "error": "Parent account not found" })),
             ));
         }
+
+        // Cycle check: verify that 'id' is NOT an ancestor of 'pid'
+        let has_cycle = sqlx::query_scalar::<_, bool>(
+            r#"WITH RECURSIVE anc AS (
+                SELECT id, parent_id FROM accounts WHERE id = $1 AND user_id = $2
+                UNION ALL
+                SELECT a.id, a.parent_id FROM accounts a JOIN anc ON a.id = anc.parent_id
+            )
+            SELECT EXISTS (SELECT 1 FROM anc WHERE id = $3)"#
+        )
+        .bind(pid)
+        .bind(auth.id)
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(false);
+
+        if has_cycle {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Cannot assign a descendant as parent (cycle detected)" })),
+            ));
+        }
     }
 
     let updated = sqlx::query_as::<_, AccountRow>(
@@ -366,6 +419,30 @@ pub async fn delete_account(
         ));
     }
 
+    // Check if account has child accounts
+    let child_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM accounts WHERE parent_id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(auth.id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Database error: {}", e) })),
+        )
+    })?;
+
+    if child_count.0 > 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("Cannot delete account with {} sub-account(s). Please delete or reassign child accounts first.", child_count.0)
+            })),
+        ));
+    }
+
     // Check if account has splits
     let split_count: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM splits WHERE account_id = $1",
@@ -425,28 +502,34 @@ fn build_account_list(rows: Vec<AccountRow>, balance_map: &HashMap<Uuid, Decimal
             .push(r.id);
     }
 
-    // Compute total recursive balance
+    // Compute total recursive balance with cycle guard
     fn calc_total_balance(
         acc_id: Uuid,
         direct_balances: &HashMap<Uuid, Decimal>,
         parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
+        visited: &mut HashSet<Uuid>,
     ) -> Decimal {
+        if !visited.insert(acc_id) {
+            return Decimal::ZERO;
+        }
         let direct = direct_balances.get(&acc_id).copied().unwrap_or(Decimal::ZERO);
         let children = parent_to_children.get(&Some(acc_id));
         let children_total: Decimal = match children {
             Some(c_ids) => c_ids
                 .iter()
-                .map(|&cid| calc_total_balance(cid, direct_balances, parent_to_children))
+                .map(|&cid| calc_total_balance(cid, direct_balances, parent_to_children, visited))
                 .sum(),
             None => Decimal::ZERO,
         };
+        visited.remove(&acc_id);
         direct + children_total
     }
 
     let mut accounts = Vec::new();
     for r in rows {
         let direct_b = direct_balances.get(&r.id).copied().unwrap_or(Decimal::ZERO);
-        let total_b = calc_total_balance(r.id, &direct_balances, &parent_to_children);
+        let mut visited = HashSet::new();
+        let total_b = calc_total_balance(r.id, &direct_balances, &parent_to_children, &mut visited);
         let display_b = calculate_display_balance(&r.account_type, total_b);
 
         accounts.push(Account {
@@ -485,24 +568,30 @@ fn build_tree_structure(accounts: Vec<Account>) -> Vec<AccountTreeNode> {
         acc_id: Uuid,
         account_map: &HashMap<Uuid, Account>,
         parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
+        visited: &mut HashSet<Uuid>,
     ) -> Option<AccountTreeNode> {
+        if !visited.insert(acc_id) {
+            return None;
+        }
         let account = account_map.get(&acc_id)?.clone();
         let child_ids = parent_to_children.get(&Some(acc_id));
         let mut children = Vec::new();
         if let Some(c_ids) = child_ids {
             for &cid in c_ids {
-                if let Some(child_node) = build_node(cid, account_map, parent_to_children) {
+                if let Some(child_node) = build_node(cid, account_map, parent_to_children, visited) {
                     children.push(child_node);
                 }
             }
         }
+        visited.remove(&acc_id);
         Some(AccountTreeNode { account, children })
     }
 
     let mut roots = Vec::new();
     if let Some(root_ids) = parent_to_children.get(&None) {
         for &rid in root_ids {
-            if let Some(root_node) = build_node(rid, &account_map, &parent_to_children) {
+            let mut visited = HashSet::new();
+            if let Some(root_node) = build_node(rid, &account_map, &parent_to_children, &mut visited) {
                 roots.push(root_node);
             }
         }

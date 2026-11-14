@@ -21,23 +21,32 @@ EMAIL="$2"
 PASSWORD="$3"
 
 if [ -f "$ENV_FILE" ]; then
-  JWT_SECRET=$(grep -E "^JWT_SECRET=" "$ENV_FILE" | cut -d'=' -f2- | tr -d ' "\r\n')
+  ADMIN_KEY=$(grep -E "^ADMIN_API_KEY=" "$ENV_FILE" | cut -d'=' -f2- | tr -d ' "\r\n' || true)
+  if [ -z "$ADMIN_KEY" ]; then
+    ADMIN_KEY=$(grep -E "^JWT_SECRET=" "$ENV_FILE" | cut -d'=' -f2- | tr -d ' "\r\n' || true)
+  fi
 else
   echo "❌ Error: .env file not found at $ENV_FILE"
   exit 1
 fi
 
-if [ -z "$JWT_SECRET" ]; then
-  echo "❌ Error: JWT_SECRET not found in $ENV_FILE"
+if [ -z "$ADMIN_KEY" ]; then
+  echo "❌ Error: ADMIN_API_KEY or JWT_SECRET not found in $ENV_FILE"
   exit 1
 fi
 
 echo "Creating user '$USERNAME' ($EMAIL)..."
 
-RES=$(curl -s -X POST http://localhost:8081/api/auth/signup \
+PAYLOAD=$(jq -n \
+  --arg username "$USERNAME" \
+  --arg email "$EMAIL" \
+  --arg password "$PASSWORD" \
+  '{username: $username, email: $email, password: $password}')
+
+RES=$(echo "$PAYLOAD" | curl -s -X POST http://localhost:8081/api/auth/signup \
   -H "Content-Type: application/json" \
-  -H "X-Admin-Key: ${JWT_SECRET}" \
-  -d "{\"username\":\"$USERNAME\",\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}")
+  -H "X-Admin-Key: ${ADMIN_KEY}" \
+  -d @-)
 
 if echo "$RES" | grep -q '"token"'; then
   echo "✅ User '$USERNAME' successfully created with starter Chart of Accounts!"

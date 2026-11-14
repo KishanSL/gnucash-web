@@ -5,10 +5,27 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::FromRow;
+use std::sync::OnceLock;
 use uuid::Uuid;
+
+static ENCODING_KEY: OnceLock<EncodingKey> = OnceLock::new();
+static DECODING_KEY: OnceLock<DecodingKey> = OnceLock::new();
+
+fn get_encoding_key() -> &'static EncodingKey {
+    ENCODING_KEY.get_or_init(|| {
+        EncodingKey::from_secret(get_jwt_secret().as_bytes())
+    })
+}
+
+fn get_decoding_key() -> &'static DecodingKey {
+    DECODING_KEY.get_or_init(|| {
+        DecodingKey::from_secret(get_jwt_secret().as_bytes())
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct User {
@@ -60,18 +77,11 @@ pub fn get_jwt_secret() -> String {
     match std::env::var("JWT_SECRET") {
         Ok(secret) if secret.trim().len() >= 32 => secret.trim().to_string(),
         _ => {
-            #[cfg(test)]
-            {
-                // In test builds without an explicit environment secret, provide a safe test secret >= 32 chars
+            // Strictly restricted to debug/test builds; never available in release builds
+            if cfg!(debug_assertions) && (cfg!(test) || std::env::var("GNUCASH_TEST_MODE").map(|v| v == "1" || v == "true").unwrap_or(false)) {
                 "test-secret-key-must-be-at-least-32-chars-long!".to_string()
-            }
-            #[cfg(not(test))]
-            {
-                if std::env::var("GNUCASH_TEST_MODE").map(|v| v == "1" || v == "true").unwrap_or(false) {
-                    "test-secret-key-must-be-at-least-32-chars-long!".to_string()
-                } else {
-                    panic!("FATAL: JWT_SECRET environment variable is unset or shorter than 32 characters. Server cannot start securely.");
-                }
+            } else {
+                panic!("FATAL: JWT_SECRET environment variable is unset or shorter than 32 characters. Server cannot start securely.");
             }
         }
     }
@@ -90,14 +100,13 @@ pub fn create_jwt(user_id: Uuid, username: &str, email: &str) -> Result<String, 
         exp: expiration,
     };
 
-    let key = jsonwebtoken::EncodingKey::from_secret(get_jwt_secret().as_bytes());
-    jsonwebtoken::encode(&jsonwebtoken::Header::default(), &claims, &key)
+    jsonwebtoken::encode(&Header::new(Algorithm::HS256), &claims, get_encoding_key())
 }
 
 pub fn verify_jwt(token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
-    let key = jsonwebtoken::DecodingKey::from_secret(get_jwt_secret().as_bytes());
-    let validation = jsonwebtoken::Validation::default();
-    let token_data = jsonwebtoken::decode::<Claims>(token, &key, &validation)?;
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = true;
+    let token_data = jsonwebtoken::decode::<Claims>(token, get_decoding_key(), &validation)?;
     Ok(token_data.claims)
 }
 
@@ -124,8 +133,8 @@ where
         let token = match auth_header {
             Some(h) if h.starts_with("Bearer ") => &h[7..],
             _ => {
-                // In test execution, allow unauthenticated requests to default to the primary test user
-                if cfg!(test) || std::env::var("GNUCASH_TEST_MODE").map(|v| v == "1" || v == "true").unwrap_or(false) {
+                // In test execution strictly within debug builds, allow unauthenticated requests to default to the primary test user
+                if cfg!(debug_assertions) && (cfg!(test) || std::env::var("GNUCASH_TEST_MODE").map(|v| v == "1" || v == "true").unwrap_or(false)) {
                     return Ok(AuthUser {
                         id: Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
                         username: "kishan".to_string(),

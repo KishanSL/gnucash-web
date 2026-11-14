@@ -9,7 +9,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::PgPool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
@@ -68,7 +68,12 @@ pub async fn get_balance_sheet(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .unwrap_or_default();
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to fetch balance sheet balances: {}", e) })),
+        )
+    })?;
 
     let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().collect();
 
@@ -80,19 +85,33 @@ pub async fn get_balance_sheet(
         parent_to_children.entry(acc.parent_id).or_default().push(acc.id);
     }
 
-    // Helper for recursive balance
+    // Helper for recursive balance with cycle guard
     fn get_total_balance(
         id: Uuid,
         balance_map: &HashMap<Uuid, Decimal>,
         parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
     ) -> Decimal {
-        let mut sum = balance_map.get(&id).copied().unwrap_or(Decimal::ZERO);
-        if let Some(children) = parent_to_children.get(&Some(id)) {
-            for child in children {
-                sum += get_total_balance(*child, balance_map, parent_to_children);
+        fn helper(
+            id: Uuid,
+            balance_map: &HashMap<Uuid, Decimal>,
+            parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
+            visited: &mut HashSet<Uuid>,
+        ) -> Decimal {
+            if !visited.insert(id) {
+                return Decimal::ZERO;
             }
+            let mut sum = balance_map.get(&id).copied().unwrap_or(Decimal::ZERO);
+            if let Some(children) = parent_to_children.get(&Some(id)) {
+                for child in children {
+                    sum += helper(*child, balance_map, parent_to_children, visited);
+                }
+            }
+            visited.remove(&id);
+            sum
         }
-        sum
+
+        let mut visited = HashSet::new();
+        helper(id, balance_map, parent_to_children, &mut visited)
     }
 
     // 4. Compute Net Income (Total Revenues - Total Expenses) up to as_of_date
@@ -243,7 +262,12 @@ pub async fn get_income_statement(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .unwrap_or_default();
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to fetch income statement balances: {}", e) })),
+        )
+    })?;
 
     let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().collect();
 
@@ -257,13 +281,27 @@ pub async fn get_income_statement(
         balance_map: &HashMap<Uuid, Decimal>,
         parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
     ) -> Decimal {
-        let mut sum = balance_map.get(&id).copied().unwrap_or(Decimal::ZERO);
-        if let Some(children) = parent_to_children.get(&Some(id)) {
-            for child in children {
-                sum += get_total_balance(*child, balance_map, parent_to_children);
+        fn helper(
+            id: Uuid,
+            balance_map: &HashMap<Uuid, Decimal>,
+            parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
+            visited: &mut HashSet<Uuid>,
+        ) -> Decimal {
+            if !visited.insert(id) {
+                return Decimal::ZERO;
             }
+            let mut sum = balance_map.get(&id).copied().unwrap_or(Decimal::ZERO);
+            if let Some(children) = parent_to_children.get(&Some(id)) {
+                for child in children {
+                    sum += helper(*child, balance_map, parent_to_children, visited);
+                }
+            }
+            visited.remove(&id);
+            sum
         }
-        sum
+
+        let mut visited = HashSet::new();
+        helper(id, balance_map, parent_to_children, &mut visited)
     }
 
     let mut revenue_items = Vec::new();

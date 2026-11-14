@@ -5,44 +5,21 @@ use axum::{
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use sqlx::PgPool;
-use tokio::sync::OnceCell;
 use tower::ServiceExt;
 
-use gnucash_backend::{create_app, db};
-
-static TEST_POOL: OnceCell<PgPool> = OnceCell::const_new();
+use gnucash_backend::create_app;
 
 async fn get_test_pool() -> PgPool {
     std::env::set_var("GNUCASH_TEST_MODE", "1");
-    TEST_POOL
-        .get_or_init(|| async {
-            let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-                "postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash".to_string()
-            });
-            let pool = db::init_db(&database_url)
-                .await
-                .expect("Failed to init database");
-
-            let account_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts")
-                .fetch_one(&pool)
-                .await
-                .unwrap_or((0,));
-
-            if account_count.0 == 0 {
-                let default_user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users LIMIT 1")
-                    .fetch_optional(&pool)
-                    .await
-                    .unwrap_or(None)
-                    .unwrap_or_else(uuid::Uuid::new_v4);
-                gnucash_backend::handlers::seed::run_seed(&pool, default_user_id)
-                    .await
-                    .expect("Failed to seed database");
-            }
-
-            pool
-        })
+    std::env::set_var("JWT_SECRET", "test-secret-key-must-be-at-least-32-chars-long!");
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash".to_string()
+    });
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
         .await
-        .clone()
+        .expect("Failed to connect to test database")
 }
 
 #[tokio::test]
@@ -999,4 +976,252 @@ async fn test_login_non_enumeration() {
     let json2: Value = serde_json::from_slice(&body2).unwrap();
     // Verify identical error message is returned
     assert_eq!(json2["error"], "Invalid username or password");
+}
+
+#[tokio::test]
+async fn test_change_password_without_current_password_fails() {
+    let pool = get_test_pool().await;
+    let token = gnucash_backend::auth::create_jwt(
+        uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+        "kishan",
+        "kishan@localhost",
+    )
+    .unwrap();
+
+    // Change password omitting current_password field
+    let app2 = create_app(pool.clone());
+    let res = app2
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/change-password")
+                .header("Authorization", format!("Bearer {}", token))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "new_password": "some_random_password_789"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::UNPROCESSABLE_ENTITY,
+        "Omitting current_password must be rejected with 400 or 422, got {}",
+        res.status()
+    );
+}
+
+#[tokio::test]
+async fn test_account_hierarchy_cycle_prevention() {
+    let pool = get_test_pool().await;
+    let app = create_app(pool.clone());
+
+    // 1. Create Account A
+    let res_a = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/accounts")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&json!({
+                    "name": "Cycle Account A",
+                    "account_type": "asset"
+                })).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_a.status(), StatusCode::CREATED);
+    let body_a = res_a.into_body().collect().await.unwrap().to_bytes();
+    let acc_a: Value = serde_json::from_slice(&body_a).unwrap();
+    let id_a = acc_a["id"].as_str().unwrap();
+
+    // 2. Create Account B with parent A
+    let app2 = create_app(pool.clone());
+    let res_b = app2
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/accounts")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&json!({
+                    "name": "Cycle Account B",
+                    "account_type": "asset",
+                    "parent_id": id_a
+                })).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_b.status(), StatusCode::CREATED);
+    let body_b = res_b.into_body().collect().await.unwrap().to_bytes();
+    let acc_b: Value = serde_json::from_slice(&body_b).unwrap();
+    let id_b = acc_b["id"].as_str().unwrap();
+
+    // 3. Attempt to update Account A's parent to B (creating A -> B -> A cycle)
+    let app3 = create_app(pool.clone());
+    let res_cycle = app3
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/accounts/{}", id_a))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&json!({
+                    "parent_id": id_b
+                })).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        res_cycle.status(),
+        StatusCode::BAD_REQUEST,
+        "Cycle creation must be rejected with 400 Bad Request"
+    );
+}
+
+#[tokio::test]
+async fn test_zero_balance_tolerance() {
+    let pool = get_test_pool().await;
+    let app = create_app(pool.clone());
+
+    let accounts = sqlx::query_as::<_, (uuid::Uuid, String)>(
+        "SELECT id, name FROM accounts WHERE user_id = '00000000-0000-0000-0000-000000000001' AND placeholder = FALSE LIMIT 2",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
+    let acc1 = accounts[0].0;
+    let acc2 = accounts[1].0;
+
+    // Transaction with 0.01 imbalance
+    let payload = json!({
+        "post_date": "2026-11-01",
+        "description": "0.01 Cent Imbalance Test",
+        "splits": [
+            { "account_id": acc1, "amount": "100.00" },
+            { "account_id": acc2, "amount": "-99.99" }
+        ]
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/transactions")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "0.01 imbalance must be strictly rejected"
+    );
+}
+
+#[tokio::test]
+async fn test_cross_tenant_isolation_on_import() {
+    let pool = get_test_pool().await;
+
+    // Create Tenant B in users table
+    let user_b_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap();
+    sqlx::query(
+        r#"INSERT INTO users (id, username, email, password_hash)
+           VALUES ($1, 'tenant_b', 'tenant_b@localhost', '$2b$12$e8YgN17Pj9QGqZ2eCq.X3OMWj944j/mYFkU5nZ7cI19j1r5u0gJvG')
+           ON CONFLICT (id) DO NOTHING"#
+    )
+    .bind(user_b_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let user_a_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    let user_a_acc_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+        .bind(user_a_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let user_b_token = gnucash_backend::auth::create_jwt(user_b_id, "tenant_b", "tenant_b@localhost").unwrap();
+
+    // Build SQLite database for User B import
+    let temp_db = tempfile::NamedTempFile::new().unwrap();
+    let conn = rusqlite::Connection::open(temp_db.path()).unwrap();
+    conn.execute_batch(
+        r#"
+        CREATE TABLE accounts (
+            guid VARCHAR(32) PRIMARY KEY,
+            name VARCHAR(2048) NOT NULL,
+            account_type VARCHAR(2048) NOT NULL,
+            commodity_guid VARCHAR(32),
+            commodity_scu INTEGER NOT NULL,
+            non_std_scu INTEGER NOT NULL,
+            parent_guid VARCHAR(32),
+            code VARCHAR(2048),
+            description VARCHAR(2048),
+            hidden INTEGER,
+            placeholder INTEGER
+        );
+        INSERT INTO accounts VALUES ('00000000000000000000000000000001', 'Tenant B Root', 'ROOT', NULL, 100, 0, NULL, '', '', 0, 1);
+        INSERT INTO accounts VALUES ('00000000000000000000000000000002', 'Tenant B Checking', 'BANK', NULL, 100, 0, '00000000000000000000000000000001', '1100', 'Private Account', 0, 0);
+        INSERT INTO accounts VALUES ('00000000000000000000000000000003', 'Tenant B Savings', 'BANK', NULL, 100, 0, '00000000000000000000000000000001', '1110', 'Savings Account', 0, 0);
+
+        CREATE TABLE transactions (guid VARCHAR(32) PRIMARY KEY, currency_guid VARCHAR(32), num VARCHAR(2048), post_date VARCHAR(14) NOT NULL, enter_date VARCHAR(14), description VARCHAR(2048));
+        CREATE TABLE splits (guid VARCHAR(32) PRIMARY KEY, tx_guid VARCHAR(32) NOT NULL, account_guid VARCHAR(32) NOT NULL, memo VARCHAR(2048), action VARCHAR(2048), reconcile_state VARCHAR(1), reconcile_date VARCHAR(14), value_num BIGINT NOT NULL, value_denom BIGINT NOT NULL, quantity_num BIGINT, quantity_denom BIGINT, lot_guid VARCHAR(32));
+        "#,
+    ).unwrap();
+
+    let file_bytes = std::fs::read(temp_db.path()).unwrap();
+    let boundary = "---------------------------cross_tenant_test_boundary";
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"file\"; filename=\"tenant_b.gnucash\"\r\n");
+    body.extend_from_slice(b"Content-Type: application/x-sqlite3\r\n\r\n");
+    body.extend_from_slice(&file_bytes);
+    body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
+
+    let app = create_app(pool.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/import/gnucash-sqlite?wipe=false")
+                .header("Authorization", format!("Bearer {}", user_b_token))
+                .header("content-type", format!("multipart/form-data; boundary={}", boundary))
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Verify User A's accounts are 100% unchanged
+    let user_a_acc_count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+        .bind(user_a_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        user_a_acc_count, user_a_acc_count_after,
+        "User A accounts must not be affected by User B's import"
+    );
+
+    // Verify User B's accounts are correctly owned by User B
+    let user_b_acc_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+        .bind(user_b_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(user_b_acc_count >= 2, "User B must have imported accounts");
 }

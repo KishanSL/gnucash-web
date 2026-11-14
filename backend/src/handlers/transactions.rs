@@ -29,24 +29,27 @@ pub struct TransactionListQuery {
     pub offset: Option<i64>,
 }
 
+fn escape_like_pattern(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
 pub async fn list_transactions(
     auth: AuthUser,
     State(pool): State<PgPool>,
     Query(query): Query<TransactionListQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let limit = query.limit.unwrap_or(100).min(500);
-    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0).max(0);
 
     let mut sql = String::from(
-        "SELECT DISTINCT t.id, t.post_date, t.enter_date, t.num, t.description, t.notes, t.created_at, t.updated_at
+        "SELECT t.id, t.post_date, t.enter_date, t.num, t.description, t.notes, t.created_at, t.updated_at
          FROM transactions t
-         LEFT JOIN splits s ON t.id = s.transaction_id
          WHERE t.user_id = $1",
     );
 
     let mut param_idx = 2;
     if query.account_id.is_some() {
-        sql.push_str(&format!(" AND s.account_id = ${}", param_idx));
+        sql.push_str(&format!(" AND EXISTS (SELECT 1 FROM splits s WHERE s.transaction_id = t.id AND s.account_id = ${})", param_idx));
         param_idx += 1;
     }
     if query.from_date.is_some() {
@@ -58,13 +61,13 @@ pub async fn list_transactions(
         param_idx += 1;
     }
     if query.search.is_some() {
-        sql.push_str(&format!(" AND (t.description ILIKE ${0} OR t.num ILIKE ${0} OR t.notes ILIKE ${0})", param_idx));
+        sql.push_str(&format!(" AND (t.description ILIKE ${0} ESCAPE '\\' OR t.num ILIKE ${0} ESCAPE '\\' OR t.notes ILIKE ${0} ESCAPE '\\')", param_idx));
         param_idx += 1;
     }
 
     sql.push_str(&format!(" ORDER BY t.post_date DESC, t.enter_date DESC LIMIT ${} OFFSET ${}", param_idx, param_idx + 1));
 
-    let search_pattern = query.search.as_ref().map(|s| format!("%{}%", s));
+    let search_pattern = query.search.as_ref().map(|s| format!("%{}%", escape_like_pattern(s)));
 
     let mut q = sqlx::query_as::<_, TransactionRow>(&sql).bind(auth.id);
 
@@ -230,21 +233,52 @@ pub async fn create_transaction(
     State(pool): State<PgPool>,
     Json(payload): Json<CreateTransactionRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    // 1. Double-entry validation: At least 2 splits
-    if payload.splits.len() < 2 {
+    // 1. Text length validation
+    if payload.description.trim().is_empty() || payload.description.len() > 255 {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "A double-entry transaction must have at least 2 splits" })),
+            Json(json!({ "error": "Transaction description must be between 1 and 255 characters" })),
+        ));
+    }
+    if let Some(ref num) = payload.num {
+        if num.len() > 50 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Transaction num/reference cannot exceed 50 characters" })),
+            ));
+        }
+    }
+
+    // 2. Double-entry validation: Between 2 and 100 splits
+    if payload.splits.len() < 2 || payload.splits.len() > 100 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "A double-entry transaction must have between 2 and 100 splits" })),
         ));
     }
 
-    // 2. Sum of amounts must be zero
+    // 3. Sum of amounts must be exactly zero, and scale must not exceed 2 decimal places
     let mut sum = Decimal::ZERO;
     for split in &payload.splits {
+        if split.amount.scale() > 2 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("Split amount {} cannot have more than 2 decimal places", split.amount) })),
+            ));
+        }
+        if let Some(ref rec) = split.reconciled_state {
+            let r = rec.to_lowercase();
+            if r != "n" && r != "c" && r != "y" {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("Invalid reconciled_state '{}': must be 'n', 'c', or 'y'", rec) })),
+                ));
+            }
+        }
         sum += split.amount;
     }
 
-    if sum.abs() > Decimal::new(1, 2) {
+    if sum != Decimal::ZERO {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({
@@ -450,19 +484,34 @@ pub async fn update_transaction(
     })?;
 
     if let Some(new_splits) = payload.splits {
-        if new_splits.len() < 2 {
+        if new_splits.len() < 2 || new_splits.len() > 100 {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "A double-entry transaction must have at least 2 splits" })),
+                Json(json!({ "error": "A double-entry transaction must have between 2 and 100 splits" })),
             ));
         }
 
         let mut sum = Decimal::ZERO;
         for s in &new_splits {
+            if s.amount.scale() > 2 {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("Split amount {} cannot have more than 2 decimal places", s.amount) })),
+                ));
+            }
+            if let Some(ref rec) = s.reconciled_state {
+                let r = rec.to_lowercase();
+                if r != "n" && r != "c" && r != "y" {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("Invalid reconciled_state '{}': must be 'n', 'c', or 'y'", rec) })),
+                    ));
+                }
+            }
             sum += s.amount;
         }
 
-        if sum.abs() > Decimal::new(1, 2) {
+        if sum != Decimal::ZERO {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(json!({

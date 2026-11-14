@@ -86,7 +86,8 @@ pub fn create_app(pool: sqlx::PgPool) -> Router {
         .route("/api/reset-data", post(handlers::seed::reset_dataset))
         .route(
             "/api/import/gnucash-sqlite",
-            post(handlers::importer::import_gnucash_sqlite),
+            post(handlers::importer::import_gnucash_sqlite)
+                .layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024)),
         )
         .route(
             "/api/export/gnucash-sqlite",
