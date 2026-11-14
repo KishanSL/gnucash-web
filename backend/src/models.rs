@@ -118,6 +118,7 @@ pub struct TransactionWithSplits {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSplitRequest {
+    pub id: Option<Uuid>,
     pub account_id: Uuid,
     pub amount: Decimal, // Positive = Debit, Negative = Credit
     pub memo: Option<String>,

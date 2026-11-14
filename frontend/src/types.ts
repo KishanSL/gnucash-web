@@ -103,6 +103,7 @@ export interface Transaction {
 }
 
 export interface CreateSplitPayload {
+  id?: string;
   account_id: string;
   amount: string;
   memo?: string | null;

@@ -1225,3 +1225,168 @@ async fn test_cross_tenant_isolation_on_import() {
         .unwrap();
     assert!(user_b_acc_count >= 2, "User B must have imported accounts");
 }
+
+#[tokio::test]
+async fn test_update_transaction_preserves_reconciled_state() {
+    let pool = get_test_pool().await;
+    let app = create_app(pool.clone());
+
+    // 1. Get 2 non-placeholder accounts belonging to default test user
+    let acc1 = sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT id FROM accounts WHERE user_id = '00000000-0000-0000-0000-000000000001' AND placeholder = false ORDER BY id LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let acc2 = sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT id FROM accounts WHERE user_id = '00000000-0000-0000-0000-000000000001' AND placeholder = false AND id != $1 ORDER BY id LIMIT 1",
+    )
+    .bind(acc1)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // 2. Create a new transaction
+    let create_payload = json!({
+        "post_date": "2026-11-01",
+        "description": "Original Reconciled Test Tx",
+        "splits": [
+            { "account_id": acc1, "amount": "75.00", "memo": "Split 1" },
+            { "account_id": acc2, "amount": "-75.00", "memo": "Split 2" }
+        ]
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/transactions")
+                .header("content-type", "application/json")
+                .body(Body::from(create_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let tx_data: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let tx_id = tx_data["id"].as_str().unwrap();
+    let split_ids: Vec<String> = tx_data["splits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap().to_string())
+        .collect();
+
+    // 3. Reconcile both splits via their respective account endpoints
+    let app = create_app(pool.clone());
+    let rec_payload = json!({
+        "statement_date": "2026-11-05",
+        "reconciled_split_ids": [&split_ids[0]]
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&format!("/api/reconcile/{}", acc1))
+                .header("content-type", "application/json")
+                .body(Body::from(rec_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let app = create_app(pool.clone());
+    let rec_payload2 = json!({
+        "statement_date": "2026-11-05",
+        "reconciled_split_ids": [&split_ids[1]]
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&format!("/api/reconcile/{}", acc2))
+                .header("content-type", "application/json")
+                .body(Body::from(rec_payload2.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 4. Verify transaction splits are now 'y' and have reconciled_date
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&format!("/api/transactions/{}", tx_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let reconciled_tx: Value = serde_json::from_slice(&body_bytes).unwrap();
+    for split in reconciled_tx["splits"].as_array().unwrap() {
+        assert_eq!(split["reconciled_state"], "y");
+        assert!(split["reconciled_date"].as_str().is_some());
+    }
+    let orig_date_split1 = reconciled_tx["splits"][0]["reconciled_date"].as_str().unwrap().to_string();
+
+    // 5. Update transaction description (sending same splits without reconciled_state, like UI does)
+    let app = create_app(pool.clone());
+    let update_payload = json!({
+        "description": "Updated Description Typo Fixed",
+        "splits": [
+            { "account_id": acc1, "amount": "75.00", "memo": "Split 1 updated" },
+            { "account_id": acc2, "amount": "-75.00", "memo": "Split 2 updated" }
+        ]
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(&format!("/api/transactions/{}", tx_id))
+                .header("content-type", "application/json")
+                .body(Body::from(update_payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 6. Verify splits STILL have reconciled_state = 'y' and preserved reconciled_date and split IDs!
+    let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let updated_tx: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(updated_tx["description"], "Updated Description Typo Fixed");
+    for (i, split) in updated_tx["splits"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(
+            split["reconciled_state"], "y",
+            "Split {} reconciled_state must remain 'y' after editing transaction",
+            i
+        );
+        assert!(
+            split["reconciled_date"].as_str().is_some(),
+            "Split {} reconciled_date must be preserved",
+            i
+        );
+        assert_eq!(
+            split["id"].as_str().unwrap(),
+            split_ids[i],
+            "Split ID must be preserved in place"
+        );
+    }
+    assert_eq!(
+        updated_tx["splits"][0]["reconciled_date"].as_str().unwrap(),
+        orig_date_split1,
+        "Original reconciled timestamp must be preserved"
+    );
+}

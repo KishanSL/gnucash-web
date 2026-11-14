@@ -32,6 +32,8 @@ interface SplitRowState {
   memo: string;
   debit: string;
   credit: string;
+  reconciled_state?: string;
+  reconciled_date?: string | null;
 }
 
 export const TransactionModal: React.FC<TransactionModalProps> = ({
@@ -155,6 +157,8 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
                 memo: s.memo || '',
                 debit: amt > 0 ? amt.toFixed(2) : '',
                 credit: amt < 0 ? Math.abs(amt).toFixed(2) : '',
+                reconciled_state: s.reconciled_state,
+                reconciled_date: s.reconciled_date,
               };
             })
           );
@@ -357,9 +361,11 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
       const netAmount = debitVal > 0 ? debitVal : -creditVal;
 
       return {
+        id: s.id && s.id.length === 36 ? s.id : undefined,
         account_id: s.account_id,
         amount: netAmount.toFixed(2),
         memo: s.memo.trim() ? s.memo.trim() : null,
+        reconciled_state: s.reconciled_state,
       };
     });
 

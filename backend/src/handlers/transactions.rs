@@ -521,58 +521,178 @@ pub async fn update_transaction(
         }
 
         // Verify all accounts belong to user
-        let account_ids: Vec<Uuid> = new_splits.iter().map(|s| s.account_id).collect();
+        let mut unique_account_ids: Vec<Uuid> = new_splits.iter().map(|s| s.account_id).collect();
+        unique_account_ids.sort();
+        unique_account_ids.dedup();
+
         let valid_acc_count = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM accounts WHERE id = ANY($1) AND user_id = $2 AND placeholder = false",
         )
-        .bind(&account_ids)
+        .bind(&unique_account_ids)
         .bind(auth.id)
         .fetch_one(&mut *tx)
         .await
         .unwrap_or(0);
 
-        if (valid_acc_count as usize) < account_ids.len() {
+        if (valid_acc_count as usize) < unique_account_ids.len() {
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": "One or more accounts do not belong to you or are placeholder categories" })),
             ));
         }
 
-        // Delete old splits
-        sqlx::query("DELETE FROM splits WHERE transaction_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": format!("Failed to clear splits: {}", e) })),
-                )
-            })?;
-
-        // Insert new splits
-        for s in new_splits {
-            let rec_state = s.reconciled_state.unwrap_or_else(|| "n".to_string());
-            let rec_date = if rec_state == "y" { Some(chrono::Utc::now()) } else { None };
-
-            sqlx::query(
-                r#"INSERT INTO splits (transaction_id, account_id, amount, memo, reconciled_state, reconciled_date)
-                   VALUES ($1, $2, $3, $4, $5, $6)"#
+        // Fetch existing splits for this transaction to preserve reconciled state and IDs
+        let existing_splits = sqlx::query_as::<_, SplitRow>(
+            "SELECT id, transaction_id, account_id, amount, memo, reconciled_state, reconciled_date
+             FROM splits WHERE transaction_id = $1",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Failed to fetch existing splits: {}", e) })),
             )
-            .bind(id)
-            .bind(s.account_id)
-            .bind(s.amount)
-            .bind(s.memo)
-            .bind(rec_state)
-            .bind(rec_date)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": format!("Failed to insert new split: {}", e) })),
+        })?;
+
+        // Match new splits to existing splits to preserve state
+        let mut matched_existing: Vec<Option<SplitRow>> = vec![None; new_splits.len()];
+        let mut used_existing_ids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+
+        // Pass 1: Match by explicit split id
+        for (i, s) in new_splits.iter().enumerate() {
+            if let Some(split_id) = s.id {
+                if let Some(existing_s) = existing_splits.iter().find(|e| e.id == split_id && !used_existing_ids.contains(&e.id)) {
+                    matched_existing[i] = Some(existing_s.clone());
+                    used_existing_ids.insert(existing_s.id);
+                }
+            }
+        }
+
+        // Pass 2: Match by account_id and amount for remaining unmatched splits
+        for (i, s) in new_splits.iter().enumerate() {
+            if matched_existing[i].is_none() {
+                if let Some(existing_s) = existing_splits.iter().find(|e| {
+                    !used_existing_ids.contains(&e.id) && e.account_id == s.account_id && e.amount == s.amount
+                }) {
+                    matched_existing[i] = Some(existing_s.clone());
+                    used_existing_ids.insert(existing_s.id);
+                }
+            }
+        }
+
+        // Pass 3: Match by account_id only for remaining unmatched splits
+        for (i, s) in new_splits.iter().enumerate() {
+            if matched_existing[i].is_none() {
+                if let Some(existing_s) = existing_splits.iter().find(|e| {
+                    !used_existing_ids.contains(&e.id) && e.account_id == s.account_id
+                }) {
+                    matched_existing[i] = Some(existing_s.clone());
+                    used_existing_ids.insert(existing_s.id);
+                }
+            }
+        }
+
+        // Delete any existing splits that are no longer part of this transaction
+        let remaining_split_ids: Vec<Uuid> = matched_existing
+            .iter()
+            .filter_map(|m| m.as_ref().map(|e| e.id))
+            .collect();
+
+        if remaining_split_ids.is_empty() {
+            sqlx::query("DELETE FROM splits WHERE transaction_id = $1")
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("Failed to clear splits: {}", e) })),
+                    )
+                })?;
+        } else {
+            sqlx::query("DELETE FROM splits WHERE transaction_id = $1 AND NOT (id = ANY($2))")
+                .bind(id)
+                .bind(&remaining_split_ids)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("Failed to remove deleted splits: {}", e) })),
+                    )
+                })?;
+        }
+
+        // Update or insert splits
+        for (i, s) in new_splits.into_iter().enumerate() {
+            let (rec_state, rec_date) = match (&s.reconciled_state, &matched_existing[i]) {
+                (Some(req_state), Some(existing_s)) => {
+                    let norm = req_state.to_lowercase();
+                    let date = if norm == "y" {
+                        existing_s.reconciled_date.or_else(|| Some(chrono::Utc::now()))
+                    } else {
+                        None
+                    };
+                    (norm, date)
+                }
+                (Some(req_state), None) => {
+                    let norm = req_state.to_lowercase();
+                    let date = if norm == "y" { Some(chrono::Utc::now()) } else { None };
+                    (norm, date)
+                }
+                (None, Some(existing_s)) => {
+                    // Carry over existing reconciled state and date
+                    (existing_s.reconciled_state.clone(), existing_s.reconciled_date)
+                }
+                (None, None) => ("n".to_string(), None),
+            };
+
+            if let Some(existing_s) = &matched_existing[i] {
+                // Update split in place
+                sqlx::query(
+                    r#"UPDATE splits
+                       SET account_id = $1, amount = $2, memo = $3, reconciled_state = $4, reconciled_date = $5
+                       WHERE id = $6"#,
                 )
-            })?;
+                .bind(s.account_id)
+                .bind(s.amount)
+                .bind(s.memo)
+                .bind(rec_state)
+                .bind(rec_date)
+                .bind(existing_s.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("Failed to update split: {}", e) })),
+                    )
+                })?;
+            } else {
+                // Insert new split
+                let split_id = s.id.unwrap_or_else(Uuid::new_v4);
+                sqlx::query(
+                    r#"INSERT INTO splits (id, transaction_id, account_id, amount, memo, reconciled_state, reconciled_date)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+                )
+                .bind(split_id)
+                .bind(id)
+                .bind(s.account_id)
+                .bind(s.amount)
+                .bind(s.memo)
+                .bind(rec_state)
+                .bind(rec_date)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("Failed to insert new split: {}", e) })),
+                    )
+                })?;
+            }
         }
     }
 
