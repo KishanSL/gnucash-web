@@ -6,3 +6,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_users_email_lower ON users (LOWER(email));
 CREATE INDEX IF NOT EXISTS idx_tx_user_date ON transactions (user_id, post_date DESC, enter_date DESC);
 CREATE INDEX IF NOT EXISTS idx_accounts_user_code ON accounts (user_id, code, name);
 CREATE INDEX IF NOT EXISTS idx_splits_acct_rec ON splits (account_id, reconciled_state);
+
+-- Token revocation support on password change / reset (Issue #8)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
+
+-- Widen currency for non-currency commodities / ISINs (Issue #9)
+ALTER TABLE accounts ALTER COLUMN currency TYPE VARCHAR(64);
+
+-- Enforce normalized reconciled states (Issue #14)
+ALTER TABLE splits DROP CONSTRAINT IF EXISTS chk_splits_reconciled_state;
+ALTER TABLE splits ADD CONSTRAINT chk_splits_reconciled_state CHECK (reconciled_state IN ('n', 'c', 'y'));

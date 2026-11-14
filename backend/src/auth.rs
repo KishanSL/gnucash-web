@@ -1,6 +1,6 @@
 use axum::{
     async_trait,
-    extract::FromRequestParts,
+    extract::{FromRef, FromRequestParts},
     http::{request::Parts, StatusCode},
     Json,
 };
@@ -32,6 +32,8 @@ pub struct User {
     pub id: Uuid,
     pub username: String,
     pub email: String,
+    #[serde(default)]
+    pub token_version: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -42,6 +44,8 @@ pub struct UserWithPassword {
     pub username: String,
     pub email: String,
     pub password_hash: String,
+    #[sqlx(default)]
+    pub token_version: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -70,6 +74,8 @@ pub struct Claims {
     pub sub: String, // user_id as string for standard JWT compliance
     pub username: String,
     pub email: String,
+    #[serde(default)]
+    pub token_version: i32,
     pub exp: usize,
 }
 
@@ -87,7 +93,7 @@ pub fn get_jwt_secret() -> String {
     }
 }
 
-pub fn create_jwt(user_id: Uuid, username: &str, email: &str) -> Result<String, jsonwebtoken::errors::Error> {
+pub fn create_jwt(user_id: Uuid, username: &str, email: &str, token_version: i32) -> Result<String, jsonwebtoken::errors::Error> {
     let expiration = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::days(30))
         .expect("valid timestamp")
@@ -97,6 +103,7 @@ pub fn create_jwt(user_id: Uuid, username: &str, email: &str) -> Result<String, 
         sub: user_id.to_string(),
         username: username.to_string(),
         email: email.to_string(),
+        token_version,
         exp: expiration,
     };
 
@@ -121,10 +128,11 @@ pub struct AuthUser {
 impl<S> FromRequestParts<S> for AuthUser
 where
     S: Send + Sync,
+    sqlx::PgPool: FromRef<S>,
 {
     type Rejection = (StatusCode, Json<serde_json::Value>);
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let auth_header = parts
             .headers
             .get(axum::http::header::AUTHORIZATION)
@@ -162,6 +170,33 @@ where
             )
         })?;
 
+        let pool = sqlx::PgPool::from_ref(state);
+        let current_version = sqlx::query_scalar::<_, i32>(
+            "SELECT token_version FROM users WHERE id = $1"
+        )
+        .bind(user_id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Database error during authentication: {}", e) })),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "User does not exist" })),
+            )
+        })?;
+
+        if claims.token_version != current_version {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "Token has been revoked. Please log in again." })),
+            ));
+        }
+
         Ok(AuthUser {
             id: user_id,
             username: claims.username,
@@ -186,5 +221,14 @@ mod tests {
 
         // Restore valid secret
         std::env::set_var("JWT_SECRET", valid_secret);
+    }
+
+    #[test]
+    fn test_create_and_verify_jwt_token_version() {
+        let user_id = Uuid::new_v4();
+        let token = create_jwt(user_id, "alice", "alice@example.com", 2).unwrap();
+        let claims = verify_jwt(&token).unwrap();
+        assert_eq!(claims.token_version, 2);
+        assert_eq!(claims.username, "alice");
     }
 }

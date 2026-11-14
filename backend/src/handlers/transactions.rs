@@ -356,7 +356,7 @@ pub async fn create_transaction(
 
     let mut created_splits = Vec::new();
     for s in payload.splits {
-        let rec_state = s.reconciled_state.unwrap_or_else(|| "n".to_string());
+        let rec_state = s.reconciled_state.as_deref().unwrap_or("n").to_lowercase();
         let rec_date = if rec_state == "y" { Some(chrono::Utc::now()) } else { None };
 
         let split_row = sqlx::query_as::<_, SplitRow>(
@@ -451,9 +451,38 @@ pub async fn update_transaction(
     })?;
 
     let post_date = payload.post_date.unwrap_or(existing.post_date);
-    let num = payload.num.or(existing.num);
-    let description = payload.description.unwrap_or(existing.description);
-    let notes = payload.notes.or(existing.notes);
+
+    let num = match payload.num {
+        Some(n) => n.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        None => existing.num,
+    };
+    if let Some(ref n) = num {
+        if n.len() > 50 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Transaction num/reference cannot exceed 50 characters" })),
+            ));
+        }
+    }
+
+    let description = match payload.description {
+        Some(ref d) => {
+            let trimmed = d.trim();
+            if trimmed.is_empty() || trimmed.len() > 255 {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "Transaction description must be between 1 and 255 characters" })),
+                ));
+            }
+            trimmed.to_string()
+        }
+        None => existing.description,
+    };
+
+    let notes = match payload.notes {
+        Some(n) => n.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        None => existing.notes,
+    };
 
     let mut tx = pool.begin().await.map_err(|e| {
         (
@@ -582,18 +611,6 @@ pub async fn update_transaction(
             }
         }
 
-        // Pass 3: Match by account_id only for remaining unmatched splits
-        for (i, s) in new_splits.iter().enumerate() {
-            if matched_existing[i].is_none() {
-                if let Some(existing_s) = existing_splits.iter().find(|e| {
-                    !used_existing_ids.contains(&e.id) && e.account_id == s.account_id
-                }) {
-                    matched_existing[i] = Some(existing_s.clone());
-                    used_existing_ids.insert(existing_s.id);
-                }
-            }
-        }
-
         // Delete any existing splits that are no longer part of this transaction
         let remaining_split_ids: Vec<Uuid> = matched_existing
             .iter()
@@ -627,26 +644,30 @@ pub async fn update_transaction(
 
         // Update or insert splits
         for (i, s) in new_splits.into_iter().enumerate() {
-            let (rec_state, rec_date) = match (&s.reconciled_state, &matched_existing[i]) {
-                (Some(req_state), Some(existing_s)) => {
-                    let norm = req_state.to_lowercase();
-                    let date = if norm == "y" {
-                        existing_s.reconciled_date.or_else(|| Some(chrono::Utc::now()))
-                    } else {
-                        None
-                    };
-                    (norm, date)
+            let (rec_state, rec_date) = if let Some(existing_s) = &matched_existing[i] {
+                // Issue #16: Only preserve reconciled status ('y'/'c') if BOTH account_id and amount are unchanged
+                let is_unchanged = existing_s.account_id == s.account_id && existing_s.amount == s.amount;
+                if is_unchanged {
+                    match &s.reconciled_state {
+                        Some(req_state) => {
+                            let norm = req_state.to_lowercase();
+                            let date = if norm == "y" {
+                                existing_s.reconciled_date.or_else(|| Some(chrono::Utc::now()))
+                            } else {
+                                None
+                            };
+                            (norm, date)
+                        }
+                        None => (existing_s.reconciled_state.clone(), existing_s.reconciled_date),
+                    }
+                } else {
+                    // Amount or account changed -> must reset to unreconciled 'n'
+                    ("n".to_string(), None)
                 }
-                (Some(req_state), None) => {
-                    let norm = req_state.to_lowercase();
-                    let date = if norm == "y" { Some(chrono::Utc::now()) } else { None };
-                    (norm, date)
-                }
-                (None, Some(existing_s)) => {
-                    // Carry over existing reconciled state and date
-                    (existing_s.reconciled_state.clone(), existing_s.reconciled_date)
-                }
-                (None, None) => ("n".to_string(), None),
+            } else {
+                let norm = s.reconciled_state.as_deref().unwrap_or("n").to_lowercase();
+                let date = if norm == "y" { Some(chrono::Utc::now()) } else { None };
+                (norm, date)
             };
 
             if let Some(existing_s) = &matched_existing[i] {
@@ -659,20 +680,21 @@ pub async fn update_transaction(
                 .bind(s.account_id)
                 .bind(s.amount)
                 .bind(s.memo)
-                .bind(rec_state)
+                .bind(&rec_state)
                 .bind(rec_date)
                 .bind(existing_s.id)
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| {
+                    tracing::error!("Failed to update split: {}", e);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": format!("Failed to update split: {}", e) })),
+                        Json(json!({ "error": "Failed to update split" })),
                     )
                 })?;
             } else {
-                // Insert new split
-                let split_id = s.id.unwrap_or_else(Uuid::new_v4);
+                // Issue #17: Never use client-supplied split id as primary key on insert; always generate fresh UUID
+                let split_id = Uuid::new_v4();
                 sqlx::query(
                     r#"INSERT INTO splits (id, transaction_id, account_id, amount, memo, reconciled_state, reconciled_date)
                        VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
@@ -682,14 +704,15 @@ pub async fn update_transaction(
                 .bind(s.account_id)
                 .bind(s.amount)
                 .bind(s.memo)
-                .bind(rec_state)
+                .bind(&rec_state)
                 .bind(rec_date)
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| {
+                    tracing::error!("Failed to insert new split: {}", e);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": format!("Failed to insert new split: {}", e) })),
+                        Json(json!({ "error": "Failed to insert new split" })),
                     )
                 })?;
             }

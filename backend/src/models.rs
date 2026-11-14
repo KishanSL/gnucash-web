@@ -55,14 +55,25 @@ pub struct CreateAccountRequest {
     pub hidden: Option<bool>,
 }
 
+pub fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Deserialize::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Deserialize)]
 pub struct UpdateAccountRequest {
     pub name: Option<String>,
-    pub code: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub code: Option<Option<String>>,
     pub account_type: Option<String>,
-    pub parent_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub parent_id: Option<Option<Uuid>>,
     pub currency: Option<String>,
-    pub description: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub description: Option<Option<String>>,
     pub placeholder: Option<bool>,
     pub hidden: Option<bool>,
 }
@@ -137,9 +148,11 @@ pub struct CreateTransactionRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpdateTransactionRequest {
     pub post_date: Option<NaiveDate>,
-    pub num: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub num: Option<Option<String>>,
     pub description: Option<String>,
-    pub notes: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub notes: Option<Option<String>>,
     pub splits: Option<Vec<CreateSplitRequest>>,
 }
 

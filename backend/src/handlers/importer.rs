@@ -125,6 +125,7 @@ pub struct RawTransaction {
     pub post_date: NaiveDate,
     pub num: Option<String>,
     pub description: String,
+    pub notes: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -150,6 +151,7 @@ fn parse_gnucash_xml(
 
     let mut tag_stack: Vec<String> = Vec::new();
 
+    let mut in_template_transactions = false;
     let mut curr_account: Option<RawAccount> = None;
     let mut curr_tx: Option<RawTransaction> = None;
     let mut curr_split: Option<RawSplit> = None;
@@ -162,17 +164,20 @@ fn parse_gnucash_xml(
             Ok(Event::Start(e)) => {
                 let name = e.name().as_ref().to_string();
                 match name.as_str() {
-                    "gnc:account" => {
+                    "gnc:template-transactions" => {
+                        in_template_transactions = true;
+                    }
+                    "gnc:account" if !in_template_transactions => {
                         let mut acc = RawAccount::default();
                         acc.currency = default_curr.to_string();
                         curr_account = Some(acc);
                     }
-                    "gnc:transaction" => {
+                    "gnc:transaction" if !in_template_transactions => {
                         let mut tx = RawTransaction::default();
                         tx.post_date = Utc::now().date_naive();
                         curr_tx = Some(tx);
                     }
-                    "trn:split" => {
+                    "trn:split" if !in_template_transactions => {
                         let mut sp = RawSplit::default();
                         sp.reconciled_state = "n".to_string();
                         if let Some(ref tx) = curr_tx {
@@ -187,6 +192,9 @@ fn parse_gnucash_xml(
             Ok(Event::End(e)) => {
                 let name = e.name().as_ref().to_string();
                 match name.as_str() {
+                    "gnc:template-transactions" => {
+                        in_template_transactions = false;
+                    }
                     "gnc:account" => {
                         if let Some(mut acc) = curr_account.take() {
                             if !acc.guid.is_empty() {
@@ -299,6 +307,16 @@ fn parse_gnucash_xml(
                                 tx.post_date = d;
                             }
                         }
+                        "slot:key" => {
+                            curr_slot_key = Some(text.clone());
+                        }
+                        "slot:value" => {
+                            if let Some(ref key) = curr_slot_key {
+                                if key == "notes" {
+                                    tx.notes = Some(text.clone());
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -326,7 +344,7 @@ fn parse_gnucash_sqlite(
     conn.pragma_update(None, "trusted_schema", "OFF").ok();
 
     // Verify GnuCash tables exist
-    let mut check_stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('accounts', 'transactions', 'splits')")
+    let mut check_stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table'")
         .map_err(|e| format!("SQLite query failed: {}", e))?;
     let table_names: Vec<String> = check_stmt.query_map([], |row| row.get(0))
         .map_err(|e| format!("Failed to read tables: {}", e))?
@@ -345,6 +363,18 @@ fn parse_gnucash_sqlite(
         }) {
             for r in rows.flatten() {
                 commodity_map.insert(r.0, r.1);
+            }
+        }
+    }
+
+    // Read root account and template root guids if books table is present
+    let mut root_account_guid: Option<String> = None;
+    let mut root_template_guid: Option<String> = None;
+    if let Ok(mut stmt) = conn.prepare("SELECT root_account_guid, root_template_guid FROM books") {
+        if let Ok(mut rows) = stmt.query([]) {
+            if let Ok(Some(row)) = rows.next() {
+                root_account_guid = row.get(0).ok();
+                root_template_guid = row.get(1).ok();
             }
         }
     }
@@ -389,10 +419,20 @@ fn parse_gnucash_sqlite(
         });
     }
 
-    // Read Transactions
-    let mut tx_stmt = conn.prepare(
-        "SELECT guid, post_date, num, description FROM transactions"
-    ).map_err(|e| format!("Failed to prepare transactions query: {}", e))?;
+    // Read Transactions with notes from slots table if present
+    let has_slots = table_names.contains(&"slots".to_string());
+    let mut tx_stmt = if has_slots {
+        conn.prepare(
+            "SELECT t.guid, t.post_date, t.num, t.description, s.string_val
+             FROM transactions t
+             LEFT JOIN slots s ON s.obj_guid = t.guid AND s.name = 'notes'"
+        )
+    } else {
+        conn.prepare(
+            "SELECT guid, post_date, num, description, NULL
+             FROM transactions"
+        )
+    }.map_err(|e| format!("Failed to prepare transactions query: {}", e))?;
 
     let mut raw_transactions = Vec::new();
     let tx_rows = tx_stmt.query_map([], |row| {
@@ -401,17 +441,19 @@ fn parse_gnucash_sqlite(
             row.get::<_, String>(1)?,
             row.get::<_, Option<String>>(2)?,
             row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
         ))
     }).map_err(|e| format!("Failed to query transactions: {}", e))?;
 
     for r in tx_rows.flatten() {
-        let (guid, post_date_str, num, desc) = r;
+        let (guid, post_date_str, num, desc, notes) = r;
         let post_date = parse_gnucash_date(&post_date_str);
         raw_transactions.push(RawTransaction {
             guid,
             post_date,
             num: num.filter(|s| !s.trim().is_empty()),
             description: desc.unwrap_or_else(|| "GnuCash Transaction".to_string()),
+            notes: notes.filter(|s| !s.trim().is_empty()),
         });
     }
 
@@ -446,6 +488,46 @@ fn parse_gnucash_sqlite(
             reconciled_state: rec_state.unwrap_or_else(|| "n".to_string()),
             amount,
         });
+    }
+
+    // Exclude scheduled-transaction template accounts and transactions (Issue #7)
+    let mut template_guids = HashSet::new();
+    if let Some(ref rtg) = root_template_guid {
+        template_guids.insert(rtg.clone());
+    }
+    for a in &raw_accounts {
+        if a.account_type.eq_ignore_ascii_case("ROOT") {
+            if let Some(ref rag) = root_account_guid {
+                if &a.guid != rag {
+                    template_guids.insert(a.guid.clone());
+                }
+            }
+        }
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for a in &raw_accounts {
+            if let Some(ref pg) = a.parent_guid {
+                if template_guids.contains(pg) && !template_guids.contains(&a.guid) {
+                    template_guids.insert(a.guid.clone());
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if !template_guids.is_empty() {
+        let template_tx_guids: HashSet<String> = raw_splits
+            .iter()
+            .filter(|s| template_guids.contains(&s.account_guid))
+            .map(|s| s.tx_guid.clone())
+            .collect();
+
+        raw_accounts.retain(|a| !template_guids.contains(&a.guid));
+        raw_splits.retain(|s| !template_tx_guids.contains(&s.tx_guid));
+        raw_transactions.retain(|t| !template_tx_guids.contains(&t.guid));
     }
 
     Ok((raw_accounts, raw_transactions, raw_splits))
@@ -577,7 +659,23 @@ pub async fn save_gnucash_data_to_db(
     raw_splits: Vec<RawSplit>,
     format_desc: &str,
 ) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
-    // 1. Clean up parent_guid if parent is ROOT account
+    // 1. Verify double-entry invariant: sum of splits for each transaction must equal 0
+    let mut tx_sums: HashMap<String, Decimal> = HashMap::new();
+    for s in &raw_splits {
+        *tx_sums.entry(s.tx_guid.clone()).or_insert(Decimal::ZERO) += s.amount;
+    }
+    for (tx_guid, sum) in &tx_sums {
+        if sum.abs() > Decimal::new(1, 2) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("Double-entry violation in imported transaction {}: splits do not balance (imbalance: {})", tx_guid, sum)
+                })),
+            ));
+        }
+    }
+
+    // 2. Clean up parent_guid if parent is ROOT account
     let root_guids: HashSet<String> = raw_accounts
         .iter()
         .filter(|a| a.account_type.trim().to_uppercase() == "ROOT")
@@ -594,7 +692,48 @@ pub async fn save_gnucash_data_to_db(
         }
     }
 
-    // 2. Save to PostgreSQL transaction
+    // 3. Map of GnuCash GUID string -> Postgres UUID
+    let mut account_guid_to_uuid: HashMap<String, Uuid> = HashMap::new();
+    for acc in &raw_accounts {
+        account_guid_to_uuid.insert(acc.guid.clone(), parse_gnucash_guid_for_user(&acc.guid, &user_id));
+    }
+
+    // 4. In-memory topological sort for accounts (Issue #13)
+    let account_guid_set: HashSet<String> = raw_accounts.iter().map(|a| a.guid.clone()).collect();
+    for acc in &mut raw_accounts {
+        if let Some(ref pg) = acc.parent_guid {
+            if !account_guid_set.contains(pg) {
+                acc.parent_guid = None;
+            }
+        }
+    }
+
+    let parent_map: HashMap<String, Option<String>> = raw_accounts
+        .iter()
+        .map(|a| (a.guid.clone(), a.parent_guid.clone()))
+        .collect();
+
+    let mut depth_map: HashMap<String, usize> = HashMap::new();
+    for acc in &raw_accounts {
+        let mut curr = acc.guid.clone();
+        let mut depth = 0;
+        let mut visited = HashSet::new();
+        visited.insert(curr.clone());
+
+        while let Some(Some(ref p)) = parent_map.get(&curr) {
+            if visited.contains(p) {
+                break;
+            }
+            visited.insert(p.clone());
+            depth += 1;
+            curr = p.clone();
+        }
+        depth_map.insert(acc.guid.clone(), depth);
+    }
+
+    raw_accounts.sort_by_key(|a| *depth_map.get(&a.guid).unwrap_or(&0));
+
+    // 5. Begin DB transaction
     let mut tx = pool.begin().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -622,171 +761,198 @@ pub async fn save_gnucash_data_to_db(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))?;
     }
 
-    // Map of GnuCash GUID string -> Postgres UUID
-    let mut account_guid_to_uuid: HashMap<String, Uuid> = HashMap::new();
-    for acc in &raw_accounts {
-        account_guid_to_uuid.insert(acc.guid.clone(), parse_gnucash_guid_for_user(&acc.guid, &user_id));
-    }
+    // 6. Batch insert accounts level-by-level with UNNEST (Issue #13)
+    let max_depth = depth_map.values().copied().max().unwrap_or(0);
+    let mut inserted_acc_count = 0;
 
-    // Insert Accounts (First insert parents, then children to satisfy foreign keys)
-    let mut inserted_acc_ids: HashSet<Uuid> = HashSet::new();
-    let mut remaining = raw_accounts;
-    let mut pass = 0;
+    for level in 0..=max_depth {
+        let level_accounts: Vec<&RawAccount> = raw_accounts
+            .iter()
+            .filter(|a| *depth_map.get(&a.guid).unwrap_or(&0) == level)
+            .collect();
 
-    while pass < 10 && !remaining.is_empty() {
-        pass += 1;
-        let mut next_remaining = Vec::new();
-        for acc in remaining {
-            let acc_id = *account_guid_to_uuid.get(&acc.guid).unwrap();
-            let parent_id = acc.parent_guid.as_ref().and_then(|pg| account_guid_to_uuid.get(pg).copied());
-
-            let can_insert = match parent_id {
-                None => true,
-                Some(pid) => inserted_acc_ids.contains(&pid),
-            };
-
-            if can_insert {
-                sqlx::query(
-                    r#"INSERT INTO accounts (id, name, code, account_type, parent_id, currency, description, placeholder, hidden, user_id)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                       ON CONFLICT (id) DO UPDATE SET
-                           name = EXCLUDED.name, code = EXCLUDED.code, account_type = EXCLUDED.account_type,
-                           parent_id = EXCLUDED.parent_id, currency = EXCLUDED.currency, description = EXCLUDED.description,
-                           placeholder = EXCLUDED.placeholder, hidden = EXCLUDED.hidden
-                       WHERE accounts.user_id = EXCLUDED.user_id"#
-                )
-                .bind(acc_id)
-                .bind(&acc.name)
-                .bind(&acc.code)
-                .bind(&acc.account_type)
-                .bind(parent_id)
-                .bind(&acc.currency)
-                .bind(&acc.description)
-                .bind(acc.placeholder)
-                .bind(acc.hidden)
-                .bind(user_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": format!("Failed to insert account '{}': {}", acc.name, e) })),
-                    )
-                })?;
-
-                inserted_acc_ids.insert(acc_id);
-            } else {
-                next_remaining.push(acc);
-            }
+        if level_accounts.is_empty() {
+            continue;
         }
-        remaining = next_remaining;
-    }
 
-    // If any circular or unresolved parents remain, insert with parent_id = None
-    for acc in remaining {
-        let acc_id = *account_guid_to_uuid.get(&acc.guid).unwrap();
-        sqlx::query(
-            r#"INSERT INTO accounts (id, name, code, account_type, parent_id, currency, description, placeholder, hidden, user_id)
-               VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, $9)
-               ON CONFLICT (id) DO UPDATE SET
-                   name = EXCLUDED.name, code = EXCLUDED.code, account_type = EXCLUDED.account_type,
-                   currency = EXCLUDED.currency, description = EXCLUDED.description,
-                   placeholder = EXCLUDED.placeholder, hidden = EXCLUDED.hidden
-               WHERE accounts.user_id = EXCLUDED.user_id"#
-        )
-        .bind(acc_id)
-        .bind(&acc.name)
-        .bind(&acc.code)
-        .bind(&acc.account_type)
-        .bind(&acc.currency)
-        .bind(&acc.description)
-        .bind(acc.placeholder)
-        .bind(acc.hidden)
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to insert fallback account '{}': {}", acc.name, e) })),
+        for chunk in level_accounts.chunks(500) {
+            let ids: Vec<Uuid> = chunk.iter().map(|a| *account_guid_to_uuid.get(&a.guid).unwrap()).collect();
+            let names: Vec<String> = chunk.iter().map(|a| a.name.clone()).collect();
+            let codes: Vec<Option<String>> = chunk.iter().map(|a| a.code.clone()).collect();
+            let types: Vec<String> = chunk.iter().map(|a| a.account_type.clone()).collect();
+            let parent_ids: Vec<Option<Uuid>> = chunk.iter().map(|a| a.parent_guid.as_ref().and_then(|pg| account_guid_to_uuid.get(pg).copied())).collect();
+            let currencies: Vec<String> = chunk.iter().map(|a| a.currency.clone()).collect();
+            let descs: Vec<Option<String>> = chunk.iter().map(|a| a.description.clone()).collect();
+            let placeholders: Vec<bool> = chunk.iter().map(|a| a.placeholder).collect();
+            let hiddens: Vec<bool> = chunk.iter().map(|a| a.hidden).collect();
+            let user_ids: Vec<Uuid> = vec![user_id; chunk.len()];
+
+            sqlx::query(
+                r#"INSERT INTO accounts (id, name, code, account_type, parent_id, currency, description, placeholder, hidden, user_id)
+                   SELECT * FROM UNNEST(
+                       $1::uuid[],
+                       $2::varchar[],
+                       $3::varchar[],
+                       $4::varchar[],
+                       $5::uuid[],
+                       $6::varchar[],
+                       $7::text[],
+                       $8::boolean[],
+                       $9::boolean[],
+                       $10::uuid[]
+                   )
+                   ON CONFLICT (id) DO UPDATE SET
+                       name = EXCLUDED.name,
+                       code = EXCLUDED.code,
+                       account_type = EXCLUDED.account_type,
+                       parent_id = EXCLUDED.parent_id,
+                       currency = EXCLUDED.currency,
+                       description = EXCLUDED.description,
+                       placeholder = EXCLUDED.placeholder,
+                       hidden = EXCLUDED.hidden
+                   WHERE accounts.user_id = EXCLUDED.user_id"#
             )
-        })?;
-        inserted_acc_ids.insert(acc_id);
+            .bind(&ids)
+            .bind(&names)
+            .bind(&codes)
+            .bind(&types)
+            .bind(&parent_ids)
+            .bind(&currencies)
+            .bind(&descs)
+            .bind(&placeholders)
+            .bind(&hiddens)
+            .bind(&user_ids)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("Failed to batch insert accounts: {}", e) })),
+                )
+            })?;
+
+            inserted_acc_count += chunk.len();
+        }
     }
 
-    // Map of Transaction GUID -> Postgres UUID
+    // 7. Map of Transaction GUID -> Postgres UUID
     let mut tx_guid_to_uuid: HashMap<String, Uuid> = HashMap::new();
-    let mut tx_count = 0;
-
     for t in &raw_transactions {
-        let tx_id = parse_gnucash_guid_for_user(&t.guid, &user_id);
-        tx_guid_to_uuid.insert(t.guid.clone(), tx_id);
+        tx_guid_to_uuid.insert(t.guid.clone(), parse_gnucash_guid_for_user(&t.guid, &user_id));
+    }
+
+    let mut tx_count = 0;
+    for chunk in raw_transactions.chunks(1000) {
+        let ids: Vec<Uuid> = chunk.iter().map(|t| *tx_guid_to_uuid.get(&t.guid).unwrap()).collect();
+        let post_dates: Vec<NaiveDate> = chunk.iter().map(|t| t.post_date).collect();
+        let nums: Vec<Option<String>> = chunk.iter().map(|t| t.num.clone()).collect();
+        let descs: Vec<String> = chunk.iter().map(|t| t.description.clone()).collect();
+        let notes: Vec<Option<String>> = chunk.iter().map(|t| t.notes.clone()).collect();
+        let user_ids: Vec<Uuid> = vec![user_id; chunk.len()];
 
         sqlx::query(
-            r#"INSERT INTO transactions (id, post_date, num, description, user_id)
-               VALUES ($1, $2, $3, $4, $5)
+            r#"INSERT INTO transactions (id, post_date, num, description, notes, user_id)
+               SELECT * FROM UNNEST(
+                   $1::uuid[],
+                   $2::date[],
+                   $3::varchar[],
+                   $4::varchar[],
+                   $5::text[],
+                   $6::uuid[]
+               )
                ON CONFLICT (id) DO UPDATE SET
-                   post_date = EXCLUDED.post_date, num = EXCLUDED.num, description = EXCLUDED.description
+                   post_date = EXCLUDED.post_date,
+                   num = EXCLUDED.num,
+                   description = EXCLUDED.description,
+                   notes = EXCLUDED.notes
                WHERE transactions.user_id = EXCLUDED.user_id"#
         )
-        .bind(tx_id)
-        .bind(t.post_date)
-        .bind(&t.num)
-        .bind(&t.description)
-        .bind(user_id)
+        .bind(&ids)
+        .bind(&post_dates)
+        .bind(&nums)
+        .bind(&descs)
+        .bind(&notes)
+        .bind(&user_ids)
         .execute(&mut *tx)
         .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to insert transaction: {}", e) })),
+                Json(json!({ "error": format!("Failed to batch insert transactions: {}", e) })),
             )
         })?;
 
-        tx_count += 1;
+        tx_count += chunk.len();
     }
 
-    // Insert Splits
+    // 8. Issue #5: Clear previous splits of imported transactions so no stale/duplicate splits remain
+    let imported_tx_uuids: Vec<Uuid> = tx_guid_to_uuid.values().copied().collect();
+    for chunk in imported_tx_uuids.chunks(1000) {
+        sqlx::query("DELETE FROM splits WHERE transaction_id = ANY($1::uuid[])")
+            .bind(chunk)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("Failed to clear stale splits: {}", e) })),
+                )
+            })?;
+    }
+
+    // 9. Batch insert splits with UNNEST (Issue #13)
+    let valid_splits: Vec<&RawSplit> = raw_splits
+        .iter()
+        .filter(|s| tx_guid_to_uuid.contains_key(&s.tx_guid) && account_guid_to_uuid.contains_key(&s.account_guid))
+        .collect();
+
     let mut split_count = 0;
-    for s in &raw_splits {
-        let tx_id = match tx_guid_to_uuid.get(&s.tx_guid) {
-            Some(id) => *id,
-            None => continue, // orphaned split
-        };
-
-        let acc_id = match account_guid_to_uuid.get(&s.account_guid) {
-            Some(id) => *id,
-            None => continue, // orphaned split
-        };
-
-        let split_id = parse_gnucash_guid_for_user(&s.guid, &user_id);
-        let rec_state = match s.reconciled_state.to_lowercase().as_str() {
-            "y" => "y",
-            "c" => "c",
-            _ => "n",
-        };
+    for chunk in valid_splits.chunks(1000) {
+        let ids: Vec<Uuid> = chunk.iter().map(|s| parse_gnucash_guid_for_user(&s.guid, &user_id)).collect();
+        let tx_ids: Vec<Uuid> = chunk.iter().map(|s| *tx_guid_to_uuid.get(&s.tx_guid).unwrap()).collect();
+        let acc_ids: Vec<Uuid> = chunk.iter().map(|s| *account_guid_to_uuid.get(&s.account_guid).unwrap()).collect();
+        let amounts: Vec<Decimal> = chunk.iter().map(|s| s.amount).collect();
+        let memos: Vec<Option<String>> = chunk.iter().map(|s| s.memo.clone()).collect();
+        let rec_states: Vec<String> = chunk.iter().map(|s| {
+            match s.reconciled_state.to_lowercase().as_str() {
+                "y" => "y".to_string(),
+                "c" => "c".to_string(),
+                _ => "n".to_string(),
+            }
+        }).collect();
 
         sqlx::query(
             r#"INSERT INTO splits (id, transaction_id, account_id, amount, memo, reconciled_state)
-               VALUES ($1, $2, $3, $4, $5, $6)
-               ON CONFLICT (id) DO NOTHING"#
+               SELECT * FROM UNNEST(
+                   $1::uuid[],
+                   $2::uuid[],
+                   $3::uuid[],
+                   $4::numeric[],
+                   $5::varchar[],
+                   $6::varchar[]
+               )
+               ON CONFLICT (id) DO UPDATE SET
+                   account_id = EXCLUDED.account_id,
+                   amount = EXCLUDED.amount,
+                   memo = EXCLUDED.memo,
+                   reconciled_state = EXCLUDED.reconciled_state"#
         )
-        .bind(split_id)
-        .bind(tx_id)
-        .bind(acc_id)
-        .bind(s.amount)
-        .bind(&s.memo)
-        .bind(rec_state)
+        .bind(&ids)
+        .bind(&tx_ids)
+        .bind(&acc_ids)
+        .bind(&amounts)
+        .bind(&memos)
+        .bind(&rec_states)
         .execute(&mut *tx)
         .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to insert split: {}", e) })),
+                Json(json!({ "error": format!("Failed to batch insert splits: {}", e) })),
             )
         })?;
 
-        split_count += 1;
+        split_count += chunk.len();
     }
 
     tx.commit().await.map_err(|e| {
@@ -798,13 +964,13 @@ pub async fn save_gnucash_data_to_db(
 
     Ok(json!({
         "success": true,
-        "accounts_imported": inserted_acc_ids.len(),
+        "accounts_imported": inserted_acc_count,
         "transactions_imported": tx_count,
         "splits_imported": split_count,
         "format": format_desc,
         "message": format!(
             "Successfully imported {} file ({} accounts, {} transactions, {} splits).",
-            format_desc, inserted_acc_ids.len(), tx_count, split_count
+            format_desc, inserted_acc_count, tx_count, split_count
         )
     }))
 }

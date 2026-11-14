@@ -2,6 +2,7 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use std::time::Duration;
 use tracing::info;
+use uuid::Uuid;
 
 pub async fn init_db(database_url: &str) -> Result<PgPool, sqlx::Error> {
     info!("Connecting to database...");
@@ -40,22 +41,53 @@ pub async fn init_db(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .unwrap_or(0);
 
     if user_count == 0 {
-        let password_hash = tokio::task::spawn_blocking(|| {
-            bcrypt::hash("password123", bcrypt::DEFAULT_COST)
+        let initial_username = std::env::var("INITIAL_ADMIN_USER")
+            .unwrap_or_else(|_| "kishan".to_string());
+
+        let (raw_password, is_generated) = if let Ok(env_pw) = std::env::var("INITIAL_ADMIN_PASSWORD") {
+            (env_pw, false)
+        } else if cfg!(debug_assertions) {
+            ("Kishan@123".to_string(), false)
+        } else {
+            let gen = format!("admin_{}", Uuid::new_v4().simple());
+            (gen, true)
+        };
+
+        if is_generated {
+            let cred_path = std::env::var("SECURITY_DIR")
+                .unwrap_or_else(|_| "/app/security".to_string());
+            let _ = std::fs::create_dir_all(&cred_path);
+            let file_path = format!("{}/initial_admin_credentials.txt", cred_path);
+            let cred_content = format!(
+                "Initial Admin Credentials:\nUsername: {}\nPassword: {}\nGenerated At: {}\n",
+                initial_username, raw_password, chrono::Utc::now()
+            );
+            if let Err(e) = std::fs::write(&file_path, cred_content) {
+                tracing::warn!("Failed to write initial admin credentials to {}: {}", file_path, e);
+            } else {
+                info!("Initial admin credentials written to {}", file_path);
+            }
+        }
+
+        let password_hash = tokio::task::spawn_blocking(move || {
+            bcrypt::hash(&raw_password, bcrypt::DEFAULT_COST)
                 .unwrap_or_else(|_| "$2b$12$e8YgN17Pj9QGqZ2eCq.X3OMWj944j/mYFkU5nZ7cI19j1r5u0gJvG".to_string())
         })
         .await
         .unwrap_or_else(|_| "$2b$12$e8YgN17Pj9QGqZ2eCq.X3OMWj944j/mYFkU5nZ7cI19j1r5u0gJvG".to_string());
 
+        let email = format!("{}@localhost", initial_username);
         sqlx::query(
             r#"INSERT INTO users (id, username, email, password_hash)
-               VALUES ('00000000-0000-0000-0000-000000000001', 'kishan', 'kishan@localhost', $1)
+               VALUES ('00000000-0000-0000-0000-000000000001', $1, $2, $3)
                ON CONFLICT (username) DO NOTHING"#
         )
+        .bind(&initial_username)
+        .bind(&email)
         .bind(password_hash)
         .execute(&pool)
         .await?;
-        info!("Created default initial user: kishan");
+        info!("Created default initial user: {}", initial_username);
     }
 
     // Assign existing orphaned accounts/transactions to the first user

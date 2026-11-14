@@ -282,12 +282,63 @@ pub async fn update_account(
         )
     })?;
 
-    let name = payload.name.unwrap_or(existing.name);
-    let code = payload.code.or(existing.code);
-    let account_type = payload.account_type.unwrap_or(existing.account_type);
-    let parent_id = payload.parent_id.or(existing.parent_id);
-    let currency = payload.currency.unwrap_or(existing.currency);
-    let description = payload.description.or(existing.description);
+    let name = match payload.name {
+        Some(ref n) => {
+            let trimmed = n.trim();
+            if trimmed.is_empty() || trimmed.len() > 255 {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "Account name must be between 1 and 255 characters" })),
+                ));
+            }
+            trimmed.to_string()
+        }
+        None => existing.name,
+    };
+
+    let code = match payload.code {
+        Some(c) => c.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        None => existing.code,
+    };
+
+    let account_type = match payload.account_type {
+        Some(ref at) => {
+            let normalized = at.trim().to_lowercase();
+            if !VALID_ACCOUNT_TYPES.contains(&normalized.as_str()) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("Invalid account type '{}'", normalized) })),
+                ));
+            }
+            normalized
+        }
+        None => existing.account_type,
+    };
+
+    let parent_id = match payload.parent_id {
+        Some(p) => p,
+        None => existing.parent_id,
+    };
+
+    let currency = match payload.currency {
+        Some(ref c) => {
+            let trimmed = c.trim().to_uppercase();
+            if trimmed.is_empty() || trimmed.len() > 64 {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "Currency code must be between 1 and 64 characters" })),
+                ));
+            }
+            trimmed
+        }
+        None => existing.currency,
+    };
+
+    let description = match payload.description {
+        Some(d) => d.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        None => existing.description,
+    };
+
     let placeholder = payload.placeholder.unwrap_or(existing.placeholder);
     let hidden = payload.hidden.unwrap_or(existing.hidden);
 

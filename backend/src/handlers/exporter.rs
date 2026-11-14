@@ -36,7 +36,6 @@ struct TransactionExportRow {
     enter_date: chrono::DateTime<chrono::Utc>,
     num: Option<String>,
     description: String,
-    #[allow(dead_code)]
     notes: Option<String>,
 }
 
@@ -297,18 +296,22 @@ pub async fn export_gnucash_sqlite(
         let comm_guid = Uuid::new_v5(&Uuid::NAMESPACE_DNS, curr.as_bytes()).to_string().replace('-', "");
         commodity_map.insert(curr.clone(), comm_guid.clone());
 
+        let is_iso_currency = curr.len() == 3 && curr.chars().all(|c| c.is_ascii_alphabetic());
+        let namespace = if is_iso_currency { "CURRENCY" } else { "FUND" };
+        let quote_source = if is_iso_currency { "currency" } else { "financequote" };
+
         sqlite_tx.execute(
             "INSERT INTO commodities (guid, namespace, mnemonic, fullname, cusip, fraction, quote_flag, quote_source)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 comm_guid,
-                "CURRENCY",
+                namespace,
                 curr,
                 curr,
                 "",
                 100,
                 1,
-                "currency"
+                quote_source
             ],
         ).map_err(|e| {
             (
@@ -394,7 +397,7 @@ pub async fn export_gnucash_sqlite(
         let tx_guid = tx.id.to_string().replace('-', "");
         let tx_curr = tx_currency_map.get(&tx.id).cloned().unwrap_or_else(|| "INR".to_string());
         let comm_guid = commodity_map.get(&tx_curr).cloned().unwrap_or_else(|| default_commodity_guid.clone());
-        let post_date_str = tx.post_date.format("%Y%m%d000000").to_string();
+        let post_date_str = tx.post_date.format("%Y%m%d105900").to_string();
         let enter_date_str = tx.enter_date.format("%Y%m%d%H%M%S").to_string();
 
         sqlite_tx.execute(
@@ -414,6 +417,20 @@ pub async fn export_gnucash_sqlite(
                 Json(json!({ "error": format!("Failed to insert transaction: {}", e) })),
             )
         })?;
+
+        if let Some(ref notes) = tx.notes {
+            if !notes.trim().is_empty() {
+                sqlite_tx.execute(
+                    "INSERT INTO slots (obj_guid, name, slot_type, string_val) VALUES (?1, 'notes', 4, ?2)",
+                    params![tx_guid, notes.trim()],
+                ).map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("Failed to insert transaction notes slot: {}", e) })),
+                    )
+                })?;
+            }
+        }
     }
 
     // Insert Splits

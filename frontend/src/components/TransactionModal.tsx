@@ -360,12 +360,19 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
       const creditVal = parseFloat(s.credit) || 0;
       const netAmount = debitVal > 0 ? debitVal : -creditVal;
 
+      // Find original split from editingTransaction
+      const origSplit = editingTransaction?.splits?.find((orig) => orig.id === s.id);
+      const isUnchanged =
+        origSplit &&
+        origSplit.account_id === s.account_id &&
+        Math.abs(parseFloat(origSplit.amount) - netAmount) < 0.001;
+
       return {
         id: s.id && s.id.length === 36 ? s.id : undefined,
         account_id: s.account_id,
         amount: netAmount.toFixed(2),
         memo: s.memo.trim() ? s.memo.trim() : null,
-        reconciled_state: s.reconciled_state,
+        reconciled_state: isUnchanged ? s.reconciled_state : 'n',
       };
     });
 

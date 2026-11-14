@@ -17,7 +17,10 @@ fn verify_admin_key(header_key: Option<&str>) -> bool {
         _ => return false,
     };
     let expected_key = std::env::var("ADMIN_API_KEY")
-        .unwrap_or_else(|_| crate::auth::get_jwt_secret());
+        .ok()
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .unwrap_or_else(crate::auth::get_jwt_secret);
 
     if header_key.len() != expected_key.len() {
         return false;
@@ -130,7 +133,7 @@ pub async fn signup(
     let user = sqlx::query_as::<_, User>(
         r#"INSERT INTO users (username, email, password_hash)
            VALUES ($1, $2, $3)
-           RETURNING id, username, email, created_at, updated_at"#
+           RETURNING id, username, email, token_version, created_at, updated_at"#
     )
     .bind(username)
     .bind(&email)
@@ -149,7 +152,7 @@ pub async fn signup(
         tracing::error!("Failed to provision starter accounts for user {}: {}", user.id, e);
     }
 
-    let token = create_jwt(user.id, &user.username, &user.email).map_err(|e| {
+    let token = create_jwt(user.id, &user.username, &user.email, user.token_version).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Failed to generate token: {}", e) })),
@@ -174,7 +177,7 @@ pub async fn login(
     }
 
     let user_row = sqlx::query_as::<_, UserWithPassword>(
-        r#"SELECT id, username, email, password_hash, created_at, updated_at
+        r#"SELECT id, username, email, password_hash, token_version, created_at, updated_at
            FROM users
            WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1)"#
     )
@@ -211,11 +214,12 @@ pub async fn login(
         id: user_row.id,
         username: user_row.username,
         email: user_row.email,
+        token_version: user_row.token_version,
         created_at: user_row.created_at,
         updated_at: user_row.updated_at,
     };
 
-    let token = create_jwt(user.id, &user.username, &user.email).map_err(|e| {
+    let token = create_jwt(user.id, &user.username, &user.email, user.token_version).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Failed to generate token: {}", e) })),
@@ -230,7 +234,7 @@ pub async fn get_current_user(
     State(pool): State<PgPool>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let user = sqlx::query_as::<_, User>(
-        "SELECT id, username, email, created_at, updated_at FROM users WHERE id = $1",
+        "SELECT id, username, email, token_version, created_at, updated_at FROM users WHERE id = $1",
     )
     .bind(auth.id)
     .fetch_optional(&pool)
@@ -372,7 +376,7 @@ pub async fn reset_password(
 
     // 1. Check if user exists
     let user = sqlx::query_as::<_, User>(
-        r#"SELECT id, username, email, created_at, updated_at
+        r#"SELECT id, username, email, token_version, created_at, updated_at
            FROM users
            WHERE LOWER(username) = LOWER($1) OR LOWER(email) = LOWER($1)"#
     )
@@ -410,7 +414,7 @@ pub async fn reset_password(
 
     sqlx::query(
         r#"UPDATE users
-           SET password_hash = $1, updated_at = NOW()
+           SET password_hash = $1, token_version = token_version + 1, updated_at = NOW()
            WHERE id = $2"#
     )
     .bind(password_hash)
@@ -529,7 +533,7 @@ pub async fn change_password(
     let password_hash = hash_password_async(new_password).await?;
 
     sqlx::query(
-        "UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2"
+        "UPDATE users SET password_hash = $1, token_version = token_version + 1, updated_at = NOW() WHERE id = $2"
     )
     .bind(password_hash)
     .bind(auth.id)
