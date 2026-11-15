@@ -2,6 +2,8 @@
 
 A modern, high-performance web clone of **GnuCash** built with **Rust (Axum + SQLx)**, **PostgreSQL**, and **React + TypeScript + Tailwind CSS**.
 
+> **Requirements:** [`requirements.md`](requirements.md) is the source of truth for expected behaviour. If this README disagrees with it, `requirements.md` wins.
+
 ## Architecture Overview
 
 ```

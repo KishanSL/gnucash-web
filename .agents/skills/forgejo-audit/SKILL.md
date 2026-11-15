@@ -59,7 +59,11 @@ Then load the existing tracker state so you don't re-file known problems:
 
 ## 3. Audit
 
-Read `AGENTS.md` first for the architecture and invariants. Check, in this order:
+Read `requirements.md` first. It's the source of truth for expected behaviour, and its requirement IDs
+(e.g. `ACC-2`) are what findings cite. Then read `AGENTS.md` for the architecture. Check, in this order:
+
+0. **Requirements conformance**: any behaviour that breaks a `must` in `requirements.md` is a defect,
+   even if it looks deliberate in the code. Name the requirement ID in the issue.
 
 1. **Security**: authn/authz on every Axum handler (`backend/src/handlers/`), tenant isolation
    (every query filtered by `user_id`), SQL built from strings, JWT/admin-key handling, secrets in
@@ -74,6 +78,10 @@ Read `AGENTS.md` first for the architecture and invariants. Check, in this order
    large re-renders.
 
 Rules for a finding:
+- **Respect the requirements' scope.** Don't file behaviour that `requirements.md` marks as out of
+  scope or as an accepted limitation (e.g. `INV-6`), or that falls under its **Open questions**.
+  Don't invent a requirement either: if you find behaviour the file doesn't settle, list it in the
+  report as a suggested new open question instead of filing it.
 - **Verify before filing.** Open the code and confirm the defect is real at HEAD. Trace the call path.
   Drop anything speculative. A short list of real issues beats a long list of maybes.
 - One issue per root cause. Merge several symptoms of the same mistake into one issue.
@@ -95,7 +103,7 @@ For each finding, write the body to a temp file (in the scratchpad), using this 
 The two HTML comments are machine-read by `forgejo.sh` and the `forgejo-verify` skill, so keep them.
 
 ```markdown
-**Severity:** High · **Kind:** security · **Found in:** `<short-sha>` (audit `audit/<timestamp>`)
+**Severity:** High · **Kind:** security · **Requirement:** `SEC-7` · **Found in:** `<short-sha>` (audit `audit/<timestamp>`)
 
 ### Problem
 <What is wrong and why it matters. One short paragraph.>
@@ -117,7 +125,10 @@ The two HTML comments are machine-read by `forgejo.sh` and the `forgejo-verify` 
 <!-- audit-commit: <full-40-char-HEAD-sha> -->
 ```
 
-The **How to verify the fix** section is what `forgejo-verify` checks against later, so make it testable.
+The **How to verify the fix** section is what `forgejo-verify` checks against later, so make it testable
+and consistent with the cited requirement. Put every requirement the defect breaks in the
+**Requirement** field (comma-separated). Use `none` only for defects no requirement covers (for
+example, a performance problem). In that case, add a suggested requirement to the report.
 
 Create the issue. The title is `[<Severity>] <imperative summary>`, at most 80 characters:
 
@@ -146,5 +157,6 @@ Tag even when there are zero findings: a clean audit is still an audit.
 ## 6. Report
 
 Give the user a short summary with the scope (base → HEAD, number of files), a table of the new
-issues (number, severity, title, link), any existing issues you commented on, and the tag that was
-created. For `dry-run`, show the findings table and the issue titles that would have been filed.
+issues (number, severity, requirement, title, link), any existing issues you commented on, and the tag
+that was created. Then list any suggested additions or open questions for `requirements.md`. Don't
+edit that file yourself: the user owns it. For `dry-run`, show the findings table and the issue titles that would have been filed.

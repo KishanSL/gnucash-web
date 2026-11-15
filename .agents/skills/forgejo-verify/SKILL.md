@@ -73,7 +73,13 @@ an issue that has `status/solved`: always verify a claim.
 
 Otherwise, judge the issue against the code **at HEAD**, not only the diff:
 1. Re-read the **Problem** and the **How to verify the fix** sections. The latter is the acceptance
-   criterion. For hand-filed issues without one, use the reported behaviour.
+   criterion. For hand-filed issues without one, use the reported behaviour. Then read the
+   requirements the issue cites in `requirements.md` (the source of truth). If there are none, find
+   the ones that cover the behaviour.
+   - If `requirements.md` now contradicts the issue (the scope changed after it was filed), the
+     requirements win. Judge against them. If the issue has become moot (out of scope or an accepted
+     limitation), give no verdict: list it under "needs a human" with a suggestion to close it as not
+     planned, citing the requirement.
 2. Open every cited location at HEAD. Code moves, so if lines shifted, find the same logic by
    searching (`grep -rn`) instead of trusting line numbers.
 3. Look for the fix anywhere, not just the cited files. A fix can live in a shared helper, middleware,
@@ -81,8 +87,20 @@ Otherwise, judge the issue against the code **at HEAD**, not only the diff:
    `commit_refs` in `show` output. Forgejo shows these commits in the issue's comment stream, but they
    are timeline events, not comments.
 4. Check that the fix is complete: every location listed, every path through the code (for example
-   both the create and the update handler), and no new bypass. If a test was added for it, run it if
-   it's cheap (`cd backend && cargo test <name>`). Mention whether you ran it.
+   both the create and the update handler), and no new bypass. The fix must not break any other
+   requirement in `requirements.md`; if it does, that's a new defect to file (see "Record the verdict"). If a test was added
+   for it, run it if it's cheap, and mention whether you ran it.
+   **Never run the backend tests against the default database:** without `DATABASE_URL` they use the
+   live `gnucash` DB as the real user, and some tests wipe or change data. Use a throwaway database:
+   ```bash
+   podman exec gnucash-postgres psql -U gnucash -d postgres -c "CREATE DATABASE gnucash_verify_tmp"
+   cd backend && DATABASE_URL=postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash_verify_tmp \
+     cargo test <name> -- --test-threads=1
+   podman exec gnucash-postgres psql -U gnucash -d postgres -c "DROP DATABASE gnucash_verify_tmp"
+   ```
+   A fresh database has no seeded chart of accounts, so `test_get_accounts_and_tree`,
+   `test_cannot_post_to_placeholder_account` and `test_account_register_running_balance` fail there.
+   That's expected.
 
 Verdict:
 - **verified-fixed**: the defect can no longer occur at HEAD and the acceptance criterion is met.
@@ -102,6 +120,7 @@ Skip this step for `dry-run`. Write the comment to a temp file in the scratchpad
 **Verification at `<short-sha>`: ✅ Fixed** <!-- or ⚠️ Partially fixed / ❌ Not fixed -->
 
 **Evidence**
+- Requirement: `SEC-7` (current password required to change it).
 - `backend/src/handlers/auth.rs:498` — `current_password` is now a required `String` and is always checked with `verify_password`.
 - Fixed in <short-sha> "<commit subject>".
 

@@ -2,6 +2,9 @@
 
 This file provides context, architectural constraints, and mandatory verification protocols for agents working in this repository.
 
+> [!IMPORTANT]
+> **[`requirements.md`](requirements.md) is the source of truth for expected behaviour.** Read it before changing behaviour, auditing, or verifying fixes. If this file, the README, a Forgejo issue or the code disagrees with it, `requirements.md` wins. Cite requirement IDs (e.g. `ACC-2`, `INV-1`) in issues, commits and tests. Items under its **Open questions** are undecided: keep the current behaviour and ask the user rather than choosing an answer.
+
 ---
 
 ## 1. Project Overview & Architecture
