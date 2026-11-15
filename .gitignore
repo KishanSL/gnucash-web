@@ -16,3 +16,6 @@ security/
 *password_reset*.txt
 
 .claude/
+
+# Puppeteer screenshots (can contain real account data)
+frontend/screenshots/
