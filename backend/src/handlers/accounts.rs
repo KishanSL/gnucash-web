@@ -38,19 +38,13 @@ pub async fn list_accounts(
         )
     })?;
 
-    // Fetch direct balances for user's accounts (Issue #9: stock/mutual funds balance is shares/units)
+    // Fetch direct balances for user's accounts
     let balances: Vec<(Uuid, Decimal)> = sqlx::query_as::<_, (Uuid, Decimal)>(
-        r#"SELECT s.account_id,
-                  COALESCE(
-                      CASE WHEN a.commodity_namespace NOT IN ('CURRENCY', 'ISO4217') OR a.account_type IN ('stock', 'mutual')
-                           THEN SUM(COALESCE(s.quantity, s.amount))
-                           ELSE SUM(s.amount) END,
-                      0
-                  ) as balance
+        r#"SELECT s.account_id, COALESCE(SUM(s.amount), 0) as balance
            FROM splits s
            JOIN accounts a ON s.account_id = a.id
            WHERE a.user_id = $1
-           GROUP BY s.account_id, a.commodity_namespace, a.account_type"#,
+           GROUP BY s.account_id"#,
     )
     .bind(auth.id)
     .fetch_all(&pool)
@@ -87,17 +81,11 @@ pub async fn get_account_tree(
     })?;
 
     let balances: Vec<(Uuid, Decimal)> = sqlx::query_as::<_, (Uuid, Decimal)>(
-        r#"SELECT s.account_id,
-                  COALESCE(
-                      CASE WHEN a.commodity_namespace NOT IN ('CURRENCY', 'ISO4217') OR a.account_type IN ('stock', 'mutual')
-                           THEN SUM(COALESCE(s.quantity, s.amount))
-                           ELSE SUM(s.amount) END,
-                      0
-                  ) as balance
+        r#"SELECT s.account_id, COALESCE(SUM(s.amount), 0) as balance
            FROM splits s
            JOIN accounts a ON s.account_id = a.id
            WHERE a.user_id = $1
-           GROUP BY s.account_id, a.commodity_namespace, a.account_type"#,
+           GROUP BY s.account_id"#,
     )
     .bind(auth.id)
     .fetch_all(&pool)
@@ -142,28 +130,13 @@ pub async fn get_account(
         )
     })?;
 
-    let is_stock = sqlx::query_scalar::<_, bool>(
-        "SELECT COALESCE(commodity_namespace NOT IN ('CURRENCY', 'ISO4217'), false) OR account_type IN ('stock', 'mutual') FROM accounts WHERE id = $1"
+    let balance_row: Option<(Decimal,)> = sqlx::query_as(
+        "SELECT COALESCE(SUM(amount), 0) FROM splits WHERE account_id = $1",
     )
     .bind(id)
     .fetch_optional(&pool)
     .await
-    .unwrap_or(Some(false))
-    .unwrap_or(false);
-
-    let balance_row: Option<(Decimal,)> = if is_stock {
-        sqlx::query_as("SELECT COALESCE(SUM(COALESCE(quantity, amount)), 0) FROM splits WHERE account_id = $1")
-            .bind(id)
-            .fetch_optional(&pool)
-            .await
-            .unwrap_or(None)
-    } else {
-        sqlx::query_as("SELECT COALESCE(SUM(amount), 0) FROM splits WHERE account_id = $1")
-            .bind(id)
-            .fetch_optional(&pool)
-            .await
-            .unwrap_or(None)
-    };
+    .unwrap_or(None);
 
     let balance = balance_row.map(|r| r.0).unwrap_or(Decimal::ZERO);
     let display_balance = calculate_display_balance(&row.account_type, balance);
@@ -444,28 +417,13 @@ pub async fn update_account(
         )
     })?;
 
-    let is_stock = sqlx::query_scalar::<_, bool>(
-        "SELECT COALESCE(commodity_namespace NOT IN ('CURRENCY', 'ISO4217'), false) OR account_type IN ('stock', 'mutual') FROM accounts WHERE id = $1"
+    let balance_row: Option<(Decimal,)> = sqlx::query_as(
+        "SELECT COALESCE(SUM(amount), 0) FROM splits WHERE account_id = $1",
     )
     .bind(id)
     .fetch_optional(&pool)
     .await
-    .unwrap_or(Some(false))
-    .unwrap_or(false);
-
-    let balance_row: Option<(Decimal,)> = if is_stock {
-        sqlx::query_as("SELECT COALESCE(SUM(COALESCE(quantity, amount)), 0) FROM splits WHERE account_id = $1")
-            .bind(id)
-            .fetch_optional(&pool)
-            .await
-            .unwrap_or(None)
-    } else {
-        sqlx::query_as("SELECT COALESCE(SUM(amount), 0) FROM splits WHERE account_id = $1")
-            .bind(id)
-            .fetch_optional(&pool)
-            .await
-            .unwrap_or(None)
-    };
+    .unwrap_or(None);
 
     let balance = balance_row.map(|r| r.0).unwrap_or(Decimal::ZERO);
     let display_balance = calculate_display_balance(&updated.account_type, balance);

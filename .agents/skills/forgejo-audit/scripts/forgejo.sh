@@ -16,7 +16,7 @@
 #   create <title> <body-file> <label>...   create issue; refuses if an open issue has the same fingerprint
 #   comment <n> <body-file>                 add a comment
 #   set-status <n> <verified-fixed|partially-fixed|not-fixed>
-#                                           swap status/* label (and drop status:solved);
+#                                           swap status/* label (this also drops the status/solved claim);
 #                                           close on verified-fixed, reopen otherwise
 set -euo pipefail
 
@@ -90,7 +90,7 @@ LABELS=(
   "status/not-fixed|#d93f0b|true|Last verification found the issue still present"
   "status/partially-fixed|#fbca04|true|Last verification found an incomplete fix"
   "status/verified-fixed|#0e8a16|true|Last verification confirmed the fix"
-  "status:solved|#c2e0c6|false|Developer says this is fixed; awaiting forgejo-verify"
+  "status/solved|#0e8a16|true|Developer says this is fixed; awaiting forgejo-verify"
 )
 
 cmd_check() {
@@ -166,9 +166,9 @@ cmd_set_status() {
   case $status in verified-fixed) state=closed ;; partially-fixed | not-fixed) state=open ;;
     *) die "status must be verified-fixed, partially-fixed or not-fixed" ;; esac
   want=$(label_ids "status/$status" | jq '.[0]')
-  # drop any other status/* label and the developer's status:solved claim, then add the new one
+  # drop any other status/* label (incl. the status/solved claim), then add the new one
   api GET "$REPO_API/issues/$n/labels" | jq -r --argjson w "$want" \
-    '.[] | select((.name | startswith("status/") or . == "status:solved") and .id != $w) | .id' |
+    '.[] | select((.name | startswith("status/")) and .id != $w) | .id' |
     while read -r id; do api DELETE "$REPO_API/issues/$n/labels/$id" >/dev/null; done
   api POST "$REPO_API/issues/$n/labels" "{\"labels\":[$want]}" >/dev/null
   api PATCH "$REPO_API/issues/$n" "{\"state\":\"$state\"}" | jq -r '"#\(.number) \(.state) status/'"$status"'"'
