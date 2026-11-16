@@ -2489,3 +2489,669 @@ async fn test_issue_21_investment_balance_shows_amount_not_units() {
     let total_assets: rust_decimal::Decimal = serde_json::from_value(bs["assets"]["total"].clone()).unwrap();
     assert_eq!(total_assets, rust_decimal::Decimal::ZERO, "Total assets on balance sheet must equal 0.00");
 }
+
+#[tokio::test]
+async fn test_cross_tenant_endpoint_isolation() {
+    // SEC-10: Every query on accounts, transactions and splits is scoped to the authenticated user.
+    // No user can read, modify, or infer the existence of another user's data.
+    let pool = get_test_pool().await;
+
+    // 1. Create User A
+    let user_a_id = uuid::Uuid::new_v4();
+    let username_a = format!("isola_{}", &user_a_id.to_string()[..8]);
+    let email_a = format!("{}@example.com", username_a);
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')")
+        .bind(user_a_id)
+        .bind(&username_a)
+        .bind(&email_a)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let token_a = gnucash_backend::auth::create_jwt(user_a_id, &username_a, &email_a, 0).unwrap();
+
+    // 2. Create User B
+    let user_b_id = uuid::Uuid::new_v4();
+    let username_b = format!("isolb_{}", &user_b_id.to_string()[..8]);
+    let email_b = format!("{}@example.com", username_b);
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')")
+        .bind(user_b_id)
+        .bind(&username_b)
+        .bind(&email_b)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let token_b = gnucash_backend::auth::create_jwt(user_b_id, &username_b, &email_b, 0).unwrap();
+
+    // 3. User A creates accounts and a transaction
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/accounts")
+                .header("authorization", format!("Bearer {}", token_a))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({
+                    "name": "User A Bank",
+                    "account_type": "bank",
+                    "currency": "INR"
+                }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let acc1_data: Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let acc1_id = acc1_data["id"].as_str().unwrap();
+
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/accounts")
+                .header("authorization", format!("Bearer {}", token_a))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({
+                    "name": "User A Expense",
+                    "account_type": "expense",
+                    "currency": "INR"
+                }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let acc2_data: Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let acc2_id = acc2_data["id"].as_str().unwrap();
+
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/transactions")
+                .header("authorization", format!("Bearer {}", token_a))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({
+                    "post_date": "2026-11-16",
+                    "description": "User A Secret Transaction",
+                    "splits": [
+                        { "account_id": acc1_id, "amount": "-100.00" },
+                        { "account_id": acc2_id, "amount": "100.00" }
+                    ]
+                }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let tx_data: Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let tx_id = tx_data["id"].as_str().unwrap();
+
+    // 4. User B attempts to access User A's accounts via GET, PUT, DELETE -> all 404
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&format!("/api/accounts/{}", acc1_id))
+                .header("authorization", format!("Bearer {}", token_b))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "User B must not read User A's account");
+
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(&format!("/api/accounts/{}", acc1_id))
+                .header("authorization", format!("Bearer {}", token_b))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "name": "Hacked Name" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "User B must not modify User A's account");
+
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(&format!("/api/accounts/{}", acc1_id))
+                .header("authorization", format!("Bearer {}", token_b))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "User B must not delete User A's account");
+
+    // 5. User B attempts to access User A's account register -> 404
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&format!("/api/accounts/{}/register", acc1_id))
+                .header("authorization", format!("Bearer {}", token_b))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "User B must not read User A's account register");
+
+    // 6. User B attempts to access User A's transaction via GET, PUT, DELETE -> all 404
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(&format!("/api/transactions/{}", tx_id))
+                .header("authorization", format!("Bearer {}", token_b))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "User B must not read User A's transaction");
+
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(&format!("/api/transactions/{}", tx_id))
+                .header("authorization", format!("Bearer {}", token_b))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "description": "Hacked Transaction" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "User B must not modify User A's transaction");
+
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(&format!("/api/transactions/{}", tx_id))
+                .header("authorization", format!("Bearer {}", token_b))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "User B must not delete User A's transaction");
+}
+
+#[tokio::test]
+async fn test_reset_data_endpoint_wipes_user_records_only() {
+    // DATA-1: Reset Entire Database (POST /api/reset-data) permanently deletes all of the user's
+    // accounts and transactions, leaving 0 of each. Other users are unaffected.
+    let pool = get_test_pool().await;
+
+    // 1. Create User A and User B
+    let user_a_id = uuid::Uuid::new_v4();
+    let username_a = format!("reseta_{}", &user_a_id.to_string()[..8]);
+    let email_a = format!("{}@example.com", username_a);
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')")
+        .bind(user_a_id)
+        .bind(&username_a)
+        .bind(&email_a)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let token_a = gnucash_backend::auth::create_jwt(user_a_id, &username_a, &email_a, 0).unwrap();
+
+    let user_b_id = uuid::Uuid::new_v4();
+    let username_b = format!("resetb_{}", &user_b_id.to_string()[..8]);
+    let email_b = format!("{}@example.com", username_b);
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')")
+        .bind(user_b_id)
+        .bind(&username_b)
+        .bind(&email_b)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // 2. Insert records for both users
+    let acc_a = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO accounts (id, name, account_type, user_id) VALUES ($1, 'User A Bank', 'bank', $2)")
+        .bind(acc_a)
+        .bind(user_a_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let acc_b = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO accounts (id, name, account_type, user_id) VALUES ($1, 'User B Bank', 'bank', $2)")
+        .bind(acc_b)
+        .bind(user_b_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let tx_a = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO transactions (id, post_date, description, user_id) VALUES ($1, '2026-11-16', 'Tx A', $2)")
+        .bind(tx_a)
+        .bind(user_a_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let tx_b = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO transactions (id, post_date, description, user_id) VALUES ($1, '2026-11-16', 'Tx B', $2)")
+        .bind(tx_b)
+        .bind(user_b_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // 3. User A calls POST /api/reset-data
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/reset-data")
+                .header("authorization", format!("Bearer {}", token_a))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["success"], true);
+
+    // 4. Verify User A has 0 accounts and 0 transactions
+    let count_acc_a: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+        .bind(user_a_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count_acc_a, 0, "User A must have 0 accounts after reset");
+
+    let count_tx_a: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE user_id = $1")
+        .bind(user_a_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count_tx_a, 0, "User A must have 0 transactions after reset");
+
+    // 5. Verify User B records are completely untouched
+    let count_acc_b: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+        .bind(user_b_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count_acc_b, 1, "User B accounts must not be deleted by User A reset");
+
+    let count_tx_b: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE user_id = $1")
+        .bind(user_b_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count_tx_b, 1, "User B transactions must not be deleted by User A reset");
+}
+
+#[tokio::test]
+async fn test_split_count_and_scale_boundaries() {
+    // ACC-1: Every transaction has 2-100 splits.
+    // ACC-3: Split amounts have at most 2 decimal places.
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("bounds_{}", &user_id.to_string()[..8]);
+    let email = format!("{}@example.com", username);
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')")
+        .bind(user_id)
+        .bind(&username)
+        .bind(&email)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    let acc1 = uuid::Uuid::new_v4();
+    let acc2 = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO accounts (id, name, account_type, user_id) VALUES ($1, 'Acct 1', 'bank', $3), ($2, 'Acct 2', 'expense', $3)")
+        .bind(acc1)
+        .bind(acc2)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // 1. Split amount with 3 decimal places ("10.005" / "-10.005") -> 400 Bad Request (ACC-3)
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/transactions")
+                .header("authorization", format!("Bearer {}", token))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({
+                    "post_date": "2026-11-16",
+                    "description": "3 Decimals Test",
+                    "splits": [
+                        { "account_id": acc1, "amount": "10.005" },
+                        { "account_id": acc2, "amount": "-10.005" }
+                    ]
+                }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "Split with >2 decimal places must be rejected");
+
+    // 2. Transaction with 102 splits (> 100) -> 400 Bad Request (ACC-1)
+    let mut splits = Vec::new();
+    for _ in 0..51 {
+        splits.push(json!({ "account_id": acc1, "amount": "1.00" }));
+        splits.push(json!({ "account_id": acc2, "amount": "-1.00" }));
+    }
+    assert_eq!(splits.len(), 102);
+
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/transactions")
+                .header("authorization", format!("Bearer {}", token))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({
+                    "post_date": "2026-11-16",
+                    "description": "Over 100 Splits Test",
+                    "splits": splits
+                }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "Transaction with >100 splits must be rejected");
+}
+
+#[tokio::test]
+async fn test_auth_and_input_length_boundaries() {
+    // SEC-3: Usernames are at least 3 characters. Passwords are 6-72 characters.
+    // TXN-1: Description 1-255 characters.
+    let pool = get_test_pool().await;
+    let jwt_secret = gnucash_backend::auth::get_jwt_secret();
+
+    // 1. Username < 3 chars -> 400
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/signup")
+                .header("content-type", "application/json")
+                .header("x-admin-key", &jwt_secret)
+                .body(Body::from(json!({
+                    "username": "ab",
+                    "email": "ab@example.com",
+                    "password": "ValidPassword@123"
+                }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "Username < 3 characters must be rejected");
+
+    // 2. Password < 6 chars -> 400
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/signup")
+                .header("content-type", "application/json")
+                .header("x-admin-key", &jwt_secret)
+                .body(Body::from(json!({
+                    "username": "valid_user_short_pw",
+                    "email": "shortpw@example.com",
+                    "password": "12345"
+                }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "Password < 6 characters must be rejected");
+
+    // 3. Password > 72 chars -> 400
+    let long_pw = "a".repeat(73);
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/signup")
+                .header("content-type", "application/json")
+                .header("x-admin-key", &jwt_secret)
+                .body(Body::from(json!({
+                    "username": "valid_user_long_pw",
+                    "email": "longpw@example.com",
+                    "password": long_pw
+                }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "Password > 72 characters must be rejected");
+
+    // 4. Transaction with empty description -> 400 (TXN-1)
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("txlen_{}", &user_id.to_string()[..8]);
+    let email = format!("{}@example.com", username);
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')")
+        .bind(user_id)
+        .bind(&username)
+        .bind(&email)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    let acc1 = uuid::Uuid::new_v4();
+    let acc2 = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO accounts (id, name, account_type, user_id) VALUES ($1, 'Acct 1', 'bank', $3), ($2, 'Acct 2', 'expense', $3)")
+        .bind(acc1)
+        .bind(acc2)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/transactions")
+                .header("authorization", format!("Bearer {}", token))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({
+                    "post_date": "2026-11-16",
+                    "description": "   ",
+                    "splits": [
+                        { "account_id": acc1, "amount": "10.00" },
+                        { "account_id": acc2, "amount": "-10.00" }
+                    ]
+                }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "Empty transaction description must be rejected");
+}
+
+#[tokio::test]
+async fn test_export_versions_table_and_neutral_time() {
+    // EXP-2: The versions table contains:
+    // Gnucash = 5000017, Gnucash-Resave = 19920, transactions = 4, splits = 5, accounts = 1, commodities = 1, books = 1.
+    // EXP-3: Post dates are written at GnuCash neutral time (YYYYMMDD105900).
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("expver_{}", &user_id.to_string()[..8]);
+    let email = format!("{}@example.com", username);
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')")
+        .bind(user_id)
+        .bind(&username)
+        .bind(&email)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    // Create accounts and a transaction for user
+    let acc1 = uuid::Uuid::new_v4();
+    let acc2 = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO accounts (id, name, account_type, user_id) VALUES ($1, 'Export Bank', 'bank', $3), ($2, 'Export Expense', 'expense', $3)")
+        .bind(acc1)
+        .bind(acc2)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let tx1 = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO transactions (id, post_date, description, user_id) VALUES ($1, '2026-11-16', 'Export Date Test', $2)")
+        .bind(tx1)
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, -50.00, -50.00, 'n'), ($4, $2, $5, 50.00, 50.00, 'n')")
+        .bind(uuid::Uuid::new_v4())
+        .bind(tx1)
+        .bind(acc1)
+        .bind(uuid::Uuid::new_v4())
+        .bind(acc2)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Export database
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/export/gnucash-sqlite")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+
+    let temp_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(temp_file.path(), &bytes).unwrap();
+    let conn = rusqlite::Connection::open(temp_file.path()).unwrap();
+
+    // Verify versions table per EXP-2
+    let mut stmt = conn.prepare("SELECT table_name, table_version FROM versions").unwrap();
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).unwrap();
+    let versions: std::collections::HashMap<String, i64> = rows.filter_map(|r| r.ok()).collect();
+
+    assert_eq!(versions.get("Gnucash"), Some(&5000017), "versions.Gnucash must be 5000017");
+    assert_eq!(versions.get("Gnucash-Resave"), Some(&19920), "versions.Gnucash-Resave must be 19920");
+    assert_eq!(versions.get("transactions"), Some(&4), "versions.transactions must be 4");
+    assert_eq!(versions.get("splits"), Some(&5), "versions.splits must be 5");
+    assert_eq!(versions.get("accounts"), Some(&1), "versions.accounts must be 1");
+    assert_eq!(versions.get("commodities"), Some(&1), "versions.commodities must be 1");
+    assert_eq!(versions.get("books"), Some(&1), "versions.books must be 1");
+
+    // Verify post_date is written at GnuCash neutral time YYYYMMDD105900 per EXP-3
+    let post_date: String = conn.query_row(
+        "SELECT post_date FROM transactions LIMIT 1",
+        [],
+        |r| r.get(0)
+    ).unwrap();
+    assert!(post_date.ends_with("105900"), "post_date '{}' must end with neutral time 105900", post_date);
+    assert_eq!(post_date, "20261116105900");
+}
+
+#[tokio::test]
+async fn test_import_reconciled_state_normalization() {
+    // IMP-8: GnuCash reconcile states other than n/c/y (e.g. f, v) are imported as n.
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("imp_rec_{}", &user_id.to_string()[..8]);
+    let email = format!("{}@example.com", username);
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')")
+        .bind(user_id)
+        .bind(&username)
+        .bind(&email)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    let temp_db = tempfile::NamedTempFile::new().unwrap();
+    let conn = rusqlite::Connection::open(temp_db.path()).unwrap();
+    conn.execute_batch(r#"
+        CREATE TABLE accounts (guid TEXT PRIMARY KEY, name TEXT, account_type TEXT, commodity_guid TEXT, parent_guid TEXT, code TEXT, description TEXT, hidden INT, placeholder INT);
+        CREATE TABLE transactions (guid TEXT PRIMARY KEY, currency_guid TEXT, num TEXT, post_date TEXT, enter_date TEXT, description TEXT);
+        CREATE TABLE splits (guid TEXT PRIMARY KEY, tx_guid TEXT, account_guid TEXT, memo TEXT, action TEXT, reconcile_state TEXT, reconcile_date TEXT, value_num INT, value_denom INT, quantity_num INT, quantity_denom INT, lot_guid TEXT);
+        CREATE TABLE commodities (guid TEXT PRIMARY KEY, namespace TEXT, mnemonic TEXT, fullname TEXT, cusip TEXT, fraction INT, quote_flag INT, quote_source TEXT);
+
+        INSERT INTO commodities VALUES ('c_inr', 'CURRENCY', 'INR', 'INR', '', 100, 1, 'currency');
+        INSERT INTO accounts VALUES ('a1', 'Bank Account', 'BANK', 'c_inr', NULL, NULL, NULL, 0, 0);
+        INSERT INTO accounts VALUES ('a2', 'Expense Account', 'EXPENSE', 'c_inr', NULL, NULL, NULL, 0, 0);
+
+        INSERT INTO transactions VALUES ('tx_rec', 'c_inr', '', '20261101105900', '20261101105900', 'Reconcile Normalization Tx');
+        -- Split 1 has state 'f' (frozen), Split 2 has state 'v' (voided)
+        INSERT INTO splits VALUES ('s1', 'tx_rec', 'a1', '', '', 'f', NULL, -2500, 100, -2500, 100, NULL);
+        INSERT INTO splits VALUES ('s2', 'tx_rec', 'a2', '', '', 'v', NULL, 2500, 100, 2500, 100, NULL);
+    "#).unwrap();
+
+    let bytes = std::fs::read(temp_db.path()).unwrap();
+    let boundary = "---------------------------recstateboundary12345";
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"file\"; filename=\"reconcile_states.gnucash\"\r\nContent-Type: application/x-sqlite3\r\n\r\n");
+    body.extend_from_slice(&bytes);
+    body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
+
+    let app = create_app(pool.clone());
+    let resp = app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/import/gnucash-sqlite?wipe=true")
+            .header("authorization", format!("Bearer {}", token))
+            .header("content-type", format!("multipart/form-data; boundary={}", boundary))
+            .body(Body::from(body))
+            .unwrap()
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Verify both splits in Postgres are normalized to 'n'
+    let states: Vec<String> = sqlx::query_scalar(
+        "SELECT reconciled_state FROM splits s JOIN transactions t ON s.transaction_id = t.id WHERE t.user_id = $1"
+    )
+    .bind(user_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(states.len(), 2);
+    for state in states {
+        assert_eq!(state, "n", "Non-standard reconcile state ('f' or 'v') must be normalized to 'n'");
+    }
+}
