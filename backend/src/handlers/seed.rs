@@ -78,6 +78,10 @@ pub async fn run_seed_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     user_id: Uuid,
 ) -> Result<(), sqlx::Error> {
+    #[cfg(debug_assertions)]
+    if std::env::var("FAIL_SEED_TEST_HOOK").is_ok() {
+        return Err(sqlx::Error::RowNotFound);
+    }
 
     // Helper to insert account
     async fn insert_acc(
@@ -438,115 +442,106 @@ mod tests {
 
     #[tokio::test]
     async fn test_run_seed_tx_rollback_on_failure() {
-        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://gnucash:gnucash_secret@localhost:5432/gnucash".to_string()
-        });
-        if let Ok(pool) = sqlx::PgPool::connect(&db_url).await {
-            let mut tx = pool.begin().await.expect("begin tx");
+        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run DB tests in seed.rs");
+        let pool = sqlx::PgPool::connect(&db_url).await.expect("Failed to connect to test database");
+        let mut tx = pool.begin().await.expect("begin tx");
 
-            let test_user_id = Uuid::new_v4();
-            sqlx::query(
-                "INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')"
-            )
+        let test_user_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')"
+        )
+        .bind(test_user_id)
+        .bind(format!("seed_test_{}", test_user_id.simple()))
+        .bind(format!("seed_test_{}@example.com", test_user_id.simple()))
+        .execute(&mut *tx)
+        .await
+        .expect("create test user in tx");
+
+        run_seed_tx(&mut tx, test_user_id).await.expect("seed tx succeeds");
+
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
             .bind(test_user_id)
-            .bind(format!("seed_test_{}", test_user_id.simple()))
-            .bind(format!("seed_test_{}@example.com", test_user_id.simple()))
-            .execute(&mut *tx)
+            .fetch_one(&mut *tx)
             .await
-            .expect("create test user in tx");
+            .expect("fetch account count");
+        assert_eq!(count.0, 37);
 
-            run_seed_tx(&mut tx, test_user_id).await.expect("seed tx succeeds");
+        // Rollback transaction to verify nothing persists
+        tx.rollback().await.expect("rollback tx");
 
-            let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
-                .bind(test_user_id)
-                .fetch_one(&mut *tx)
-                .await
-                .expect("fetch account count");
-            assert_eq!(count.0, 37);
-
-            // Rollback transaction to verify nothing persists
-            tx.rollback().await.expect("rollback tx");
-
-            let count_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
-                .bind(test_user_id)
-                .fetch_one(&pool)
-                .await
-                .expect("fetch account count after rollback");
-            assert_eq!(count_after.0, 0);
-        }
+        let count_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+            .bind(test_user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("fetch account count after rollback");
+        assert_eq!(count_after.0, 0);
     }
 
     #[tokio::test]
     async fn test_reconciled_state_constraint_exists() {
-        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://gnucash:gnucash_secret@localhost:5432/gnucash".to_string()
-        });
-        if let Ok(pool) = sqlx::PgPool::connect(&db_url).await {
-            let exists: (bool,) = sqlx::query_as(
-                "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state')"
-            )
-            .fetch_one(&pool)
-            .await
-            .expect("check pg_constraint");
-            assert!(exists.0, "chk_splits_reconciled_state constraint must exist");
-        }
+        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run DB tests in seed.rs");
+        let pool = sqlx::PgPool::connect(&db_url).await.expect("Failed to connect to test database");
+        let exists: (bool,) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state')"
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("check pg_constraint");
+        assert!(exists.0, "chk_splits_reconciled_state constraint must exist");
     }
 
     #[tokio::test]
     async fn test_seed_database_wipe_and_insert_atomic_rollback() {
-        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://gnucash:gnucash_secret@localhost:5432/gnucash".to_string()
-        });
-        if let Ok(pool) = sqlx::PgPool::connect(&db_url).await {
-            let test_user_id = Uuid::new_v4();
-            sqlx::query(
-                "INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')"
-            )
+        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run DB tests in seed.rs");
+        let pool = sqlx::PgPool::connect(&db_url).await.expect("Failed to connect to test database");
+        let test_user_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')"
+        )
+        .bind(test_user_id)
+        .bind(format!("seed_atomic_{}", test_user_id.simple()))
+        .bind(format!("seed_atomic_{}@example.com", test_user_id.simple()))
+        .execute(&pool)
+        .await
+        .expect("create test user");
+
+        // Create initial account for user
+        let acc_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO accounts (id, name, account_type, currency, placeholder, user_id) VALUES ($1, 'Pre-seed Checking', 'bank', 'INR', false, $2)"
+        )
+        .bind(acc_id)
+        .bind(test_user_id)
+        .execute(&pool)
+        .await
+        .expect("create pre-seed account");
+
+        // Simulate seed_database failure: start tx, wipe accounts, error before commit
+        let mut tx = pool.begin().await.expect("begin tx");
+        sqlx::query("DELETE FROM transactions WHERE user_id = $1")
             .bind(test_user_id)
-            .bind(format!("seed_atomic_{}", test_user_id.simple()))
-            .bind(format!("seed_atomic_{}@example.com", test_user_id.simple()))
-            .execute(&pool)
+            .execute(&mut *tx)
             .await
-            .expect("create test user");
-
-            // Create initial account for user
-            let acc_id = Uuid::new_v4();
-            sqlx::query(
-                "INSERT INTO accounts (id, name, account_type, currency, placeholder, user_id) VALUES ($1, 'Pre-seed Checking', 'bank', 'INR', false, $2)"
-            )
-            .bind(acc_id)
+            .expect("wipe txns");
+        sqlx::query("DELETE FROM accounts WHERE user_id = $1")
             .bind(test_user_id)
-            .execute(&pool)
+            .execute(&mut *tx)
             .await
-            .expect("create pre-seed account");
+            .expect("wipe accounts");
 
-            // Simulate seed_database failure: start tx, wipe accounts, error before commit
-            let mut tx = pool.begin().await.expect("begin tx");
-            sqlx::query("DELETE FROM transactions WHERE user_id = $1")
-                .bind(test_user_id)
-                .execute(&mut *tx)
-                .await
-                .expect("wipe txns");
-            sqlx::query("DELETE FROM accounts WHERE user_id = $1")
-                .bind(test_user_id)
-                .execute(&mut *tx)
-                .await
-                .expect("wipe accounts");
+        // Rollback (simulating failed sample insert)
+        tx.rollback().await.expect("rollback simulated failure");
 
-            // Rollback (simulating failed sample insert)
-            tx.rollback().await.expect("rollback simulated failure");
+        // Verify pre-seed account is STILL present!
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+            .bind(test_user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("fetch account count");
+        assert_eq!(count.0, 1, "Pre-existing account must be preserved on rollback");
 
-            // Verify pre-seed account is STILL present!
-            let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
-                .bind(test_user_id)
-                .fetch_one(&pool)
-                .await
-                .expect("fetch account count");
-            assert_eq!(count.0, 1, "Pre-existing account must be preserved on rollback");
-
-            // Clean up test user
-            let _ = sqlx::query("DELETE FROM accounts WHERE user_id = $1").bind(test_user_id).execute(&pool).await;
-            let _ = sqlx::query("DELETE FROM users WHERE id = $1").bind(test_user_id).execute(&pool).await;
-        }
+        // Clean up test user
+        let _ = sqlx::query("DELETE FROM accounts WHERE user_id = $1").bind(test_user_id).execute(&pool).await;
+        let _ = sqlx::query("DELETE FROM users WHERE id = $1").bind(test_user_id).execute(&pool).await;
     }
 }

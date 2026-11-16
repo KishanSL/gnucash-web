@@ -98,10 +98,20 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
     }
   };
 
-  // Debit/Credit column header labels based on account type
-  const isAsset = ['asset', 'bank', 'cash', 'receivable'].includes(account.account_type.toLowerCase());
-  const debitHeader = isAsset ? 'Deposit / Increase' : 'Payment / Decrease';
-  const creditHeader = isAsset ? 'Withdrawal / Decrease' : 'Charge / Increase';
+  // Debit/Credit column header labels based on account type (ACC-7, ACC-3, REG-2)
+  const accType = account.account_type.toLowerCase();
+  const isAsset = ['asset', 'bank', 'cash', 'receivable'].includes(accType);
+  const isExpense = accType === 'expense';
+  const debitHeader = isExpense
+    ? 'Expense / Increase'
+    : isAsset
+    ? 'Deposit / Increase'
+    : 'Payment / Decrease';
+  const creditHeader = isExpense
+    ? 'Rebate / Decrease'
+    : isAsset
+    ? 'Withdrawal / Decrease'
+    : 'Charge / Increase';
 
   // Inline blank new transaction row state
   const [newDate, setNewDate] = useState(() => new Date().toISOString().split('T')[0]);

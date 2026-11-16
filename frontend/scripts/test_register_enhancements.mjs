@@ -209,6 +209,36 @@ async function run() {
     });
     await new Promise((r) => setTimeout(r, 500));
 
+    // 5b. Verify Expense account register headers (ACC-7, ACC-3, REG-2)
+    console.log('5b. Testing expense account register header labels (ACC-7, ACC-3, REG-2)...');
+    const selectedExpense = await page.evaluate(() => {
+      const select = document.querySelector('select');
+      if (!select) return null;
+      const expenseOption = Array.from(select.options).find((opt) => opt.text.toLowerCase().includes('(expense)'));
+      if (expenseOption) {
+        select.value = expenseOption.value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        return expenseOption.text;
+      }
+      return null;
+    });
+
+    if (selectedExpense) {
+      console.log(`Switched to expense account: "${selectedExpense}"`);
+      await new Promise((r) => setTimeout(r, 1500));
+      const headers = await page.evaluate(() => {
+        const ths = Array.from(document.querySelectorAll('thead th')).map((th) => th.innerText.trim());
+        return ths;
+      });
+      console.log('Register headers for expense account:', headers);
+      const hasDebitHeader = headers.some((h) => h.includes('Expense / Increase'));
+      const hasCreditHeader = headers.some((h) => h.includes('Rebate / Decrease'));
+      if (!hasDebitHeader || !hasCreditHeader) {
+        throw new Error(`Expense register headers mismatch: expected "Expense / Increase" and "Rebate / Decrease", found: ${JSON.stringify(headers)}`);
+      }
+      console.log('✅ Expense register headers verified: "Expense / Increase" & "Rebate / Decrease"');
+    }
+
     // 6. Mobile Viewport (375x667)
     console.log('6. Testing mobile responsive view (375x667)...');
     await page.setViewport({ width: 375, height: 667 });

@@ -134,12 +134,12 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
     }
   }
 
-  // Account normal balance check
-  const isAsset = reconcileData?.account
-    ? ['bank', 'cash', 'asset', 'receivable'].includes(reconcileData.account.account_type.toLowerCase())
+  // Account normal balance check (ACC-7: asset, bank, cash, receivable, expense are debit-normal)
+  const isDebitNormal = reconcileData?.account
+    ? ['bank', 'cash', 'asset', 'receivable', 'expense'].includes(reconcileData.account.account_type.toLowerCase())
     : true;
 
-  const clearedBalance = isAsset
+  const clearedBalance = isDebitNormal
     ? startingBalanceNum + clearedDepositsTotal - clearedWithdrawalsTotal
     : startingBalanceNum + clearedWithdrawalsTotal - clearedDepositsTotal;
 

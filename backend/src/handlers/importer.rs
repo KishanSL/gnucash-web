@@ -197,12 +197,34 @@ pub struct RawSplit {
     pub reconcile_date: Option<DateTime<Utc>>,
 }
 
+fn resolve_entity_or_char_ref(s: &str) -> Option<String> {
+    match s {
+        "amp" => Some("&".to_string()),
+        "lt" => Some("<".to_string()),
+        "gt" => Some(">".to_string()),
+        "apos" => Some("'".to_string()),
+        "quot" => Some("\"".to_string()),
+        _ => {
+            if let Some(hex_str) = s.strip_prefix("#x").or_else(|| s.strip_prefix("#X")) {
+                let code = u32::from_str_radix(hex_str, 16).ok()?;
+                char::from_u32(code).map(|c| c.to_string())
+            } else if let Some(dec_str) = s.strip_prefix('#') {
+                let code = dec_str.parse::<u32>().ok()?;
+                char::from_u32(code).map(|c| c.to_string())
+            } else {
+                None
+            }
+        }
+    }
+}
+
 fn parse_gnucash_xml(
     xml_bytes: &[u8],
     default_curr: &str,
 ) -> Result<(Vec<RawAccount>, Vec<RawTransaction>, Vec<RawSplit>), String> {
     let mut reader = Reader::from_reader(xml_bytes);
-    reader.config_mut().trim_text(true);
+    // Note: Do not enable trim_text(true) here as it strips whitespace around entity boundaries (Issue #23)
+    reader.config_mut().trim_text(false);
 
     let mut accounts = Vec::new();
     let mut transactions = Vec::new();
@@ -216,12 +238,14 @@ fn parse_gnucash_xml(
     let mut curr_split: Option<RawSplit> = None;
     let mut curr_slot_key: Option<String> = None;
 
+    let mut curr_text = String::new();
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let name = e.name().as_ref().to_string();
+                curr_text.clear();
                 match name.as_str() {
                     "gnc:template-transactions" => {
                         in_template_transactions = true;
@@ -248,76 +272,30 @@ fn parse_gnucash_xml(
                 }
                 tag_stack.push(name);
             }
+            Ok(Event::Text(e)) => {
+                curr_text.push_str(e.as_ref());
+            }
+            Ok(Event::GeneralRef(e)) => {
+                if let Some(resolved) = resolve_entity_or_char_ref(e.as_ref()) {
+                    curr_text.push_str(&resolved);
+                } else {
+                    curr_text.push('&');
+                    curr_text.push_str(e.as_ref());
+                    curr_text.push(';');
+                }
+            }
+            Ok(Event::CData(e)) => {
+                curr_text.push_str(e.as_ref());
+            }
             Ok(Event::End(e)) => {
                 let name = e.name().as_ref().to_string();
-                match name.as_str() {
-                    "gnc:template-transactions" => {
-                        in_template_transactions = false;
-                    }
-                    "gnc:account" => {
-                        if let Some(mut acc) = curr_account.take() {
-                            if !acc.guid.is_empty() {
-                                acc.account_type = normalize_account_type(&acc.account_type);
-                                accounts.push(acc);
-                            }
-                        }
-                    }
-                    "gnc:transaction" => {
-                        if let Some(mut tx) = curr_tx.take() {
-                            if !tx.guid.is_empty() {
-                                if tx.description.trim().is_empty() {
-                                    tx.description = "GnuCash Transaction".to_string();
-                                }
-                                transactions.push(tx);
-                            }
-                        }
-                    }
-                    "trn:split" => {
-                        if let Some(mut sp) = curr_split.take() {
-                            if !sp.guid.is_empty() && !sp.account_guid.is_empty() {
-                                if sp.quantity == Decimal::ZERO && sp.amount != Decimal::ZERO {
-                                    sp.quantity = sp.amount;
-                                }
-                                if sp.tx_guid.is_empty() {
-                                    if let Some(ref tx) = curr_tx {
-                                        sp.tx_guid = tx.guid.clone();
-                                    }
-                                }
-                                sp.reconciled_state = match sp.reconciled_state.to_lowercase().as_str() {
-                                    "y" => "y".to_string(),
-                                    "c" => "c".to_string(),
-                                    _ => "n".to_string(),
-                                };
-                                if sp.reconciled_state == "y" {
-                                    if sp.reconcile_date.is_none() {
-                                        sp.reconcile_date = Some(Utc::now());
-                                    }
-                                } else {
-                                    sp.reconcile_date = None;
-                                }
-                                splits.push(sp);
-                            }
-                        }
-                    }
-                    "slot" => {
-                        curr_slot_key = None;
-                    }
-                    _ => {}
-                }
-                tag_stack.pop();
-            }
-            Ok(Event::Text(e)) => {
-                let text = e.as_ref().trim().to_string();
-                if text.is_empty() {
-                    continue;
-                }
-
-                let current_tag = tag_stack.last().map(|s| s.as_str()).unwrap_or("");
+                let current_tag = name.as_str();
                 let parent_tag = if tag_stack.len() >= 2 {
                     tag_stack[tag_stack.len() - 2].as_str()
                 } else {
                     ""
                 };
+                let text = curr_text.trim().to_string();
 
                 // Account fields
                 if let Some(ref mut acc) = curr_account {
@@ -361,7 +339,7 @@ fn parse_gnucash_xml(
                     }
                 }
 
-                // Split fields (nested inside a transaction)
+                // Split fields
                 if let Some(ref mut sp) = curr_split {
                     match current_tag {
                         "split:id" => sp.guid = text.clone(),
@@ -420,6 +398,65 @@ fn parse_gnucash_xml(
                         _ => {}
                     }
                 }
+
+                // Handle closing containers
+                match current_tag {
+                    "gnc:template-transactions" => {
+                        in_template_transactions = false;
+                    }
+                    "gnc:account" => {
+                        if let Some(mut acc) = curr_account.take() {
+                            if !acc.guid.is_empty() {
+                                acc.account_type = normalize_account_type(&acc.account_type);
+                                accounts.push(acc);
+                            }
+                        }
+                    }
+                    "gnc:transaction" => {
+                        if let Some(mut tx) = curr_tx.take() {
+                            if !tx.guid.is_empty() {
+                                if tx.description.trim().is_empty() {
+                                    tx.description = "GnuCash Transaction".to_string();
+                                }
+                                transactions.push(tx);
+                            }
+                        }
+                    }
+                    "trn:split" => {
+                        if let Some(mut sp) = curr_split.take() {
+                            if !sp.guid.is_empty() && !sp.account_guid.is_empty() {
+                                if sp.quantity == Decimal::ZERO && sp.amount != Decimal::ZERO {
+                                    sp.quantity = sp.amount;
+                                }
+                                if sp.tx_guid.is_empty() {
+                                    if let Some(ref tx) = curr_tx {
+                                        sp.tx_guid = tx.guid.clone();
+                                    }
+                                }
+                                sp.reconciled_state = match sp.reconciled_state.to_lowercase().as_str() {
+                                    "y" => "y".to_string(),
+                                    "c" => "c".to_string(),
+                                    _ => "n".to_string(),
+                                };
+                                if sp.reconciled_state == "y" {
+                                    if sp.reconcile_date.is_none() {
+                                        sp.reconcile_date = Some(Utc::now());
+                                    }
+                                } else {
+                                    sp.reconcile_date = None;
+                                }
+                                splits.push(sp);
+                            }
+                        }
+                    }
+                    "slot" => {
+                        curr_slot_key = None;
+                    }
+                    _ => {}
+                }
+
+                curr_text.clear();
+                tag_stack.pop();
             }
             Ok(Event::Eof) => break,
             Err(e) => {
@@ -1071,6 +1108,44 @@ pub async fn save_gnucash_data_to_db(
         }
     }
 
+    // Fast lookup for transaction metadata during error reporting
+    let tx_by_guid: HashMap<String, &RawTransaction> = raw_transactions.iter().map(|t| (t.guid.clone(), t)).collect();
+
+    // Issue #39 (ACC-2, IMP-4, IMP-10, IMP-11):
+    // Pre-validate all splits: every split MUST reference an imported, non-root account and a known transaction.
+    // Splits on the root account or missing accounts must reject the import immediately with 400.
+    for s in &raw_splits {
+        if !acc_by_guid.contains_key(&s.account_guid) {
+            let (date_str, desc_str) = if let Some(tx) = tx_by_guid.get(&s.tx_guid) {
+                (tx.post_date.to_string(), tx_desc_preview(&tx.description))
+            } else {
+                ("unknown".to_string(), "unknown".to_string())
+            };
+
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "Import error in transaction (date: {}, description: '{}'): split references unknown or dropped account GUID '{}' (IMP-11, ACC-2, IMP-4)",
+                        date_str, desc_str, s.account_guid
+                    )
+                })),
+            ));
+        }
+
+        if !tx_by_guid.contains_key(&s.tx_guid) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "Import error: split '{}' references unknown transaction GUID '{}' (IMP-11, IMP-4)",
+                        s.guid, s.tx_guid
+                    )
+                })),
+            ));
+        }
+    }
+
     // Issue #36 (IMP-10, ACC-1): Count splits per transaction and filter out transactions with < 2 splits
     let mut split_count_per_tx: HashMap<String, usize> = HashMap::new();
     for s in &raw_splits {
@@ -1092,7 +1167,7 @@ pub async fn save_gnucash_data_to_db(
         raw_splits.retain(|s| !invalid_tx_guids.contains(&s.tx_guid));
     }
 
-    // Fast lookup for transaction metadata during error reporting
+    // Refresh tx_by_guid after skipping invalid transactions
     let tx_by_guid: HashMap<String, &RawTransaction> = raw_transactions.iter().map(|t| (t.guid.clone(), t)).collect();
 
     // 4. Pre-validate all transactions (IMP-11, TXN-1)
@@ -1352,11 +1427,8 @@ pub async fn save_gnucash_data_to_db(
             })?;
     }
 
-    // 9. Batch insert splits with UNNEST (Issue #13)
-    let valid_splits: Vec<&RawSplit> = raw_splits
-        .iter()
-        .filter(|s| tx_guid_to_uuid.contains_key(&s.tx_guid) && account_guid_to_uuid.contains_key(&s.account_guid))
-        .collect();
+    // 9. Batch insert splits with UNNEST (Issue #13, Issue #39)
+    let valid_splits: Vec<&RawSplit> = raw_splits.iter().collect();
 
     let mut split_count = 0;
     for chunk in valid_splits.chunks(1000) {
@@ -1603,5 +1675,97 @@ mod tests {
         assert_eq!(raw_transactions.len(), 1);
         assert_eq!(raw_transactions[0].guid, "tx-valid");
         assert_eq!(raw_splits.len(), 2);
+    }
+
+    #[test]
+    fn test_resolve_entity_or_char_ref() {
+        assert_eq!(resolve_entity_or_char_ref("amp"), Some("&".to_string()));
+        assert_eq!(resolve_entity_or_char_ref("lt"), Some("<".to_string()));
+        assert_eq!(resolve_entity_or_char_ref("gt"), Some(">".to_string()));
+        assert_eq!(resolve_entity_or_char_ref("apos"), Some("'".to_string()));
+        assert_eq!(resolve_entity_or_char_ref("quot"), Some("\"".to_string()));
+        assert_eq!(resolve_entity_or_char_ref("#x26"), Some("&".to_string()));
+        assert_eq!(resolve_entity_or_char_ref("#38"), Some("&".to_string()));
+        assert_eq!(resolve_entity_or_char_ref("#x20AC"), Some("€".to_string()));
+        assert_eq!(resolve_entity_or_char_ref("unknown_entity"), None);
+    }
+
+    #[test]
+    fn test_parse_gnucash_xml_with_entities() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8" ?>
+<gnc-v2 xmlns:gnc="http://www.gnucash.org/XML/gnc"
+        xmlns:act="http://www.gnucash.org/XML/act"
+        xmlns:trn="http://www.gnucash.org/XML/trn"
+        xmlns:split="http://www.gnucash.org/XML/split"
+        xmlns:cmdty="http://www.gnucash.org/XML/cmdty"
+        xmlns:ts="http://www.gnucash.org/XML/ts"
+        xmlns:slot="http://www.gnucash.org/XML/slot">
+  <gnc:book>
+    <gnc:account>
+      <act:name>Food &amp; Dining</act:name>
+      <act:id type="guid">acc-1</act:id>
+      <act:type>EXPENSE</act:type>
+      <act:commodity>
+        <cmdty:space>CURRENCY</cmdty:space>
+        <cmdty:id>INR</cmdty:id>
+      </act:commodity>
+    </gnc:account>
+    <gnc:account>
+      <act:name>Checking &amp; Savings</act:name>
+      <act:id type="guid">acc-2</act:id>
+      <act:type>BANK</act:type>
+      <act:commodity>
+        <cmdty:space>CURRENCY</cmdty:space>
+        <cmdty:id>INR</cmdty:id>
+      </act:commodity>
+    </gnc:account>
+    <gnc:transaction>
+      <trn:id type="guid">tx-1</trn:id>
+      <trn:currency>
+        <cmdty:space>CURRENCY</cmdty:space>
+        <cmdty:id>INR</cmdty:id>
+      </trn:currency>
+      <trn:date-posted>
+        <ts:date>2026-11-16 10:00:00 +0000</ts:date>
+      </trn:date-posted>
+      <trn:description>AT&amp;T &lt;Bill&gt;</trn:description>
+      <trn:slots>
+        <slot>
+          <slot:key>notes</slot:key>
+          <slot:value type="string">Payment for 5G &amp; Fiber</slot:value>
+        </slot>
+      </trn:slots>
+      <trn:splits>
+        <trn:split>
+          <split:id type="guid">sp-1</split:id>
+          <split:reconciled-state>n</split:reconciled-state>
+          <split:value>150000/100</split:value>
+          <split:quantity>150000/100</split:quantity>
+          <split:account type="guid">acc-1</split:account>
+          <split:memo>Groceries &amp; More</split:memo>
+        </trn:split>
+        <trn:split>
+          <split:id type="guid">sp-2</split:id>
+          <split:reconciled-state>n</split:reconciled-state>
+          <split:value>-150000/100</split:value>
+          <split:quantity>-150000/100</split:quantity>
+          <split:account type="guid">acc-2</split:account>
+        </trn:split>
+      </trn:splits>
+    </gnc:transaction>
+  </gnc:book>
+</gnc-v2>"#;
+
+        let (accounts, transactions, splits) = parse_gnucash_xml(xml.as_bytes(), "INR").expect("parse xml");
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].name, "Food & Dining");
+        assert_eq!(accounts[1].name, "Checking & Savings");
+
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].description, "AT&T <Bill>");
+        assert_eq!(transactions[0].notes.as_deref(), Some("Payment for 5G & Fiber"));
+
+        assert_eq!(splits.len(), 2);
+        assert_eq!(splits[0].memo.as_deref(), Some("Groceries & More"));
     }
 }

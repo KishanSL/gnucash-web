@@ -3460,3 +3460,813 @@ async fn test_issue_35_import_field_length_and_error_identification() {
     assert!(err_msg3.contains("0.5"), "Must identify imbalance: {}", err_msg3);
     assert!(!err_msg3.contains("error returned from database"));
 }
+
+#[tokio::test]
+async fn test_issue_23_xml_import_entities() {
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("user_xml_{}", user_id.simple());
+    let email = format!("user_xml_{}@example.com", user_id.simple());
+
+    sqlx::query(
+        "INSERT INTO users (id, username, email, password_hash, token_version) VALUES ($1, $2, $3, 'hash', 0)"
+    )
+    .bind(user_id)
+    .bind(&username)
+    .bind(&email)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    let xml = r#"<?xml version="1.0" encoding="utf-8" ?>
+<gnc-v2 xmlns:gnc="http://www.gnucash.org/XML/gnc"
+        xmlns:act="http://www.gnucash.org/XML/act"
+        xmlns:trn="http://www.gnucash.org/XML/trn"
+        xmlns:split="http://www.gnucash.org/XML/split"
+        xmlns:cmdty="http://www.gnucash.org/XML/cmdty"
+        xmlns:ts="http://www.gnucash.org/XML/ts"
+        xmlns:slot="http://www.gnucash.org/XML/slot">
+  <gnc:book>
+    <gnc:account>
+      <act:name>Food &amp; Dining</act:name>
+      <act:id type="guid">acc-1</act:id>
+      <act:type>EXPENSE</act:type>
+      <act:commodity>
+        <cmdty:space>CURRENCY</cmdty:space>
+        <cmdty:id>INR</cmdty:id>
+      </act:commodity>
+    </gnc:account>
+    <gnc:account>
+      <act:name>Checking Account</act:name>
+      <act:id type="guid">acc-2</act:id>
+      <act:type>BANK</act:type>
+      <act:commodity>
+        <cmdty:space>CURRENCY</cmdty:space>
+        <cmdty:id>INR</cmdty:id>
+      </act:commodity>
+    </gnc:account>
+    <gnc:transaction>
+      <trn:id type="guid">tx-1</trn:id>
+      <trn:currency>
+        <cmdty:space>CURRENCY</cmdty:space>
+        <cmdty:id>INR</cmdty:id>
+      </trn:currency>
+      <trn:date-posted>
+        <ts:date>2026-11-16 10:00:00 +0000</ts:date>
+      </trn:date-posted>
+      <trn:description>AT&amp;T &lt;Bill&gt;</trn:description>
+      <trn:slots>
+        <slot>
+          <slot:key>notes</slot:key>
+          <slot:value type="string">Payment for 5G &amp; Fiber</slot:value>
+        </slot>
+      </trn:slots>
+      <trn:splits>
+        <trn:split>
+          <split:id type="guid">sp-1</split:id>
+          <split:reconciled-state>n</split:reconciled-state>
+          <split:value>250000/100</split:value>
+          <split:quantity>250000/100</split:quantity>
+          <split:account type="guid">acc-1</split:account>
+          <split:memo>Groceries &amp; Treats</split:memo>
+        </trn:split>
+        <trn:split>
+          <split:id type="guid">sp-2</split:id>
+          <split:reconciled-state>n</split:reconciled-state>
+          <split:value>-250000/100</split:value>
+          <split:quantity>-250000/100</split:quantity>
+          <split:account type="guid">acc-2</split:account>
+        </trn:split>
+      </trn:splits>
+    </gnc:transaction>
+  </gnc:book>
+</gnc-v2>"#;
+
+    let boundary = "---------------------------974767299852498929531610575";
+    let body_data = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"book.gnucash\"\r\nContent-Type: application/xml\r\n\r\n{xml}\r\n--{boundary}--\r\n"
+    );
+
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/import/gnucash-sqlite")
+                .header("authorization", format!("Bearer {}", token))
+                .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+                .body(Body::from(body_data))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Verify entities in accounts, transactions, and splits (IMP-1, IMP-7, SCOPE-1)
+    let acc_name: String = sqlx::query_scalar("SELECT name FROM accounts WHERE user_id = $1 AND name LIKE 'Food%'")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(acc_name, "Food & Dining");
+
+    let (desc, notes): (String, Option<String>) = sqlx::query_as("SELECT description, notes FROM transactions WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(desc, "AT&T <Bill>");
+    assert_eq!(notes.as_deref(), Some("Payment for 5G & Fiber"));
+
+    let memo: Option<String> = sqlx::query_scalar(
+        "SELECT s.memo FROM splits s JOIN transactions t ON s.transaction_id = t.id WHERE t.user_id = $1 AND s.memo IS NOT NULL"
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(memo.as_deref(), Some("Groceries & Treats"));
+}
+
+#[tokio::test]
+async fn test_issue_39_reject_orphan_and_root_splits() {
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("user_orphan_{}", user_id.simple());
+    let email = format!("user_orphan_{}@example.com", user_id.simple());
+
+    sqlx::query(
+        "INSERT INTO users (id, username, email, password_hash, token_version) VALUES ($1, $2, $3, 'hash', 0)"
+    )
+    .bind(user_id)
+    .bind(&username)
+    .bind(&email)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    let upload_sqlite = |bytes: Vec<u8>| {
+        let pool = pool.clone();
+        let token = token.clone();
+        async move {
+            let boundary = "---------------------------974767299852498929531610575";
+            let mut body_bytes = Vec::new();
+            body_bytes.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.gnucash\"\r\nContent-Type: application/x-sqlite3\r\n\r\n").as_bytes(),
+            );
+            body_bytes.extend_from_slice(&bytes);
+            body_bytes.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+            let app = create_app(pool);
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import/gnucash-sqlite")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+                    .body(Body::from(body_bytes))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    // 1. Transaction split references root account -> must return HTTP 400 (ACC-2, IMP-4, IMP-10, IMP-11)
+    let temp_db1 = tempfile::NamedTempFile::new().unwrap();
+    let conn1 = rusqlite::Connection::open(temp_db1.path()).unwrap();
+    conn1.execute_batch(r#"
+        CREATE TABLE accounts (guid TEXT PRIMARY KEY, name TEXT, account_type TEXT, commodity_guid TEXT, parent_guid TEXT, code TEXT, description TEXT, hidden INT, placeholder INT);
+        CREATE TABLE transactions (guid TEXT PRIMARY KEY, currency_guid TEXT, num TEXT, post_date TEXT, enter_date TEXT, description TEXT);
+        CREATE TABLE splits (guid TEXT PRIMARY KEY, tx_guid TEXT, account_guid TEXT, memo TEXT, action TEXT, reconcile_state TEXT, reconcile_date TEXT, value_num INT, value_denom INT, quantity_num INT, quantity_denom INT, lot_guid TEXT);
+        CREATE TABLE commodities (guid TEXT PRIMARY KEY, namespace TEXT, mnemonic TEXT, fullname TEXT, cusip TEXT, fraction INT, quote_flag INT, quote_source TEXT);
+
+        INSERT INTO commodities VALUES ('c1', 'CURRENCY', 'INR', 'INR', '', 100, 1, 'currency');
+        INSERT INTO accounts VALUES ('root1', 'Root Account', 'ROOT', 'c1', NULL, NULL, NULL, 0, 0);
+        INSERT INTO accounts VALUES ('a1', 'Assets', 'ASSET', 'c1', 'root1', NULL, NULL, 0, 0);
+        INSERT INTO accounts VALUES ('a2', 'Checking', 'BANK', 'c1', 'a1', NULL, NULL, 0, 0);
+
+        INSERT INTO transactions VALUES ('tx_root_split', 'c1', '', '20261102120000', '20261102120000', 'Root Split Transaction');
+        INSERT INTO splits VALUES ('s1', 'tx_root_split', 'root1', '', '', 'n', NULL, 1000, 100, 1000, 100, NULL);
+        INSERT INTO splits VALUES ('s2', 'tx_root_split', 'a2', '', '', 'n', NULL, -1000, 100, -1000, 100, NULL);
+    "#).unwrap();
+
+    let bytes1 = std::fs::read(temp_db1.path()).unwrap();
+    let resp1 = upload_sqlite(bytes1).await;
+    assert_eq!(resp1.status(), StatusCode::BAD_REQUEST);
+    let body_bytes1 = resp1.into_body().collect().await.unwrap().to_bytes();
+    let json1: Value = serde_json::from_slice(&body_bytes1).unwrap();
+    let err_msg1 = json1["error"].as_str().unwrap();
+
+    assert!(err_msg1.contains("root1"), "Error must name root account GUID: {}", err_msg1);
+    assert!(err_msg1.contains("Root Split Transaction"), "Error must name tx description: {}", err_msg1);
+    assert!(err_msg1.contains("2026-11-02"), "Error must name post date: {}", err_msg1);
+
+    // 2. Transaction split references unknown account -> must return HTTP 400 (ACC-2, IMP-4, IMP-10, IMP-11)
+    let temp_db2 = tempfile::NamedTempFile::new().unwrap();
+    let conn2 = rusqlite::Connection::open(temp_db2.path()).unwrap();
+    conn2.execute_batch(r#"
+        CREATE TABLE accounts (guid TEXT PRIMARY KEY, name TEXT, account_type TEXT, commodity_guid TEXT, parent_guid TEXT, code TEXT, description TEXT, hidden INT, placeholder INT);
+        CREATE TABLE transactions (guid TEXT PRIMARY KEY, currency_guid TEXT, num TEXT, post_date TEXT, enter_date TEXT, description TEXT);
+        CREATE TABLE splits (guid TEXT PRIMARY KEY, tx_guid TEXT, account_guid TEXT, memo TEXT, action TEXT, reconcile_state TEXT, reconcile_date TEXT, value_num INT, value_denom INT, quantity_num INT, quantity_denom INT, lot_guid TEXT);
+        CREATE TABLE commodities (guid TEXT PRIMARY KEY, namespace TEXT, mnemonic TEXT, fullname TEXT, cusip TEXT, fraction INT, quote_flag INT, quote_source TEXT);
+
+        INSERT INTO commodities VALUES ('c1', 'CURRENCY', 'INR', 'INR', '', 100, 1, 'currency');
+        INSERT INTO accounts VALUES ('a1', 'Assets', 'ASSET', 'c1', NULL, NULL, NULL, 0, 0);
+        INSERT INTO accounts VALUES ('a2', 'Checking', 'BANK', 'c1', 'a1', NULL, NULL, 0, 0);
+
+        INSERT INTO transactions VALUES ('tx_orphan_split', 'c1', '', '20261102120000', '20261102120000', 'Orphan Split Transaction');
+        INSERT INTO splits VALUES ('s1', 'tx_orphan_split', 'missing_acc_guid', '', '', 'n', NULL, 1000, 100, 1000, 100, NULL);
+        INSERT INTO splits VALUES ('s2', 'tx_orphan_split', 'a2', '', '', 'n', NULL, -1000, 100, -1000, 100, NULL);
+    "#).unwrap();
+
+    let bytes2 = std::fs::read(temp_db2.path()).unwrap();
+    let resp2 = upload_sqlite(bytes2).await;
+    assert_eq!(resp2.status(), StatusCode::BAD_REQUEST);
+    let body_bytes2 = resp2.into_body().collect().await.unwrap().to_bytes();
+    let json2: Value = serde_json::from_slice(&body_bytes2).unwrap();
+    let err_msg2 = json2["error"].as_str().unwrap();
+
+    assert!(err_msg2.contains("missing_acc_guid"), "Error must name missing account GUID: {}", err_msg2);
+    assert!(err_msg2.contains("Orphan Split Transaction"), "Error must name tx description: {}", err_msg2);
+
+    // 3. Transactions with fewer than 2 splits are skipped, transactions with >=2 splits are imported (IMP-10, ACC-1)
+    let temp_db3 = tempfile::NamedTempFile::new().unwrap();
+    let conn3 = rusqlite::Connection::open(temp_db3.path()).unwrap();
+    conn3.execute_batch(r#"
+        CREATE TABLE accounts (guid TEXT PRIMARY KEY, name TEXT, account_type TEXT, commodity_guid TEXT, parent_guid TEXT, code TEXT, description TEXT, hidden INT, placeholder INT);
+        CREATE TABLE transactions (guid TEXT PRIMARY KEY, currency_guid TEXT, num TEXT, post_date TEXT, enter_date TEXT, description TEXT);
+        CREATE TABLE splits (guid TEXT PRIMARY KEY, tx_guid TEXT, account_guid TEXT, memo TEXT, action TEXT, reconcile_state TEXT, reconcile_date TEXT, value_num INT, value_denom INT, quantity_num INT, quantity_denom INT, lot_guid TEXT);
+        CREATE TABLE commodities (guid TEXT PRIMARY KEY, namespace TEXT, mnemonic TEXT, fullname TEXT, cusip TEXT, fraction INT, quote_flag INT, quote_source TEXT);
+
+        INSERT INTO commodities VALUES ('c1', 'CURRENCY', 'INR', 'INR', '', 100, 1, 'currency');
+        INSERT INTO accounts VALUES ('a1', 'Assets', 'ASSET', 'c1', NULL, NULL, NULL, 0, 0);
+        INSERT INTO accounts VALUES ('a2', 'Checking', 'BANK', 'c1', 'a1', NULL, NULL, 0, 0);
+        INSERT INTO accounts VALUES ('a3', 'Expense', 'EXPENSE', 'c1', NULL, NULL, NULL, 0, 0);
+
+        -- Tx with 1 split (must be skipped)
+        INSERT INTO transactions VALUES ('tx_one_split', 'c1', '', '20261102120000', '20261102120000', 'Single Split Tx');
+        INSERT INTO splits VALUES ('s1_single', 'tx_one_split', 'a2', '', '', 'n', NULL, 500, 100, 500, 100, NULL);
+
+        -- Tx with 2 splits (valid)
+        INSERT INTO transactions VALUES ('tx_valid_two', 'c1', '', '20261102120000', '20261102120000', 'Valid Two Split Tx');
+        INSERT INTO splits VALUES ('s1_valid', 'tx_valid_two', 'a2', '', '', 'n', NULL, -1000, 100, -1000, 100, NULL);
+        INSERT INTO splits VALUES ('s2_valid', 'tx_valid_two', 'a3', '', '', 'n', NULL, 1000, 100, 1000, 100, NULL);
+    "#).unwrap();
+
+    let bytes3 = std::fs::read(temp_db3.path()).unwrap();
+    let resp3 = upload_sqlite(bytes3).await;
+    assert_eq!(resp3.status(), StatusCode::OK);
+    let body_bytes3 = resp3.into_body().collect().await.unwrap().to_bytes();
+    let json3: Value = serde_json::from_slice(&body_bytes3).unwrap();
+    assert_eq!(json3["skipped_transactions"], 1);
+    assert_eq!(json3["transactions_imported"], 1);
+
+    // Verify all stored transactions for this user have >= 2 splits
+    let min_splits: Option<i64> = sqlx::query_scalar(
+        "SELECT MIN(cnt) FROM (SELECT COUNT(*) as cnt FROM splits s JOIN transactions t ON s.transaction_id = t.id WHERE t.user_id = $1 GROUP BY t.id) sub"
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(min_splits, Some(2));
+}
+
+#[tokio::test]
+async fn test_issue_24_balance_sheet_mixed_hierarchy() {
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("user_bs_mixed_{}", user_id.simple());
+    let email = format!("user_bs_mixed_{}@example.com", user_id.simple());
+
+    sqlx::query(
+        "INSERT INTO users (id, username, email, password_hash, token_version) VALUES ($1, $2, $3, 'hash', 0)"
+    )
+    .bind(user_id)
+    .bind(&username)
+    .bind(&email)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    // Create mixed tree: Assets placeholder -> Checking (bank), Fuel (expense nested under asset)
+    let assets_id = uuid::Uuid::new_v4();
+    let checking_id = uuid::Uuid::new_v4();
+    let fuel_id = uuid::Uuid::new_v4();
+    let equity_id = uuid::Uuid::new_v4();
+    let opening_equity_id = uuid::Uuid::new_v4();
+    let salary_id = uuid::Uuid::new_v4();
+
+    sqlx::query("INSERT INTO accounts (id, name, account_type, parent_id, currency, placeholder, user_id) VALUES ($1, 'Assets', 'asset', NULL, 'INR', true, $2)")
+        .bind(assets_id).bind(user_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO accounts (id, name, account_type, parent_id, currency, placeholder, user_id) VALUES ($1, 'Checking', 'bank', $2, 'INR', false, $3)")
+        .bind(checking_id).bind(assets_id).bind(user_id).execute(&pool).await.unwrap();
+    // Fuel is an EXPENSE account nested under Assets
+    sqlx::query("INSERT INTO accounts (id, name, account_type, parent_id, currency, placeholder, user_id) VALUES ($1, 'Fuel', 'expense', $2, 'INR', false, $3)")
+        .bind(fuel_id).bind(assets_id).bind(user_id).execute(&pool).await.unwrap();
+
+    sqlx::query("INSERT INTO accounts (id, name, account_type, parent_id, currency, placeholder, user_id) VALUES ($1, 'Equity', 'equity', NULL, 'INR', true, $2)")
+        .bind(equity_id).bind(user_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO accounts (id, name, account_type, parent_id, currency, placeholder, user_id) VALUES ($1, 'Opening Balances', 'equity', $2, 'INR', false, $3)")
+        .bind(opening_equity_id).bind(equity_id).bind(user_id).execute(&pool).await.unwrap();
+
+    sqlx::query("INSERT INTO accounts (id, name, account_type, parent_id, currency, placeholder, user_id) VALUES ($1, 'Salary', 'income', NULL, 'INR', false, $2)")
+        .bind(salary_id).bind(user_id).execute(&pool).await.unwrap();
+
+    // Tx 1: Opening balance ₹10,000 to checking
+    let tx1_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO transactions (id, user_id, post_date, description) VALUES ($1, $2, '2026-11-01', 'Opening')")
+        .bind(tx1_id).bind(user_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, 10000.00, 10000.00, 'n')")
+        .bind(uuid::Uuid::new_v4()).bind(tx1_id).bind(checking_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, -10000.00, -10000.00, 'n')")
+        .bind(uuid::Uuid::new_v4()).bind(tx1_id).bind(opening_equity_id).execute(&pool).await.unwrap();
+
+    // Tx 2: Checking to Fuel (₹1,500)
+    let tx2_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO transactions (id, user_id, post_date, description) VALUES ($1, $2, '2026-11-02', 'Gas station')")
+        .bind(tx2_id).bind(user_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, -1500.00, -1500.00, 'n')")
+        .bind(uuid::Uuid::new_v4()).bind(tx2_id).bind(checking_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, 1500.00, 1500.00, 'n')")
+        .bind(uuid::Uuid::new_v4()).bind(tx2_id).bind(fuel_id).execute(&pool).await.unwrap();
+
+    // Tx 3: Salary to Checking (₹5,000)
+    let tx3_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO transactions (id, user_id, post_date, description) VALUES ($1, $2, '2026-11-03', 'Monthly Pay')")
+        .bind(tx3_id).bind(user_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, -5000.00, -5000.00, 'n')")
+        .bind(uuid::Uuid::new_v4()).bind(tx3_id).bind(salary_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, 5000.00, 5000.00, 'n')")
+        .bind(uuid::Uuid::new_v4()).bind(tx3_id).bind(checking_id).execute(&pool).await.unwrap();
+
+    // Check Balance Sheet
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/reports/balance-sheet")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(json["is_balanced"], true, "Balance sheet must balance with mixed trees (ACC-8)");
+    let assets_total = json["assets"]["total"].as_str().unwrap().parse::<f64>().unwrap();
+    let liab_equity_total = json["total_liabilities_and_equity"].as_str().unwrap().parse::<f64>().unwrap();
+    assert!((assets_total - liab_equity_total).abs() < 0.01);
+    assert_eq!(assets_total, 13500.00); // 10000 - 1500 + 5000 = 13500
+
+    // Check Income Statement
+    let app2 = create_app(pool.clone());
+    let resp2 = app2
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/reports/income-statement")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let body_bytes2 = resp2.into_body().collect().await.unwrap().to_bytes();
+    let json2: Value = serde_json::from_slice(&body_bytes2).unwrap();
+
+    let rev_total = json2["revenues"]["total"].as_str().unwrap().parse::<f64>().unwrap();
+    let exp_total = json2["expenses"]["total"].as_str().unwrap().parse::<f64>().unwrap();
+    let net_inc = json2["net_income"].as_str().unwrap().parse::<f64>().unwrap();
+
+    assert_eq!(rev_total, 5000.00);
+    assert_eq!(exp_total, 1500.00);
+    assert_eq!(net_inc, 3500.00);
+}
+
+#[tokio::test]
+async fn test_issue_26_export_investment_currency_namespace() {
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("user_inv_exp_{}", user_id.simple());
+    let email = format!("user_inv_exp_{}@example.com", user_id.simple());
+
+    sqlx::query(
+        "INSERT INTO users (id, username, email, password_hash, token_version) VALUES ($1, $2, $3, 'hash', 0)"
+    )
+    .bind(user_id)
+    .bind(&username)
+    .bind(&email)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    // Bank account (INR, currency)
+    let bank_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO accounts (id, name, account_type, currency, commodity_namespace, commodity_fraction, placeholder, user_id) VALUES ($1, 'Main Bank', 'bank', 'INR', 'CURRENCY', 100, false, $2)")
+        .bind(bank_id).bind(user_id).execute(&pool).await.unwrap();
+
+    // Mutual fund account (INF209K01VA3, commodity)
+    let fund_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO accounts (id, name, account_type, currency, commodity_namespace, commodity_fraction, placeholder, user_id) VALUES ($1, 'Parag Parikh Flexi Cap', 'mutual', 'INF209K01VA3', 'FUND', 1000, false, $2)")
+        .bind(fund_id).bind(user_id).execute(&pool).await.unwrap();
+
+    // Tx 1: Fund split UUID sorts BEFORE bank split UUID
+    let (s_fund_1, s_bank_1) = {
+        let u1 = uuid::Uuid::new_v4();
+        let u2 = uuid::Uuid::new_v4();
+        if u1 < u2 { (u1, u2) } else { (u2, u1) }
+    };
+    let tx1_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO transactions (id, user_id, post_date, description) VALUES ($1, $2, '2026-11-01', 'Buy Fund First')")
+        .bind(tx1_id).bind(user_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, 1000.00, 10.000000, 'n')")
+        .bind(s_fund_1).bind(tx1_id).bind(fund_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, -1000.00, -1000.000000, 'n')")
+        .bind(s_bank_1).bind(tx1_id).bind(bank_id).execute(&pool).await.unwrap();
+
+    // Tx 2: Fund split UUID sorts AFTER bank split UUID
+    let (s_bank_2, s_fund_2) = {
+        let u3 = uuid::Uuid::new_v4();
+        let u4 = uuid::Uuid::new_v4();
+        if u3 < u4 { (u3, u4) } else { (u4, u3) }
+    };
+    let tx2_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO transactions (id, user_id, post_date, description) VALUES ($1, $2, '2026-11-02', 'Buy Fund Second')")
+        .bind(tx2_id).bind(user_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, -1000.00, -1000.000000, 'n')")
+        .bind(s_bank_2).bind(tx2_id).bind(bank_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, 1000.00, 10.000000, 'n')")
+        .bind(s_fund_2).bind(tx2_id).bind(fund_id).execute(&pool).await.unwrap();
+
+    // Call export SQLite
+    let app = create_app(pool.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/export/gnucash-sqlite")
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+
+    let temp_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(temp_file.path(), &bytes).unwrap();
+    let conn = rusqlite::Connection::open(temp_file.path()).unwrap();
+
+    // Assert that every transaction's currency_guid joins to a commodity with namespace = 'CURRENCY' (INR) (INV-5, EXP-5, SCOPE-1)
+    let non_currency_txs: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM transactions t JOIN commodities c ON t.currency_guid = c.guid WHERE c.namespace != 'CURRENCY' OR c.mnemonic != 'INR'",
+        [],
+        |row| row.get(0),
+    ).unwrap();
+    assert_eq!(non_currency_txs, 0, "All transactions must use CURRENCY INR namespace");
+
+    // Assert fund splits are written with quantity_num/quantity_denom representing 10 units (fraction 1000 -> 10000/1000)
+    let mut stmt = conn.prepare("SELECT quantity_num, quantity_denom FROM splits WHERE account_guid = (SELECT guid FROM accounts WHERE name = 'Parag Parikh Flexi Cap')").unwrap();
+    let mut rows = stmt.query([]).unwrap();
+    while let Some(row) = rows.next().unwrap() {
+        let q_num: i64 = row.get(0).unwrap();
+        let q_denom: i64 = row.get(1).unwrap();
+        assert_eq!(q_num as f64 / q_denom as f64, 10.0, "Quantity must be 10 units");
+    }
+}
+
+#[tokio::test]
+async fn test_issue_29_currency_length_boundaries() {
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("user_curr_len_{}", user_id.simple());
+    let email = format!("user_curr_len_{}@example.com", user_id.simple());
+
+    sqlx::query(
+        "INSERT INTO users (id, username, email, password_hash, token_version) VALUES ($1, $2, $3, 'hash', 0)"
+    )
+    .bind(user_id)
+    .bind(&username)
+    .bind(&email)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    // 1. 64-char currency succeeds (ACC-11)
+    let curr_64 = "A".repeat(64);
+    let app1 = create_app(pool.clone());
+    let resp1 = app1.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/accounts")
+            .header("authorization", format!("Bearer {}", token))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({
+                "name": "64 Char Account",
+                "account_type": "asset",
+                "currency": curr_64
+            }).to_string()))
+            .unwrap()
+    ).await.unwrap();
+    assert_eq!(resp1.status(), StatusCode::CREATED);
+    let body_bytes1 = resp1.into_body().collect().await.unwrap().to_bytes();
+    let acc_json: Value = serde_json::from_slice(&body_bytes1).unwrap();
+    let acc_id = acc_json["id"].as_str().unwrap();
+
+    // 2. 65-char currency fails with 400 (ACC-11)
+    let curr_65 = "A".repeat(65);
+    let app2 = create_app(pool.clone());
+    let resp2 = app2.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/accounts")
+            .header("authorization", format!("Bearer {}", token))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({
+                "name": "65 Char Account",
+                "account_type": "asset",
+                "currency": curr_65
+            }).to_string()))
+            .unwrap()
+    ).await.unwrap();
+    assert_eq!(resp2.status(), StatusCode::BAD_REQUEST);
+
+    // 3. Blank currency fails with 400
+    let app3 = create_app(pool.clone());
+    let resp3 = app3.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/accounts")
+            .header("authorization", format!("Bearer {}", token))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({
+                "name": "Blank Currency Account",
+                "account_type": "asset",
+                "currency": "   "
+            }).to_string()))
+            .unwrap()
+    ).await.unwrap();
+    assert_eq!(resp3.status(), StatusCode::BAD_REQUEST);
+
+    // 4. PUT with 65-char currency fails with 400
+    let app4 = create_app(pool.clone());
+    let resp4 = app4.oneshot(
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/accounts/{}", acc_id))
+            .header("authorization", format!("Bearer {}", token))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({
+                "name": "64 Char Account Renamed",
+                "account_type": "asset",
+                "currency": curr_65
+            }).to_string()))
+            .unwrap()
+    ).await.unwrap();
+    assert_eq!(resp4.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_issue_37_reject_root_account_type() {
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("user_no_root_{}", user_id.simple());
+    let email = format!("user_no_root_{}@example.com", user_id.simple());
+
+    sqlx::query(
+        "INSERT INTO users (id, username, email, password_hash, token_version) VALUES ($1, $2, $3, 'hash', 0)"
+    )
+    .bind(user_id)
+    .bind(&username)
+    .bind(&email)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    for bad_type in ["root", "ROOT", " Root ", "root "] {
+        let app = create_app(pool.clone());
+        let resp = app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/accounts")
+                .header("authorization", format!("Bearer {}", token))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({
+                    "name": "Disallowed Root Account",
+                    "account_type": bad_type,
+                    "currency": "INR"
+                }).to_string()))
+                .unwrap()
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "Account type '{}' must be rejected (ACC-9)", bad_type);
+    }
+
+    // Create valid account then try PUT to root
+    let app_create = create_app(pool.clone());
+    let resp_create = app_create.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/accounts")
+            .header("authorization", format!("Bearer {}", token))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({
+                "name": "Valid Account",
+                "account_type": "asset",
+                "currency": "INR"
+            }).to_string()))
+            .unwrap()
+    ).await.unwrap();
+    assert_eq!(resp_create.status(), StatusCode::CREATED);
+    let body_bytes = resp_create.into_body().collect().await.unwrap().to_bytes();
+    let acc_json: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let acc_id = acc_json["id"].as_str().unwrap();
+
+    let app_put = create_app(pool.clone());
+    let resp_put = app_put.oneshot(
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/accounts/{}", acc_id))
+            .header("authorization", format!("Bearer {}", token))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({
+                "name": "Valid Account",
+                "account_type": "root",
+                "currency": "INR"
+            }).to_string()))
+            .unwrap()
+    ).await.unwrap();
+    assert_eq!(resp_put.status(), StatusCode::BAD_REQUEST, "PUT account_type to root must be rejected (ACC-9)");
+}
+
+#[tokio::test]
+async fn test_issue_30_reconciled_state_migration_idempotent() {
+    let pool = get_test_pool().await;
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash".to_string()
+    });
+
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("user_mig_{}", user_id.simple());
+    let email = format!("user_mig_{}@example.com", user_id.simple());
+
+    sqlx::query(
+        "INSERT INTO users (id, username, email, password_hash, token_version) VALUES ($1, $2, $3, 'hash', 0)"
+    )
+    .bind(user_id)
+    .bind(&username)
+    .bind(&email)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let acc_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO accounts (id, name, account_type, currency, placeholder, user_id) VALUES ($1, 'Checking', 'bank', 'INR', false, $2)")
+        .bind(acc_id).bind(user_id).execute(&pool).await.unwrap();
+
+    let tx_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO transactions (id, user_id, post_date, description) VALUES ($1, $2, '2026-11-01', 'Tx')")
+        .bind(tx_id).bind(user_id).execute(&pool).await.unwrap();
+
+    // Drop constraint temporarily to insert legacy/unnormalized values
+    sqlx::query("ALTER TABLE splits DROP CONSTRAINT IF EXISTS chk_splits_reconciled_state")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sp_y = uuid::Uuid::new_v4();
+    let sp_c = uuid::Uuid::new_v4();
+    let sp_f = uuid::Uuid::new_v4();
+
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state, reconciled_date) VALUES ($1, $2, $3, 10, 10, 'Y', NOW())")
+        .bind(sp_y).bind(tx_id).bind(acc_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state, reconciled_date) VALUES ($1, $2, $3, 20, 20, 'C', NOW())")
+        .bind(sp_c).bind(tx_id).bind(acc_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state, reconciled_date) VALUES ($1, $2, $3, 30, 30, 'f', NOW())")
+        .bind(sp_f).bind(tx_id).bind(acc_id).execute(&pool).await.unwrap();
+
+    // Run init_db (migration)
+    gnucash_backend::db::init_db(&database_url).await.unwrap();
+
+    // Verify rows normalized
+    let state_y: String = sqlx::query_scalar("SELECT reconciled_state FROM splits WHERE id = $1").bind(sp_y).fetch_one(&pool).await.unwrap();
+    assert_eq!(state_y, "y");
+
+    let state_c: String = sqlx::query_scalar("SELECT reconciled_state FROM splits WHERE id = $1").bind(sp_c).fetch_one(&pool).await.unwrap();
+    assert_eq!(state_c, "c");
+
+    let (state_f, rec_date_f): (String, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as("SELECT reconciled_state, reconciled_date FROM splits WHERE id = $1")
+        .bind(sp_f)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state_f, "n");
+    assert!(rec_date_f.is_none(), "reconciled_state 'n' must have reconcile_date NULL (DATA-3, REC-1)");
+
+    // Get constraint OID
+    let oid1: i64 = sqlx::query_scalar("SELECT oid::int8 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // Run init_db again -> must be idempotent with unchanged OID
+    gnucash_backend::db::init_db(&database_url).await.unwrap();
+    let oid2: i64 = sqlx::query_scalar("SELECT oid::int8 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(oid1, oid2, "Constraint must not be dropped and re-created when valid (idempotent)");
+
+    // Invalid state 'Z' fails constraint
+    let err = sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, 50, 50, 'Z')")
+        .bind(uuid::Uuid::new_v4()).bind(tx_id).bind(acc_id).execute(&pool).await;
+    assert!(err.is_err(), "Inserting invalid state 'Z' must violate constraint");
+}
+
+#[tokio::test]
+async fn test_issue_31_seed_database_atomic_rollback() {
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("user_seed_rb_{}", user_id.simple());
+    let email = format!("user_seed_rb_{}@example.com", user_id.simple());
+
+    sqlx::query(
+        "INSERT INTO users (id, username, email, password_hash, token_version) VALUES ($1, $2, $3, 'hash', 0)"
+    )
+    .bind(user_id)
+    .bind(&username)
+    .bind(&email)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    // Pre-create account and transaction
+    let acc_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO accounts (id, name, account_type, currency, placeholder, user_id) VALUES ($1, 'Precious Savings', 'bank', 'INR', false, $2)")
+        .bind(acc_id).bind(user_id).execute(&pool).await.unwrap();
+
+    let tx_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO transactions (id, user_id, post_date, description) VALUES ($1, $2, '2026-11-01', 'Critical Transfer')")
+        .bind(tx_id).bind(user_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, 100.00, 100.00, 'n')")
+        .bind(uuid::Uuid::new_v4()).bind(tx_id).bind(acc_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, -100.00, -100.00, 'n')")
+        .bind(uuid::Uuid::new_v4()).bind(tx_id).bind(acc_id).execute(&pool).await.unwrap();
+
+    // Trigger failure in seed_database after delete using test hook
+    std::env::set_var("FAIL_SEED_TEST_HOOK", "1");
+
+    let app = create_app(pool.clone());
+    let resp = app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/seed")
+            .header("authorization", format!("Bearer {}", token))
+            .body(Body::empty())
+            .unwrap()
+    ).await.unwrap();
+
+    std::env::remove_var("FAIL_SEED_TEST_HOOK");
+
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    // Verify pre-existing account and transaction were NOT deleted (DATA-2 rollback preservation)
+    let acc_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(acc_count, 1, "Pre-existing accounts must survive failed seed attempt");
+
+    let tx_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(tx_count, 1, "Pre-existing transactions must survive failed seed attempt");
+}

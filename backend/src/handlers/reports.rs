@@ -31,6 +31,43 @@ pub struct DateRangeQuery {
     pub to_date: Option<NaiveDate>,
 }
 
+// Helper for recursive balance with cycle guard, summing only same-category descendants (ACC-8)
+fn get_section_total_balance(
+    id: Uuid,
+    balance_map: &HashMap<Uuid, Decimal>,
+    parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
+    type_predicate: fn(&str) -> bool,
+    account_map: &HashMap<Uuid, &AccountRow>,
+) -> Decimal {
+    fn helper(
+        id: Uuid,
+        balance_map: &HashMap<Uuid, Decimal>,
+        parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
+        type_predicate: fn(&str) -> bool,
+        account_map: &HashMap<Uuid, &AccountRow>,
+        visited: &mut HashSet<Uuid>,
+    ) -> Decimal {
+        if !visited.insert(id) {
+            return Decimal::ZERO;
+        }
+        let mut sum = balance_map.get(&id).copied().unwrap_or(Decimal::ZERO);
+        if let Some(children) = parent_to_children.get(&Some(id)) {
+            for child in children {
+                if let Some(child_acc) = account_map.get(child) {
+                    if type_predicate(&child_acc.account_type) {
+                        sum += helper(*child, balance_map, parent_to_children, type_predicate, account_map, visited);
+                    }
+                }
+            }
+        }
+        visited.remove(&id);
+        sum
+    }
+
+    let mut visited = HashSet::new();
+    helper(id, balance_map, parent_to_children, type_predicate, account_map, &mut visited)
+}
+
 pub async fn get_balance_sheet(
     auth: AuthUser,
     State(pool): State<PgPool>,
@@ -67,39 +104,11 @@ pub async fn get_balance_sheet(
 
     let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().collect();
 
-    // 3. Build parent map
+    // 3. Build parent map and account lookup map
     let mut parent_to_children: HashMap<Option<Uuid>, Vec<Uuid>> = HashMap::new();
+    let account_map: HashMap<Uuid, &AccountRow> = accounts.iter().map(|a| (a.id, a)).collect();
     for acc in &accounts {
         parent_to_children.entry(acc.parent_id).or_default().push(acc.id);
-    }
-
-    // Helper for recursive balance with cycle guard
-    fn get_total_balance(
-        id: Uuid,
-        balance_map: &HashMap<Uuid, Decimal>,
-        parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
-    ) -> Decimal {
-        fn helper(
-            id: Uuid,
-            balance_map: &HashMap<Uuid, Decimal>,
-            parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
-            visited: &mut HashSet<Uuid>,
-        ) -> Decimal {
-            if !visited.insert(id) {
-                return Decimal::ZERO;
-            }
-            let mut sum = balance_map.get(&id).copied().unwrap_or(Decimal::ZERO);
-            if let Some(children) = parent_to_children.get(&Some(id)) {
-                for child in children {
-                    sum += helper(*child, balance_map, parent_to_children, visited);
-                }
-            }
-            visited.remove(&id);
-            sum
-        }
-
-        let mut visited = HashSet::new();
-        helper(id, balance_map, parent_to_children, &mut visited)
     }
 
     // 4. Compute Net Income (Total Revenues - Total Expenses) up to as_of_date
@@ -122,62 +131,90 @@ pub async fn get_balance_sheet(
     let mut liability_items = Vec::new();
     let mut equity_items = Vec::new();
 
-    fn collect_section_items(
-        parent_id: Option<Uuid>,
+    fn collect_section_subtree(
+        acc: &AccountRow,
         depth: usize,
         type_predicate: fn(&str) -> bool,
-        accounts: &[AccountRow],
+        account_map: &HashMap<Uuid, &AccountRow>,
         balance_map: &HashMap<Uuid, Decimal>,
         parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
         items: &mut Vec<BalanceSheetItem>,
     ) {
-        if let Some(children) = parent_to_children.get(&parent_id) {
-            for child_id in children {
-                if let Some(acc) = accounts.iter().find(|a| a.id == *child_id) {
-                    if type_predicate(&acc.account_type) {
-                        let total = get_total_balance(acc.id, balance_map, parent_to_children);
-                        let display = calculate_display_balance(&acc.account_type, total);
-                        let has_children = parent_to_children.contains_key(&Some(acc.id));
+        let total = get_section_total_balance(acc.id, balance_map, parent_to_children, type_predicate, account_map);
+        let display = calculate_display_balance(&acc.account_type, total);
+        let matching_children: Vec<&AccountRow> = parent_to_children
+            .get(&Some(acc.id))
+            .map(|children| {
+                children
+                    .iter()
+                    .filter_map(|cid| account_map.get(cid).copied())
+                    .filter(|ca| type_predicate(&ca.account_type))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let has_matching_children = !matching_children.is_empty();
 
-                        if display != Decimal::ZERO || has_children {
-                            items.push(BalanceSheetItem {
-                                account_id: acc.id,
-                                name: acc.name.clone(),
-                                code: acc.code.clone(),
-                                account_type: acc.account_type.clone(),
-                                depth,
-                                balance: display,
-                            });
-                        }
+        if display != Decimal::ZERO || has_matching_children {
+            items.push(BalanceSheetItem {
+                account_id: acc.id,
+                name: acc.name.clone(),
+                code: acc.code.clone(),
+                account_type: acc.account_type.clone(),
+                depth,
+                balance: display,
+            });
+        }
 
-                        collect_section_items(Some(acc.id), depth + 1, type_predicate, accounts, balance_map, parent_to_children, items);
-                    }
+        for child in matching_children {
+            collect_section_subtree(child, depth + 1, type_predicate, account_map, balance_map, parent_to_children, items);
+        }
+    }
+
+    fn collect_section_items(
+        type_predicate: fn(&str) -> bool,
+        accounts: &[AccountRow],
+        account_map: &HashMap<Uuid, &AccountRow>,
+        balance_map: &HashMap<Uuid, Decimal>,
+        parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
+        items: &mut Vec<BalanceSheetItem>,
+    ) {
+        for acc in accounts {
+            if type_predicate(&acc.account_type) {
+                let is_top = match acc.parent_id {
+                    None => true,
+                    Some(pid) => match account_map.get(&pid) {
+                        None => true,
+                        Some(p) => !type_predicate(&p.account_type),
+                    },
+                };
+                if is_top {
+                    collect_section_subtree(acc, 0, type_predicate, account_map, balance_map, parent_to_children, items);
                 }
             }
         }
     }
 
-    collect_section_items(None, 0, is_asset_type, &accounts, &balance_map, &parent_to_children, &mut asset_items);
-    collect_section_items(None, 0, is_liability_type, &accounts, &balance_map, &parent_to_children, &mut liability_items);
-    collect_section_items(None, 0, is_equity_type, &accounts, &balance_map, &parent_to_children, &mut equity_items);
+    collect_section_items(is_asset_type, &accounts, &account_map, &balance_map, &parent_to_children, &mut asset_items);
+    collect_section_items(is_liability_type, &accounts, &account_map, &balance_map, &parent_to_children, &mut liability_items);
+    collect_section_items(is_equity_type, &accounts, &account_map, &balance_map, &parent_to_children, &mut equity_items);
 
-    // Compute top-level section totals (from root accounts of each type)
+    // Compute top-level section totals directly from all accounts of each category (ACC-8)
     let total_assets: Decimal = accounts
         .iter()
-        .filter(|a| a.parent_id.is_none() && is_asset_type(&a.account_type))
-        .map(|a| calculate_display_balance(&a.account_type, get_total_balance(a.id, &balance_map, &parent_to_children)))
+        .filter(|a| is_asset_type(&a.account_type))
+        .map(|a| calculate_display_balance(&a.account_type, balance_map.get(&a.id).copied().unwrap_or(Decimal::ZERO)))
         .sum();
 
     let total_liabilities: Decimal = accounts
         .iter()
-        .filter(|a| a.parent_id.is_none() && is_liability_type(&a.account_type))
-        .map(|a| calculate_display_balance(&a.account_type, get_total_balance(a.id, &balance_map, &parent_to_children)))
+        .filter(|a| is_liability_type(&a.account_type))
+        .map(|a| calculate_display_balance(&a.account_type, balance_map.get(&a.id).copied().unwrap_or(Decimal::ZERO)))
         .sum();
 
     let total_equity_base: Decimal = accounts
         .iter()
-        .filter(|a| a.parent_id.is_none() && is_equity_type(&a.account_type))
-        .map(|a| calculate_display_balance(&a.account_type, get_total_balance(a.id, &balance_map, &parent_to_children)))
+        .filter(|a| is_equity_type(&a.account_type))
+        .map(|a| calculate_display_balance(&a.account_type, balance_map.get(&a.id).copied().unwrap_or(Decimal::ZERO)))
         .sum();
 
     let total_equity = total_equity_base + net_income;
@@ -250,88 +287,91 @@ pub async fn get_income_statement(
     let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().collect();
 
     let mut parent_to_children: HashMap<Option<Uuid>, Vec<Uuid>> = HashMap::new();
+    let account_map: HashMap<Uuid, &AccountRow> = accounts.iter().map(|a| (a.id, a)).collect();
     for acc in &accounts {
         parent_to_children.entry(acc.parent_id).or_default().push(acc.id);
-    }
-
-    fn get_total_balance(
-        id: Uuid,
-        balance_map: &HashMap<Uuid, Decimal>,
-        parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
-    ) -> Decimal {
-        fn helper(
-            id: Uuid,
-            balance_map: &HashMap<Uuid, Decimal>,
-            parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
-            visited: &mut HashSet<Uuid>,
-        ) -> Decimal {
-            if !visited.insert(id) {
-                return Decimal::ZERO;
-            }
-            let mut sum = balance_map.get(&id).copied().unwrap_or(Decimal::ZERO);
-            if let Some(children) = parent_to_children.get(&Some(id)) {
-                for child in children {
-                    sum += helper(*child, balance_map, parent_to_children, visited);
-                }
-            }
-            visited.remove(&id);
-            sum
-        }
-
-        let mut visited = HashSet::new();
-        helper(id, balance_map, parent_to_children, &mut visited)
     }
 
     let mut revenue_items = Vec::new();
     let mut expense_items = Vec::new();
 
-    fn collect_pnl_items(
-        parent_id: Option<Uuid>,
+    fn collect_pnl_subtree(
+        acc: &AccountRow,
         depth: usize,
         type_predicate: fn(&str) -> bool,
-        accounts: &[AccountRow],
+        account_map: &HashMap<Uuid, &AccountRow>,
         balance_map: &HashMap<Uuid, Decimal>,
         parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
         items: &mut Vec<IncomeStatementItem>,
     ) {
-        if let Some(children) = parent_to_children.get(&parent_id) {
-            for child_id in children {
-                if let Some(acc) = accounts.iter().find(|a| a.id == *child_id) {
-                    if type_predicate(&acc.account_type) {
-                        let total = get_total_balance(acc.id, balance_map, parent_to_children);
-                        let display = calculate_display_balance(&acc.account_type, total);
-                        let has_children = parent_to_children.contains_key(&Some(acc.id));
+        let total = get_section_total_balance(acc.id, balance_map, parent_to_children, type_predicate, account_map);
+        let display = calculate_display_balance(&acc.account_type, total);
+        let matching_children: Vec<&AccountRow> = parent_to_children
+            .get(&Some(acc.id))
+            .map(|children| {
+                children
+                    .iter()
+                    .filter_map(|cid| account_map.get(cid).copied())
+                    .filter(|ca| type_predicate(&ca.account_type))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let has_matching_children = !matching_children.is_empty();
 
-                        if display != Decimal::ZERO || has_children {
-                            items.push(IncomeStatementItem {
-                                account_id: acc.id,
-                                name: acc.name.clone(),
-                                code: acc.code.clone(),
-                                account_type: acc.account_type.clone(),
-                                depth,
-                                amount: display,
-                            });
-                        }
-                        collect_pnl_items(Some(acc.id), depth + 1, type_predicate, accounts, balance_map, parent_to_children, items);
-                    }
+        if display != Decimal::ZERO || has_matching_children {
+            items.push(IncomeStatementItem {
+                account_id: acc.id,
+                name: acc.name.clone(),
+                code: acc.code.clone(),
+                account_type: acc.account_type.clone(),
+                depth,
+                amount: display,
+            });
+        }
+
+        for child in matching_children {
+            collect_pnl_subtree(child, depth + 1, type_predicate, account_map, balance_map, parent_to_children, items);
+        }
+    }
+
+    fn collect_pnl_items(
+        type_predicate: fn(&str) -> bool,
+        accounts: &[AccountRow],
+        account_map: &HashMap<Uuid, &AccountRow>,
+        balance_map: &HashMap<Uuid, Decimal>,
+        parent_to_children: &HashMap<Option<Uuid>, Vec<Uuid>>,
+        items: &mut Vec<IncomeStatementItem>,
+    ) {
+        for acc in accounts {
+            if type_predicate(&acc.account_type) {
+                let is_top = match acc.parent_id {
+                    None => true,
+                    Some(pid) => match account_map.get(&pid) {
+                        None => true,
+                        Some(p) => !type_predicate(&p.account_type),
+                    },
+                };
+                if is_top {
+                    collect_pnl_subtree(acc, 0, type_predicate, account_map, balance_map, parent_to_children, items);
                 }
             }
         }
     }
 
-    collect_pnl_items(None, 0, is_income_type, &accounts, &balance_map, &parent_to_children, &mut revenue_items);
-    collect_pnl_items(None, 0, is_expense_type, &accounts, &balance_map, &parent_to_children, &mut expense_items);
+    collect_pnl_items(is_income_type, &accounts, &account_map, &balance_map, &parent_to_children, &mut revenue_items);
+    collect_pnl_items(is_expense_type, &accounts, &account_map, &balance_map, &parent_to_children, &mut expense_items);
 
+    // Compute top-level section totals directly from all accounts of each category (ACC-8)
     let total_revenue: Decimal = accounts
         .iter()
-        .filter(|a| a.parent_id.is_none() && is_income_type(&a.account_type))
-        .map(|a| calculate_display_balance(&a.account_type, get_total_balance(a.id, &balance_map, &parent_to_children)))
+        .filter(|a| is_income_type(&a.account_type))
+        .map(|a| calculate_display_balance(&a.account_type, balance_map.get(&a.id).copied().unwrap_or(Decimal::ZERO)))
         .sum();
 
     let total_expenses: Decimal = accounts
         .iter()
-        .filter(|a| a.parent_id.is_none() && is_expense_type(&a.account_type))
-        .map(|a| calculate_display_balance(&a.account_type, get_total_balance(a.id, &balance_map, &parent_to_children)))
+        .filter(|a| is_expense_type(&a.account_type))
+        .map(|a| calculate_display_balance(&a.account_type, balance_map.get(&a.id).copied().unwrap_or(Decimal::ZERO)))
         .sum();
 
     let net_income = total_revenue - total_expenses;
