@@ -3155,3 +3155,308 @@ async fn test_import_reconciled_state_normalization() {
         assert_eq!(state, "n", "Non-standard reconcile state ('f' or 'v') must be normalized to 'n'");
     }
 }
+
+#[tokio::test]
+async fn test_issue_34_account_parent_type_compatibility() {
+    // Issue #34: ACC-12 - Reject account parents of an incompatible type
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("acc12_{}", &user_id.to_string()[..8]);
+    let email = format!("{}@example.com", username);
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')")
+        .bind(user_id)
+        .bind(&username)
+        .bind(&email)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    // Helper closure to create an account
+    let post_account = |payload: serde_json::Value| {
+        let app = create_app(pool.clone());
+        let tok = token.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/accounts")
+                    .header("authorization", format!("Bearer {}", tok))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    // Helper closure to update an account
+    let put_account = |id: &str, payload: serde_json::Value| {
+        let app = create_app(pool.clone());
+        let tok = token.clone();
+        let uri = format!("/api/accounts/{}", id);
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(&uri)
+                    .header("authorization", format!("Bearer {}", tok))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    // Top-level accounts of any type must succeed (ACC-12)
+    let res_asset = post_account(json!({ "name": "Asset Root", "account_type": "asset" })).await;
+    assert_eq!(res_asset.status(), StatusCode::CREATED);
+    let asset_root_id = serde_json::from_slice::<Value>(&res_asset.into_body().collect().await.unwrap().to_bytes()).unwrap()["id"].as_str().unwrap().to_string();
+
+    let res_expense = post_account(json!({ "name": "Expense Root", "account_type": "expense" })).await;
+    assert_eq!(res_expense.status(), StatusCode::CREATED);
+    let expense_root_id = serde_json::from_slice::<Value>(&res_expense.into_body().collect().await.unwrap().to_bytes()).unwrap()["id"].as_str().unwrap().to_string();
+
+    let res_equity = post_account(json!({ "name": "Equity Root", "account_type": "equity" })).await;
+    assert_eq!(res_equity.status(), StatusCode::CREATED);
+    let equity_root_id = serde_json::from_slice::<Value>(&res_equity.into_body().collect().await.unwrap().to_bytes()).unwrap()["id"].as_str().unwrap().to_string();
+
+    let res_income = post_account(json!({ "name": "Income Root", "account_type": "income" })).await;
+    assert_eq!(res_income.status(), StatusCode::CREATED);
+    let income_root_id = serde_json::from_slice::<Value>(&res_income.into_body().collect().await.unwrap().to_bytes()).unwrap()["id"].as_str().unwrap().to_string();
+
+    // Incompatible parent requests must return 400 Bad Request (ACC-12)
+    // 1. Create asset account under expense parent -> 400
+    let res = post_account(json!({
+        "name": "Bad Asset Under Expense",
+        "account_type": "asset",
+        "parent_id": expense_root_id
+    })).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // 2. Create liability account under expense parent -> 400
+    let res = post_account(json!({
+        "name": "Bad Liability Under Expense",
+        "account_type": "liability",
+        "parent_id": expense_root_id
+    })).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // 3. Create expense account under asset parent -> 400
+    let res = post_account(json!({
+        "name": "Bad Expense Under Asset",
+        "account_type": "expense",
+        "parent_id": asset_root_id
+    })).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // 4. Move income account under equity parent -> 400
+    let res = put_account(&income_root_id, json!({
+        "parent_id": equity_root_id
+    })).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // 5. Change account type to asset while parent is expense -> 400
+    let res_sub_expense = post_account(json!({
+        "name": "Sub Expense",
+        "account_type": "expense",
+        "parent_id": expense_root_id
+    })).await;
+    assert_eq!(res_sub_expense.status(), StatusCode::CREATED);
+    let sub_expense_id = serde_json::from_slice::<Value>(&res_sub_expense.into_body().collect().await.unwrap().to_bytes()).unwrap()["id"].as_str().unwrap().to_string();
+
+    let res = put_account(&sub_expense_id, json!({
+        "account_type": "asset"
+    })).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // 6. Change parent type to asset while it has expense children -> 400
+    let res = put_account(&expense_root_id, json!({
+        "account_type": "asset"
+    })).await;
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // Compatible parent requests must succeed (ACC-12)
+    // 1. liability under asset (both in balance_sheet group) -> 201
+    let res = post_account(json!({
+        "name": "Credit Card",
+        "account_type": "liability",
+        "parent_id": asset_root_id
+    })).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    // 2. bank under asset (both in balance_sheet group) -> 201
+    let res = post_account(json!({
+        "name": "Checking Account",
+        "account_type": "bank",
+        "parent_id": asset_root_id
+    })).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+
+    // 3. expense under income (both in income_expense group) -> 201
+    let res = post_account(json!({
+        "name": "Operating Expense",
+        "account_type": "expense",
+        "parent_id": income_root_id
+    })).await;
+    assert_eq!(res.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_issue_35_import_field_length_and_error_identification() {
+    // Issue #35: IMP-11, TXN-1, ACC-11, ACC-2, SEC-13
+    // Validate field lengths before DB transaction and name offending items in error responses
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("imp11_{}", &user_id.to_string()[..8]);
+    let email = format!("{}@example.com", username);
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')")
+        .bind(user_id)
+        .bind(&username)
+        .bind(&email)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    let upload_sqlite = |db_bytes: Vec<u8>| {
+        let app = create_app(pool.clone());
+        let tok = token.clone();
+        async move {
+            let boundary = "---------------------------boundaryimp11test";
+            let mut body = Vec::new();
+            body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+            body.extend_from_slice(b"Content-Disposition: form-data; name=\"file\"; filename=\"test.gnucash\"\r\nContent-Type: application/x-sqlite3\r\n\r\n");
+            body.extend_from_slice(&db_bytes);
+            body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
+
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import/gnucash-sqlite?wipe=true")
+                    .header("authorization", format!("Bearer {}", tok))
+                    .header("content-type", format!("multipart/form-data; boundary={}", boundary))
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+
+    // 1. Transaction description > 255 chars (IMP-11, TXN-1)
+    let temp_db1 = tempfile::NamedTempFile::new().unwrap();
+    let conn1 = rusqlite::Connection::open(temp_db1.path()).unwrap();
+    let long_desc = format!("LongTx_{}", "X".repeat(250)); // 257 characters
+    conn1.execute_batch(&format!(r#"
+        CREATE TABLE accounts (guid TEXT PRIMARY KEY, name TEXT, account_type TEXT, commodity_guid TEXT, parent_guid TEXT, code TEXT, description TEXT, hidden INT, placeholder INT);
+        CREATE TABLE transactions (guid TEXT PRIMARY KEY, currency_guid TEXT, num TEXT, post_date TEXT, enter_date TEXT, description TEXT);
+        CREATE TABLE splits (guid TEXT PRIMARY KEY, tx_guid TEXT, account_guid TEXT, memo TEXT, action TEXT, reconcile_state TEXT, reconcile_date TEXT, value_num INT, value_denom INT, quantity_num INT, quantity_denom INT, lot_guid TEXT);
+        CREATE TABLE commodities (guid TEXT PRIMARY KEY, namespace TEXT, mnemonic TEXT, fullname TEXT, cusip TEXT, fraction INT, quote_flag INT, quote_source TEXT);
+
+        INSERT INTO commodities VALUES ('c1', 'CURRENCY', 'USD', 'USD', '', 100, 1, 'currency');
+        INSERT INTO accounts VALUES ('a1', 'Assets', 'ASSET', 'c1', NULL, NULL, NULL, 0, 0);
+        INSERT INTO accounts VALUES ('a2', 'Checking', 'BANK', 'c1', 'a1', NULL, NULL, 0, 0);
+        INSERT INTO accounts VALUES ('a3', 'Groceries', 'EXPENSE', 'c1', NULL, NULL, NULL, 0, 0);
+
+        INSERT INTO transactions VALUES ('tx_long', 'c1', '', '20261101100000', '20261101100000', '{long_desc}');
+        INSERT INTO splits VALUES ('s1', 'tx_long', 'a2', '', '', 'n', NULL, -5000, 100, -5000, 100, NULL);
+        INSERT INTO splits VALUES ('s2', 'tx_long', 'a3', '', '', 'n', NULL, 5000, 100, 5000, 100, NULL);
+    "#)).unwrap();
+
+    let bytes1 = std::fs::read(temp_db1.path()).unwrap();
+    let resp1 = upload_sqlite(bytes1).await;
+    assert_eq!(resp1.status(), StatusCode::BAD_REQUEST);
+    let body_bytes1 = resp1.into_body().collect().await.unwrap().to_bytes();
+    let json1: Value = serde_json::from_slice(&body_bytes1).unwrap();
+    let err_msg1 = json1["error"].as_str().unwrap();
+
+    // Verify error identifies post date, start of description, split accounts, and limit (IMP-11)
+    assert!(err_msg1.contains("2026-11-01"), "Error must contain post date: {}", err_msg1);
+    assert!(err_msg1.contains("LongTx_"), "Error must contain start of description: {}", err_msg1);
+    assert!(err_msg1.contains("Assets:Checking") || err_msg1.contains("Groceries"), "Error must contain split accounts: {}", err_msg1);
+    assert!(err_msg1.contains("255"), "Error must name limit 255: {}", err_msg1);
+    // Verify no raw DB error text leaked (SEC-13)
+    assert!(!err_msg1.contains("error returned from database"));
+    assert!(!err_msg1.contains("character varying"));
+
+    // Verify nothing written to DB
+    let tx_count1: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(tx_count1, 0, "No transactions should be written on validation error");
+
+    // 2. Account code > 50 chars (IMP-11, ACC-11)
+    let temp_db2 = tempfile::NamedTempFile::new().unwrap();
+    let conn2 = rusqlite::Connection::open(temp_db2.path()).unwrap();
+    let long_code = "C".repeat(55); // 55 characters
+    conn2.execute_batch(&format!(r#"
+        CREATE TABLE accounts (guid TEXT PRIMARY KEY, name TEXT, account_type TEXT, commodity_guid TEXT, parent_guid TEXT, code TEXT, description TEXT, hidden INT, placeholder INT);
+        CREATE TABLE transactions (guid TEXT PRIMARY KEY, currency_guid TEXT, num TEXT, post_date TEXT, enter_date TEXT, description TEXT);
+        CREATE TABLE splits (guid TEXT PRIMARY KEY, tx_guid TEXT, account_guid TEXT, memo TEXT, action TEXT, reconcile_state TEXT, reconcile_date TEXT, value_num INT, value_denom INT, quantity_num INT, quantity_denom INT, lot_guid TEXT);
+        CREATE TABLE commodities (guid TEXT PRIMARY KEY, namespace TEXT, mnemonic TEXT, fullname TEXT, cusip TEXT, fraction INT, quote_flag INT, quote_source TEXT);
+
+        INSERT INTO commodities VALUES ('c1', 'CURRENCY', 'USD', 'USD', '', 100, 1, 'currency');
+        INSERT INTO accounts VALUES ('a1', 'Assets', 'ASSET', 'c1', NULL, NULL, NULL, 0, 0);
+        INSERT INTO accounts VALUES ('a2', 'Savings', 'BANK', 'c1', 'a1', '{long_code}', NULL, 0, 0);
+    "#)).unwrap();
+
+    let bytes2 = std::fs::read(temp_db2.path()).unwrap();
+    let resp2 = upload_sqlite(bytes2).await;
+    assert_eq!(resp2.status(), StatusCode::BAD_REQUEST);
+    let body_bytes2 = resp2.into_body().collect().await.unwrap().to_bytes();
+    let json2: Value = serde_json::from_slice(&body_bytes2).unwrap();
+    let err_msg2 = json2["error"].as_str().unwrap();
+
+    // Verify error names full account name and limit 50 (IMP-11)
+    assert!(err_msg2.contains("Assets:Savings"), "Error must name full account name: {}", err_msg2);
+    assert!(err_msg2.contains("50"), "Error must name limit 50: {}", err_msg2);
+    assert!(!err_msg2.contains("error returned from database"));
+    assert!(!err_msg2.contains("character varying"));
+
+    let acc_count2: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(acc_count2, 0, "No accounts should be written on validation error");
+
+    // 3. Unbalanced transaction names date, description, and accounts (ACC-2, IMP-11)
+    let temp_db3 = tempfile::NamedTempFile::new().unwrap();
+    let conn3 = rusqlite::Connection::open(temp_db3.path()).unwrap();
+    conn3.execute_batch(r#"
+        CREATE TABLE accounts (guid TEXT PRIMARY KEY, name TEXT, account_type TEXT, commodity_guid TEXT, parent_guid TEXT, code TEXT, description TEXT, hidden INT, placeholder INT);
+        CREATE TABLE transactions (guid TEXT PRIMARY KEY, currency_guid TEXT, num TEXT, post_date TEXT, enter_date TEXT, description TEXT);
+        CREATE TABLE splits (guid TEXT PRIMARY KEY, tx_guid TEXT, account_guid TEXT, memo TEXT, action TEXT, reconcile_state TEXT, reconcile_date TEXT, value_num INT, value_denom INT, quantity_num INT, quantity_denom INT, lot_guid TEXT);
+        CREATE TABLE commodities (guid TEXT PRIMARY KEY, namespace TEXT, mnemonic TEXT, fullname TEXT, cusip TEXT, fraction INT, quote_flag INT, quote_source TEXT);
+
+        INSERT INTO commodities VALUES ('c1', 'CURRENCY', 'USD', 'USD', '', 100, 1, 'currency');
+        INSERT INTO accounts VALUES ('a1', 'Assets', 'ASSET', 'c1', NULL, NULL, NULL, 0, 0);
+        INSERT INTO accounts VALUES ('a2', 'Cash', 'CASH', 'c1', 'a1', NULL, NULL, 0, 0);
+        INSERT INTO accounts VALUES ('a3', 'Coffee', 'EXPENSE', 'c1', NULL, NULL, NULL, 0, 0);
+
+        INSERT INTO transactions VALUES ('tx_unbalanced', 'c1', '', '20261102120000', '20261102120000', 'Unbalanced Coffee');
+        INSERT INTO splits VALUES ('s1', 'tx_unbalanced', 'a2', '', '', 'n', NULL, -450, 100, -450, 100, NULL);
+        INSERT INTO splits VALUES ('s2', 'tx_unbalanced', 'a3', '', '', 'n', NULL, 500, 100, 500, 100, NULL);
+    "#).unwrap();
+
+    let bytes3 = std::fs::read(temp_db3.path()).unwrap();
+    let resp3 = upload_sqlite(bytes3).await;
+    assert_eq!(resp3.status(), StatusCode::BAD_REQUEST);
+    let body_bytes3 = resp3.into_body().collect().await.unwrap().to_bytes();
+    let json3: Value = serde_json::from_slice(&body_bytes3).unwrap();
+    let err_msg3 = json3["error"].as_str().unwrap();
+
+    assert!(err_msg3.contains("Double-entry violation"), "Must maintain compatibility with Double-entry violation: {}", err_msg3);
+    assert!(err_msg3.contains("tx_unbalanced"), "Must identify transaction GUID: {}", err_msg3);
+    assert!(err_msg3.contains("2026-11-02"), "Must identify post date: {}", err_msg3);
+    assert!(err_msg3.contains("Unbalanced Coffee"), "Must identify description: {}", err_msg3);
+    assert!(err_msg3.contains("Assets:Cash") || err_msg3.contains("Coffee"), "Must identify accounts: {}", err_msg3);
+    assert!(err_msg3.contains("0.5"), "Must identify imbalance: {}", err_msg3);
+    assert!(!err_msg3.contains("error returned from database"));
+}

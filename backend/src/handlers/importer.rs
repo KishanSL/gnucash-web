@@ -704,6 +704,72 @@ pub async fn import_gnucash_sqlite(
     Ok(Json(res))
 }
 
+pub fn build_full_account_name(
+    guid: &str,
+    acc_by_guid: &HashMap<String, &RawAccount>,
+) -> String {
+    let mut names = Vec::new();
+    let mut curr = Some(guid.to_string());
+    let mut visited = HashSet::new();
+
+    while let Some(ref g) = curr {
+        if !visited.insert(g.clone()) {
+            break;
+        }
+        if let Some(acc) = acc_by_guid.get(g) {
+            if acc.account_type.trim().to_uppercase() != "ROOT" && !acc.name.is_empty() {
+                names.push(acc.name.as_str());
+            }
+            curr = acc.parent_guid.clone();
+        } else {
+            break;
+        }
+    }
+
+    names.reverse();
+    if names.is_empty() {
+        if let Some(acc) = acc_by_guid.get(guid) {
+            if !acc.name.is_empty() {
+                return acc.name.clone();
+            }
+        }
+        guid.to_string()
+    } else {
+        names.join(":")
+    }
+}
+
+pub fn get_tx_accounts_string(
+    tx_guid: &str,
+    raw_splits: &[RawSplit],
+    acc_by_guid: &HashMap<String, &RawAccount>,
+) -> String {
+    let mut acc_names = Vec::new();
+    let mut seen = HashSet::new();
+    for s in raw_splits {
+        if s.tx_guid == tx_guid {
+            let full_name = build_full_account_name(&s.account_guid, acc_by_guid);
+            if seen.insert(full_name.clone()) {
+                acc_names.push(full_name);
+            }
+        }
+    }
+    if acc_names.is_empty() {
+        "none".to_string()
+    } else {
+        acc_names.join(", ")
+    }
+}
+
+pub fn tx_desc_preview(description: &str) -> String {
+    if description.chars().count() > 30 {
+        let prefix: String = description.chars().take(30).collect();
+        format!("{}...", prefix)
+    } else {
+        description.to_string()
+    }
+}
+
 pub async fn save_gnucash_data_to_db(
     pool: &PgPool,
     user_id: Uuid,
@@ -713,23 +779,7 @@ pub async fn save_gnucash_data_to_db(
     raw_splits: Vec<RawSplit>,
     format_desc: &str,
 ) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
-    // 1. Verify double-entry invariant: sum of splits for each transaction must equal 0 exactly (Issue #19)
-    let mut tx_sums: HashMap<String, Decimal> = HashMap::new();
-    for s in &raw_splits {
-        *tx_sums.entry(s.tx_guid.clone()).or_insert(Decimal::ZERO) += s.amount;
-    }
-    for (tx_guid, sum) in &tx_sums {
-        if *sum != Decimal::ZERO {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!("Double-entry violation in imported transaction {}: splits do not balance (imbalance: {})", tx_guid, sum)
-                })),
-            ));
-        }
-    }
-
-    // 2. Clean up parent_guid if parent is ROOT account
+    // 1. Clean up parent_guid if parent is ROOT account
     let root_guids: HashSet<String> = raw_accounts
         .iter()
         .filter(|a| a.account_type.trim().to_uppercase() == "ROOT")
@@ -746,13 +796,7 @@ pub async fn save_gnucash_data_to_db(
         }
     }
 
-    // 3. Map of GnuCash GUID string -> Postgres UUID
-    let mut account_guid_to_uuid: HashMap<String, Uuid> = HashMap::new();
-    for acc in &raw_accounts {
-        account_guid_to_uuid.insert(acc.guid.clone(), parse_gnucash_guid_for_user(&acc.guid, &user_id));
-    }
-
-    // 4. In-memory topological sort for accounts with cycle detection (Issue #13 & Issue #18)
+    // 2. In-memory topological sort for accounts with cycle detection (Issue #13 & Issue #18)
     let account_guid_set: HashSet<String> = raw_accounts.iter().map(|a| a.guid.clone()).collect();
     for acc in &mut raw_accounts {
         if let Some(ref pg) = acc.parent_guid {
@@ -818,11 +862,130 @@ pub async fn save_gnucash_data_to_db(
 
     raw_accounts.sort_by_key(|a| *depth_map.get(&a.guid).unwrap_or(&0));
 
-    // 5. Begin DB transaction
+    // Fast lookup maps for validation and reporting
+    let acc_by_guid: HashMap<String, &RawAccount> = raw_accounts.iter().map(|a| (a.guid.clone(), a)).collect();
+    let tx_by_guid: HashMap<String, &RawTransaction> = raw_transactions.iter().map(|t| (t.guid.clone(), t)).collect();
+
+    // 3. Pre-validate all accounts (IMP-11, ACC-11)
+    for acc in &raw_accounts {
+        let full_name = build_full_account_name(&acc.guid, &acc_by_guid);
+        let name_len = acc.name.chars().count();
+        if name_len == 0 || name_len > 255 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "Import error in account '{}': name must be between 1 and 255 characters (length: {}) (IMP-11, ACC-11)",
+                        full_name, name_len
+                    )
+                })),
+            ));
+        }
+
+        if let Some(ref code) = acc.code {
+            let code_len = code.chars().count();
+            if code_len > 50 {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": format!(
+                            "Import error in account '{}': code exceeds maximum length of 50 characters (length: {}) (IMP-11, ACC-11)",
+                            full_name, code_len
+                        )
+                    })),
+                ));
+            }
+        }
+
+        let curr_len = acc.currency.chars().count();
+        if curr_len == 0 || curr_len > 64 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "Import error in account '{}': currency/commodity code must be between 1 and 64 characters (length: {}) (IMP-11, ACC-11)",
+                        full_name, curr_len
+                    )
+                })),
+            ));
+        }
+    }
+
+    // 4. Pre-validate all transactions (IMP-11, TXN-1)
+    for tx in &raw_transactions {
+        let desc_len = tx.description.chars().count();
+        let preview = tx_desc_preview(&tx.description);
+        let accounts_str = get_tx_accounts_string(&tx.guid, &raw_splits, &acc_by_guid);
+
+        if desc_len == 0 || desc_len > 255 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "Import error in transaction (date: {}, description: '{}', accounts: [{}]): description must be between 1 and 255 characters (length: {}) (IMP-11, TXN-1)",
+                        tx.post_date, preview, accounts_str, desc_len
+                    )
+                })),
+            ));
+        }
+
+        if let Some(ref num) = tx.num {
+            let num_len = num.chars().count();
+            if num_len > 50 {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": format!(
+                            "Import error in transaction (date: {}, description: '{}', accounts: [{}]): num/check reference exceeds maximum length of 50 characters (length: {}) (IMP-11, TXN-1)",
+                            tx.post_date, preview, accounts_str, num_len
+                        )
+                    })),
+                ));
+            }
+        }
+    }
+
+    // 5. Verify double-entry invariant (ACC-2, IMP-11, Issue #19, Issue #35)
+    let mut tx_sums: HashMap<String, Decimal> = HashMap::new();
+    for s in &raw_splits {
+        *tx_sums.entry(s.tx_guid.clone()).or_insert(Decimal::ZERO) += s.amount;
+    }
+    for (tx_guid, sum) in &tx_sums {
+        if *sum != Decimal::ZERO {
+            let (date_str, desc_str, accounts_str) = if let Some(tx) = tx_by_guid.get(tx_guid) {
+                (
+                    tx.post_date.to_string(),
+                    tx_desc_preview(&tx.description),
+                    get_tx_accounts_string(tx_guid, &raw_splits, &acc_by_guid),
+                )
+            } else {
+                ("unknown".to_string(), "unknown".to_string(), "unknown".to_string())
+            };
+
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "Double-entry violation in imported transaction {} (date: {}, description: '{}', accounts: [{}]): splits do not balance (imbalance: {}) (ACC-2, IMP-11)",
+                        tx_guid, date_str, desc_str, accounts_str, sum
+                    )
+                })),
+            ));
+        }
+    }
+
+    // 6. Map of GnuCash GUID string -> Postgres UUID
+    let mut account_guid_to_uuid: HashMap<String, Uuid> = HashMap::new();
+    for acc in &raw_accounts {
+        account_guid_to_uuid.insert(acc.guid.clone(), parse_gnucash_guid_for_user(&acc.guid, &user_id));
+    }
+
+    // 7. Begin DB transaction
     let mut tx = pool.begin().await.map_err(|e| {
+        tracing::error!("Database transaction error: {}", e);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database transaction error: {}", e) })),
+            Json(json!({ "error": "Database transaction error" })),
         )
     })?;
 
@@ -831,19 +994,28 @@ pub async fn save_gnucash_data_to_db(
             .bind(user_id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))?;
+            .map_err(|e| {
+                tracing::error!("Failed to wipe splits: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to wipe existing data for import"})))
+            })?;
 
         sqlx::query("DELETE FROM transactions WHERE user_id = $1")
             .bind(user_id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))?;
+            .map_err(|e| {
+                tracing::error!("Failed to wipe transactions: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to wipe existing data for import"})))
+            })?;
 
         sqlx::query("DELETE FROM accounts WHERE user_id = $1")
             .bind(user_id)
             .execute(&mut *tx)
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))))?;
+            .map_err(|e| {
+                tracing::error!("Failed to wipe accounts: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to wipe existing data for import"})))
+            })?;
     }
 
     // 6. Batch insert accounts level-by-level with UNNEST (Issue #13)
@@ -918,9 +1090,10 @@ pub async fn save_gnucash_data_to_db(
             .execute(&mut *tx)
             .await
             .map_err(|e| {
+                tracing::error!("Failed to batch insert accounts: {}", e);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": format!("Failed to batch insert accounts: {}", e) })),
+                    Json(json!({ "error": "Failed to batch insert accounts" })),
                 )
             })?;
 
@@ -969,9 +1142,10 @@ pub async fn save_gnucash_data_to_db(
         .execute(&mut *tx)
         .await
         .map_err(|e| {
+            tracing::error!("Failed to batch insert transactions: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to batch insert transactions: {}", e) })),
+                Json(json!({ "error": "Failed to batch insert transactions" })),
             )
         })?;
 
@@ -986,9 +1160,10 @@ pub async fn save_gnucash_data_to_db(
             .execute(&mut *tx)
             .await
             .map_err(|e| {
+                tracing::error!("Failed to clear stale splits: {}", e);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": format!("Failed to clear stale splits: {}", e) })),
+                    Json(json!({ "error": "Failed to clear stale splits" })),
                 )
             })?;
     }
@@ -1043,9 +1218,10 @@ pub async fn save_gnucash_data_to_db(
         .execute(&mut *tx)
         .await
         .map_err(|e| {
+            tracing::error!("Failed to batch insert splits: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to batch insert splits: {}", e) })),
+                Json(json!({ "error": "Failed to batch insert splits" })),
             )
         })?;
 
@@ -1053,9 +1229,10 @@ pub async fn save_gnucash_data_to_db(
     }
 
     tx.commit().await.map_err(|e| {
+        tracing::error!("Failed to commit imported data: {}", e);
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to commit imported data: {}", e) })),
+            Json(json!({ "error": "Failed to commit imported data" })),
         )
     })?;
 

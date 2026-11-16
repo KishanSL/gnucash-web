@@ -14,6 +14,20 @@ interface NewAccountModalProps {
   currentCurrency: string;
 }
 
+const isTypeCompatible = (typeA: string, typeB: string): boolean => {
+  const getGroup = (t: string) => {
+    const lower = t.toLowerCase();
+    if (['asset', 'bank', 'cash', 'receivable', 'credit', 'liability', 'payable'].includes(lower)) return 'balance_sheet';
+    if (['income', 'expense'].includes(lower)) return 'income_expense';
+    if (lower === 'equity') return 'equity';
+    if (lower === 'root') return 'root';
+    return lower;
+  };
+  const gA = getGroup(typeA);
+  const gB = getGroup(typeB);
+  return gA === 'root' || gB === 'root' || gA === gB;
+};
+
 export const NewAccountModal: React.FC<NewAccountModalProps> = ({
   isOpen,
   onClose,
@@ -212,7 +226,7 @@ export const NewAccountModal: React.FC<NewAccountModalProps> = ({
               >
                 <option value="">-- Top Level Account (None) --</option>
                 {accounts
-                  .filter((a) => !editingAccount || a.id !== editingAccount.id)
+                  .filter((a) => (!editingAccount || a.id !== editingAccount.id) && isTypeCompatible(accountType, a.account_type))
                   .map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name} ({a.account_type}){a.placeholder ? ' [Folder]' : ''}{a.hidden ? ' [Hidden]' : ''}

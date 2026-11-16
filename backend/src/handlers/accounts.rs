@@ -20,6 +20,28 @@ const VALID_ACCOUNT_TYPES: &[&str] = &[
     "bank", "cash", "asset", "credit", "liability", "equity", "income", "expense", "receivable", "payable", "root"
 ];
 
+pub fn account_type_group(account_type: &str) -> Option<&'static str> {
+    match account_type.trim().to_lowercase().as_str() {
+        "asset" | "bank" | "cash" | "receivable" | "credit" | "liability" | "payable" => {
+            Some("balance_sheet")
+        }
+        "income" | "expense" => Some("income_expense"),
+        "equity" => Some("equity"),
+        "root" => Some("root"),
+        _ => None,
+    }
+}
+
+pub fn are_account_types_compatible(type_a: &str, type_b: &str) -> bool {
+    let g_a = account_type_group(type_a);
+    let g_b = account_type_group(type_b);
+    match (g_a, g_b) {
+        (Some("root"), _) | (_, Some("root")) => true,
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
 pub async fn list_accounts(
     auth: AuthUser,
     State(pool): State<PgPool>,
@@ -190,21 +212,41 @@ pub async fn create_account(
         ));
     }
 
-    // If parent_id is specified, verify it belongs to this user
+    // If parent_id is specified, verify it belongs to this user and has compatible type (ACC-12)
     if let Some(pid) = payload.parent_id {
-        let parent_exists = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM accounts WHERE id = $1 AND user_id = $2",
+        let parent = sqlx::query_as::<_, (String,)>(
+            "SELECT account_type FROM accounts WHERE id = $1 AND user_id = $2",
         )
         .bind(pid)
         .bind(auth.id)
-        .fetch_one(&pool)
+        .fetch_optional(&pool)
         .await
-        .unwrap_or(0);
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Database error: {}", e) })),
+            )
+        })?;
 
-        if parent_exists == 0 {
+        let parent_type = match parent {
+            Some((pt,)) => pt,
+            None => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "Parent account not found" })),
+                ));
+            }
+        };
+
+        if !are_account_types_compatible(&acc_type, &parent_type) {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "Parent account not found" })),
+                Json(json!({
+                    "error": format!(
+                        "Incompatible account type '{}' for parent of type '{}' (ACC-12)",
+                        acc_type, parent_type
+                    )
+                })),
             ));
         }
     }
@@ -351,19 +393,39 @@ pub async fn update_account(
     }
 
     if let Some(pid) = parent_id {
-        let parent_exists = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM accounts WHERE id = $1 AND user_id = $2",
+        let parent = sqlx::query_as::<_, (String,)>(
+            "SELECT account_type FROM accounts WHERE id = $1 AND user_id = $2",
         )
         .bind(pid)
         .bind(auth.id)
-        .fetch_one(&pool)
+        .fetch_optional(&pool)
         .await
-        .unwrap_or(0);
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Database error: {}", e) })),
+            )
+        })?;
 
-        if parent_exists == 0 {
+        let parent_type = match parent {
+            Some((pt,)) => pt,
+            None => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "Parent account not found" })),
+                ));
+            }
+        };
+
+        if !are_account_types_compatible(&account_type, &parent_type) {
             return Err((
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "Parent account not found" })),
+                Json(json!({
+                    "error": format!(
+                        "Incompatible account type '{}' for parent of type '{}' (ACC-12)",
+                        account_type, parent_type
+                    )
+                })),
             ));
         }
 
@@ -387,6 +449,35 @@ pub async fn update_account(
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(json!({ "error": "Cannot assign a descendant as parent (cycle detected)" })),
+            ));
+        }
+    }
+
+    // Verify compatibility with all direct child accounts (ACC-12)
+    let child_types = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT account_type FROM accounts WHERE parent_id = $1 AND user_id = $2",
+    )
+    .bind(id)
+    .bind(auth.id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Database error: {}", e) })),
+        )
+    })?;
+
+    for ct in child_types {
+        if !are_account_types_compatible(&account_type, &ct) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!(
+                        "Account type '{}' is incompatible with child account of type '{}' (ACC-12)",
+                        account_type, ct
+                    )
+                })),
             ));
         }
     }
