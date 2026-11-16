@@ -1,10 +1,12 @@
+#![allow(clippy::type_complexity, clippy::field_reassign_with_default)]
+
 use axum::{
     extract::{Multipart, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use flate2::read::GzDecoder;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
@@ -36,15 +38,15 @@ fn parse_gnucash_date(date_str: &str) -> NaiveDate {
     let s = date_str.trim();
 
     // Try YYYY-MM-DD
-    if s.len() >= 10 {
-        if let Ok(d) = NaiveDate::parse_from_str(&s[..10], "%Y-%m-%d") {
+    if let Some(prefix) = s.get(..10) {
+        if let Ok(d) = NaiveDate::parse_from_str(prefix, "%Y-%m-%d") {
             return d;
         }
     }
 
     // Try YYYYMMDDHHMMSS (standard GnuCash SQLite)
-    if s.len() >= 8 {
-        if let Ok(d) = NaiveDate::parse_from_str(&s[..8], "%Y%m%d") {
+    if let Some(prefix) = s.get(..8) {
+        if let Ok(d) = NaiveDate::parse_from_str(prefix, "%Y%m%d") {
             return d;
         }
     }
@@ -57,6 +59,58 @@ fn parse_gnucash_date(date_str: &str) -> NaiveDate {
     }
 
     Utc::now().date_naive()
+}
+
+fn parse_gnucash_datetime(s: &str) -> Option<DateTime<Utc>> {
+    let trimmed = s.trim().trim_matches('\'').trim_matches('"').trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Try RFC 3339 / ISO 8601 (e.g. 2024-05-18T10:59:00Z or with offset)
+    if let Ok(dt) = DateTime::parse_from_rfc3339(trimmed) {
+        return Some(dt.with_timezone(&Utc));
+    }
+
+    // Try standard GnuCash datetime with timezone offset (e.g. "2024-05-18 10:59:00 +0000")
+    if let Ok(dt) = DateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S %z") {
+        return Some(dt.with_timezone(&Utc));
+    }
+
+    // Try standard naive datetime "YYYY-MM-DD HH:MM:SS"
+    if let Ok(ndt) = NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S") {
+        return Some(ndt.and_utc());
+    }
+
+    // Try GnuCash SQLite compact datetime "YYYYMMDDHHMMSS"
+    if let Some(prefix) = trimmed.get(..14) {
+        if let Ok(ndt) = NaiveDateTime::parse_from_str(prefix, "%Y%m%d%H%M%S") {
+            return Some(ndt.and_utc());
+        }
+    }
+
+    // Try date only "YYYY-MM-DD"
+    if let Some(prefix) = trimmed.get(..10) {
+        if let Ok(nd) = NaiveDate::parse_from_str(prefix, "%Y-%m-%d") {
+            return Some(nd.and_hms_opt(0, 0, 0)?.and_utc());
+        }
+    }
+
+    // Try date only "YYYYMMDD"
+    if let Some(prefix) = trimmed.get(..8) {
+        if let Ok(nd) = NaiveDate::parse_from_str(prefix, "%Y%m%d") {
+            return Some(nd.and_hms_opt(0, 0, 0)?.and_utc());
+        }
+    }
+
+    // Try epoch seconds
+    if let Ok(epoch) = trimmed.parse::<i64>() {
+        if let Some(dt) = DateTime::from_timestamp(epoch, 0) {
+            return Some(dt);
+        }
+    }
+
+    None
 }
 
 fn normalize_account_type(raw_type: &str) -> String {
@@ -139,6 +193,7 @@ pub struct RawSplit {
     pub reconciled_state: String,
     pub amount: Decimal,
     pub quantity: Decimal,
+    pub reconcile_date: Option<DateTime<Utc>>,
 }
 
 fn parse_gnucash_xml(
@@ -209,7 +264,7 @@ fn parse_gnucash_xml(
                     "gnc:transaction" => {
                         if let Some(mut tx) = curr_tx.take() {
                             if !tx.guid.is_empty() {
-                                if tx.description.is_empty() {
+                                if tx.description.trim().is_empty() {
                                     tx.description = "GnuCash Transaction".to_string();
                                 }
                                 transactions.push(tx);
@@ -226,6 +281,18 @@ fn parse_gnucash_xml(
                                     if let Some(ref tx) = curr_tx {
                                         sp.tx_guid = tx.guid.clone();
                                     }
+                                }
+                                sp.reconciled_state = match sp.reconciled_state.to_lowercase().as_str() {
+                                    "y" => "y".to_string(),
+                                    "c" => "c".to_string(),
+                                    _ => "n".to_string(),
+                                };
+                                if sp.reconciled_state == "y" {
+                                    if sp.reconcile_date.is_none() {
+                                        sp.reconcile_date = Some(Utc::now());
+                                    }
+                                } else {
+                                    sp.reconcile_date = None;
                                 }
                                 splits.push(sp);
                             }
@@ -310,7 +377,18 @@ fn parse_gnucash_xml(
                                 sp.quantity = dec;
                             }
                         }
-                        _ => {}
+                        "ts:date" | "gdate" => {
+                            if parent_tag == "split:reconcile-date" || parent_tag.ends_with("reconcile-date") {
+                                sp.reconcile_date = parse_gnucash_datetime(&text);
+                            }
+                        }
+                        _ => {
+                            if current_tag.ends_with("reconcile-date") {
+                                if let Some(dt) = parse_gnucash_datetime(&text) {
+                                    sp.reconcile_date = Some(dt);
+                                }
+                            }
+                        }
                     }
                 } else if let Some(ref mut tx) = curr_tx {
                     // Transaction fields
@@ -497,18 +575,27 @@ fn parse_gnucash_sqlite(
             guid,
             post_date,
             num: num.filter(|s| !s.trim().is_empty()),
-            description: desc.unwrap_or_else(|| "GnuCash Transaction".to_string()),
+            description: desc
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "GnuCash Transaction".to_string()),
             notes: notes.filter(|s| !s.trim().is_empty()),
         });
     }
 
-    // Read Splits (Issue #9: query both value and quantity)
+    // Read Splits (Issue #9: query both value and quantity; Issue #27: reconcile_date)
     let mut split_stmt = conn.prepare(
-        "SELECT guid, tx_guid, account_guid, memo, reconcile_state, value_num, value_denom, quantity_num, quantity_denom FROM splits"
+        "SELECT guid, tx_guid, account_guid, memo, reconcile_state, value_num, value_denom, quantity_num, quantity_denom, reconcile_date FROM splits"
     ).map_err(|e| format!("Failed to prepare splits query: {}", e))?;
 
     let mut raw_splits = Vec::new();
     let split_rows = split_stmt.query_map([], |row| {
+        let rec_date_val: rusqlite::types::Value = row.get(9).unwrap_or(rusqlite::types::Value::Null);
+        let rec_date_str = match rec_date_val {
+            rusqlite::types::Value::Text(s) => Some(s),
+            rusqlite::types::Value::Integer(i) => Some(i.to_string()),
+            _ => None,
+        };
+
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
@@ -519,11 +606,12 @@ fn parse_gnucash_sqlite(
             row.get::<_, i64>(6)?,
             row.get::<_, i64>(7).unwrap_or(0),
             row.get::<_, i64>(8).unwrap_or(0),
+            rec_date_str,
         ))
     }).map_err(|e| format!("Failed to query splits: {}", e))?;
 
     for r in split_rows.flatten() {
-        let (guid, tx_guid, account_guid, memo, rec_state, val_num, val_denom, qty_num, qty_denom) = r;
+        let (guid, tx_guid, account_guid, memo, rec_state, val_num, val_denom, qty_num, qty_denom, rec_date_str) = r;
         let denom = if val_denom == 0 { 100 } else { val_denom };
         let amount = Decimal::from(val_num) / Decimal::from(denom);
 
@@ -533,14 +621,26 @@ fn parse_gnucash_sqlite(
             amount
         };
 
+        let reconciled_state = match rec_state.as_deref().unwrap_or("n").to_lowercase().as_str() {
+            "y" => "y".to_string(),
+            "c" => "c".to_string(),
+            _ => "n".to_string(),
+        };
+        let reconcile_date = if reconciled_state == "y" {
+            rec_date_str.as_deref().and_then(parse_gnucash_datetime).or_else(|| Some(Utc::now()))
+        } else {
+            None
+        };
+
         raw_splits.push(RawSplit {
             guid,
             tx_guid,
             account_guid,
             memo: memo.filter(|s| !s.trim().is_empty()),
-            reconciled_state: rec_state.unwrap_or_else(|| "n".to_string()),
+            reconciled_state,
             amount,
             quantity,
+            reconcile_date,
         });
     }
 
@@ -775,8 +875,8 @@ pub async fn save_gnucash_data_to_db(
     user_id: Uuid,
     wipe: bool,
     mut raw_accounts: Vec<RawAccount>,
-    raw_transactions: Vec<RawTransaction>,
-    raw_splits: Vec<RawSplit>,
+    mut raw_transactions: Vec<RawTransaction>,
+    mut raw_splits: Vec<RawSplit>,
     format_desc: &str,
 ) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
     // 1. Clean up parent_guid if parent is ROOT account
@@ -862,9 +962,8 @@ pub async fn save_gnucash_data_to_db(
 
     raw_accounts.sort_by_key(|a| *depth_map.get(&a.guid).unwrap_or(&0));
 
-    // Fast lookup maps for validation and reporting
+    // Fast lookup map for validation and reporting
     let acc_by_guid: HashMap<String, &RawAccount> = raw_accounts.iter().map(|a| (a.guid.clone(), a)).collect();
-    let tx_by_guid: HashMap<String, &RawTransaction> = raw_transactions.iter().map(|t| (t.guid.clone(), t)).collect();
 
     // 3. Pre-validate all accounts (IMP-11, ACC-11)
     for acc in &raw_accounts {
@@ -910,6 +1009,54 @@ pub async fn save_gnucash_data_to_db(
             ));
         }
     }
+
+    // Defensive check (Issue #32, TXN-1): default empty/whitespace descriptions
+    for tx in &mut raw_transactions {
+        if tx.description.trim().is_empty() {
+            tx.description = "GnuCash Transaction".to_string();
+        }
+    }
+
+    // Defensive check & normalization (Issue #27, REC-2): normalize reconciled_state and reconcile_date
+    for s in &mut raw_splits {
+        let norm_state = match s.reconciled_state.to_lowercase().as_str() {
+            "y" => "y".to_string(),
+            "c" => "c".to_string(),
+            _ => "n".to_string(),
+        };
+        s.reconciled_state = norm_state;
+        if s.reconciled_state == "y" {
+            if s.reconcile_date.is_none() {
+                s.reconcile_date = Some(Utc::now());
+            }
+        } else {
+            s.reconcile_date = None;
+        }
+    }
+
+    // Issue #36 (IMP-10, ACC-1): Count splits per transaction and filter out transactions with < 2 splits
+    let mut split_count_per_tx: HashMap<String, usize> = HashMap::new();
+    for s in &raw_splits {
+        *split_count_per_tx.entry(s.tx_guid.clone()).or_insert(0) += 1;
+    }
+
+    let mut invalid_tx_guids: HashSet<String> = HashSet::new();
+    for tx in &raw_transactions {
+        let count = split_count_per_tx.get(&tx.guid).copied().unwrap_or(0);
+        if count < 2 {
+            invalid_tx_guids.insert(tx.guid.clone());
+        }
+    }
+
+    let skipped_transactions = invalid_tx_guids.len();
+
+    if !invalid_tx_guids.is_empty() {
+        raw_transactions.retain(|tx| !invalid_tx_guids.contains(&tx.guid));
+        raw_splits.retain(|s| !invalid_tx_guids.contains(&s.tx_guid));
+    }
+
+    // Fast lookup for transaction metadata during error reporting
+    let tx_by_guid: HashMap<String, &RawTransaction> = raw_transactions.iter().map(|t| (t.guid.clone(), t)).collect();
 
     // 4. Pre-validate all transactions (IMP-11, TXN-1)
     for tx in &raw_transactions {
@@ -1189,9 +1336,10 @@ pub async fn save_gnucash_data_to_db(
                 _ => "n".to_string(),
             }
         }).collect();
+        let rec_dates: Vec<Option<DateTime<Utc>>> = chunk.iter().map(|s| s.reconcile_date).collect();
 
         sqlx::query(
-            r#"INSERT INTO splits (id, transaction_id, account_id, amount, quantity, memo, reconciled_state)
+            r#"INSERT INTO splits (id, transaction_id, account_id, amount, quantity, memo, reconciled_state, reconciled_date)
                SELECT * FROM UNNEST(
                    $1::uuid[],
                    $2::uuid[],
@@ -1199,14 +1347,16 @@ pub async fn save_gnucash_data_to_db(
                    $4::numeric[],
                    $5::numeric[],
                    $6::varchar[],
-                   $7::varchar[]
+                   $7::varchar[],
+                   $8::timestamptz[]
                )
                ON CONFLICT (id) DO UPDATE SET
                    account_id = EXCLUDED.account_id,
                    amount = EXCLUDED.amount,
                    quantity = EXCLUDED.quantity,
                    memo = EXCLUDED.memo,
-                   reconciled_state = EXCLUDED.reconciled_state"#
+                   reconciled_state = EXCLUDED.reconciled_state,
+                   reconciled_date = EXCLUDED.reconciled_date"#
         )
         .bind(&ids)
         .bind(&tx_ids)
@@ -1215,6 +1365,7 @@ pub async fn save_gnucash_data_to_db(
         .bind(&quantities)
         .bind(&memos)
         .bind(&rec_states)
+        .bind(&rec_dates)
         .execute(&mut *tx)
         .await
         .map_err(|e| {
@@ -1241,10 +1392,179 @@ pub async fn save_gnucash_data_to_db(
         "accounts_imported": inserted_acc_count,
         "transactions_imported": tx_count,
         "splits_imported": split_count,
+        "skipped_transactions": skipped_transactions,
         "format": format_desc,
         "message": format!(
             "Successfully imported {} file ({} accounts, {} transactions, {} splits).",
             format_desc, inserted_acc_count, tx_count, split_count
         )
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Datelike, Timelike};
+
+    #[test]
+    fn test_parse_gnucash_datetime_formats() {
+        // RFC 3339
+        let dt1 = parse_gnucash_datetime("2024-05-18T10:59:00Z").expect("RFC 3339 failed");
+        assert_eq!(dt1.year(), 2024);
+        assert_eq!(dt1.month(), 5);
+        assert_eq!(dt1.day(), 18);
+        assert_eq!(dt1.hour(), 10);
+        assert_eq!(dt1.minute(), 59);
+
+        // GnuCash XML datetime with timezone
+        let dt2 = parse_gnucash_datetime("2024-05-18 10:59:00 +0000").expect("GnuCash with tz failed");
+        assert_eq!(dt2.year(), 2024);
+        assert_eq!(dt2.month(), 5);
+        assert_eq!(dt2.day(), 18);
+
+        // Standard naive datetime
+        let dt3 = parse_gnucash_datetime("2024-05-18 10:59:00").expect("Naive datetime failed");
+        assert_eq!(dt3.year(), 2024);
+        assert_eq!(dt3.month(), 5);
+        assert_eq!(dt3.day(), 18);
+
+        // SQLite compact 14-digit format
+        let dt4 = parse_gnucash_datetime("20240518105900").expect("SQLite compact 14-digit failed");
+        assert_eq!(dt4.year(), 2024);
+        assert_eq!(dt4.month(), 5);
+        assert_eq!(dt4.day(), 18);
+        assert_eq!(dt4.hour(), 10);
+        assert_eq!(dt4.minute(), 59);
+
+        // Date only YYYY-MM-DD
+        let dt5 = parse_gnucash_datetime("2024-05-18").expect("Date only YYYY-MM-DD failed");
+        assert_eq!(dt5.year(), 2024);
+        assert_eq!(dt5.month(), 5);
+        assert_eq!(dt5.day(), 18);
+
+        // Date only YYYYMMDD
+        let dt6 = parse_gnucash_datetime("20240518").expect("Date only YYYYMMDD failed");
+        assert_eq!(dt6.year(), 2024);
+        assert_eq!(dt6.month(), 5);
+        assert_eq!(dt6.day(), 18);
+
+        // Epoch seconds
+        let dt7 = parse_gnucash_datetime("1716029940").expect("Epoch timestamp failed");
+        assert_eq!(dt7.year(), 2024);
+
+        // Empty / invalid strings
+        assert!(parse_gnucash_datetime("").is_none());
+        assert!(parse_gnucash_datetime("   ").is_none());
+        assert!(parse_gnucash_datetime("invalid-date-string").is_none());
+
+        // Multi-byte UTF-8 strings must not panic on slice boundaries
+        assert!(parse_gnucash_datetime("안녕하세요").is_none());
+        assert!(parse_gnucash_datetime("२०२६-०३-३१").is_none());
+        assert!(parse_gnucash_datetime("２０２６年０३月３１日").is_none());
+        assert!(parse_gnucash_datetime("🎉🎊🎁🎈").is_none());
+        assert!(parse_gnucash_datetime("こんにちは世界2024").is_none());
+
+        // parse_gnucash_date also safely handles multi-byte UTF-8 strings without panicking
+        let _ = parse_gnucash_date("안녕하세요");
+        let _ = parse_gnucash_date("२०२६-०३-३१");
+        let _ = parse_gnucash_date("２０２６年０३月３１日");
+        let _ = parse_gnucash_date("🎉🎊🎁🎈");
+    }
+
+    #[test]
+    fn test_split_reconcile_date_normalization_rules() {
+        // Reconciled state 'y' preserves date or defaults to Utc::now()
+        let past_date = Utc::now() - chrono::Duration::days(10);
+        let mut split_y = RawSplit {
+            reconciled_state: "y".to_string(),
+            reconcile_date: Some(past_date),
+            ..Default::default()
+        };
+        let norm_state = match split_y.reconciled_state.to_lowercase().as_str() {
+            "y" => "y".to_string(),
+            "c" => "c".to_string(),
+            _ => "n".to_string(),
+        };
+        split_y.reconciled_state = norm_state;
+        if split_y.reconciled_state == "y" {
+            if split_y.reconcile_date.is_none() {
+                split_y.reconcile_date = Some(Utc::now());
+            }
+        } else {
+            split_y.reconcile_date = None;
+        }
+        assert_eq!(split_y.reconcile_date, Some(past_date));
+
+        // Reconciled state 'n' or 'c' clears reconcile_date
+        let mut split_c = RawSplit {
+            reconciled_state: "c".to_string(),
+            reconcile_date: Some(past_date),
+            ..Default::default()
+        };
+        let norm_state = match split_c.reconciled_state.to_lowercase().as_str() {
+            "y" => "y".to_string(),
+            "c" => "c".to_string(),
+            _ => "n".to_string(),
+        };
+        split_c.reconciled_state = norm_state;
+        if split_c.reconciled_state == "y" {
+            if split_c.reconcile_date.is_none() {
+                split_c.reconcile_date = Some(Utc::now());
+            }
+        } else {
+            split_c.reconcile_date = None;
+        }
+        assert!(split_c.reconcile_date.is_none());
+    }
+
+    #[test]
+    fn test_empty_transaction_description_defaults_to_gnucash_transaction() {
+        let mut tx_empty = RawTransaction {
+            description: "   ".to_string(),
+            ..Default::default()
+        };
+        if tx_empty.description.trim().is_empty() {
+            tx_empty.description = "GnuCash Transaction".to_string();
+        }
+        assert_eq!(tx_empty.description, "GnuCash Transaction");
+    }
+
+    #[test]
+    fn test_split_count_enforcement_skips_transactions_with_fewer_than_two_splits() {
+        let mut raw_transactions = vec![
+            RawTransaction { guid: "tx-valid".to_string(), ..Default::default() },
+            RawTransaction { guid: "tx-zero".to_string(), ..Default::default() },
+            RawTransaction { guid: "tx-one".to_string(), ..Default::default() },
+        ];
+        let mut raw_splits = vec![
+            RawSplit { guid: "s1".to_string(), tx_guid: "tx-valid".to_string(), ..Default::default() },
+            RawSplit { guid: "s2".to_string(), tx_guid: "tx-valid".to_string(), ..Default::default() },
+            RawSplit { guid: "s3".to_string(), tx_guid: "tx-one".to_string(), ..Default::default() },
+        ];
+
+        let mut split_count_per_tx: HashMap<String, usize> = HashMap::new();
+        for s in &raw_splits {
+            *split_count_per_tx.entry(s.tx_guid.clone()).or_insert(0) += 1;
+        }
+
+        let mut invalid_tx_guids: HashSet<String> = HashSet::new();
+        for tx in &raw_transactions {
+            let count = split_count_per_tx.get(&tx.guid).copied().unwrap_or(0);
+            if count < 2 {
+                invalid_tx_guids.insert(tx.guid.clone());
+            }
+        }
+
+        let skipped_transactions = invalid_tx_guids.len();
+        assert_eq!(skipped_transactions, 2);
+
+        if !invalid_tx_guids.is_empty() {
+            raw_transactions.retain(|tx| !invalid_tx_guids.contains(&tx.guid));
+            raw_splits.retain(|s| !invalid_tx_guids.contains(&s.tx_guid));
+        }
+
+        assert_eq!(raw_transactions.len(), 1);
+        assert_eq!(raw_transactions[0].guid, "tx-valid");
+        assert_eq!(raw_splits.len(), 2);
+    }
 }
