@@ -19,6 +19,13 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS commodity_fraction BIGINT DEFAULT 
 ALTER TABLE splits ADD COLUMN IF NOT EXISTS quantity NUMERIC(20, 6);
 UPDATE splits SET quantity = amount WHERE quantity IS NULL;
 
--- Enforce normalized reconciled states (Issue #14)
-ALTER TABLE splits DROP CONSTRAINT IF EXISTS chk_splits_reconciled_state;
-ALTER TABLE splits ADD CONSTRAINT chk_splits_reconciled_state CHECK (reconciled_state IN ('n', 'c', 'y'));
+-- Enforce normalized reconciled states (Issue #14, Issue #30)
+UPDATE splits SET reconciled_state = LOWER(reconciled_state) WHERE reconciled_state <> LOWER(reconciled_state);
+UPDATE splits SET reconciled_state = 'n', reconciled_date = NULL WHERE reconciled_state NOT IN ('n', 'c', 'y');
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state') THEN
+        ALTER TABLE splits ADD CONSTRAINT chk_splits_reconciled_state CHECK (reconciled_state IN ('n', 'c', 'y'));
+    END IF;
+END $$;

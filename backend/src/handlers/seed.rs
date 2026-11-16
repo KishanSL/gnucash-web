@@ -41,17 +41,18 @@ pub async fn seed_database(
             )
         })?;
 
+    if let Err(e) = run_seed_tx(&mut tx, auth.id).await {
+        let _ = tx.rollback().await;
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to seed database: {}", e) })),
+        ));
+    }
+
     tx.commit().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to commit clean slate: {}", e) })),
-        )
-    })?;
-
-    run_seed(&pool, auth.id).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to seed database: {}", e) })),
+            Json(json!({ "error": format!("Failed to commit seed transaction: {}", e) })),
         )
     })?;
 
@@ -110,6 +111,15 @@ pub async fn reset_dataset(
 
 pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
     let mut tx = pool.begin().await?;
+    run_seed_tx(&mut tx, user_id).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub async fn run_seed_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+) -> Result<(), sqlx::Error> {
 
     // Helper to insert account
     async fn insert_acc(
@@ -138,58 +148,58 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
     }
 
     // 1. Root Accounts
-    let assets_root = insert_acc(&mut tx, "Assets", Some("1000"), "asset", None, true, user_id).await?;
-    let liab_root = insert_acc(&mut tx, "Liabilities", Some("2000"), "liability", None, true, user_id).await?;
-    let equity_root = insert_acc(&mut tx, "Equity", Some("3000"), "equity", None, true, user_id).await?;
-    let income_root = insert_acc(&mut tx, "Income", Some("4000"), "income", None, true, user_id).await?;
-    let expense_root = insert_acc(&mut tx, "Expenses", Some("5000"), "expense", None, true, user_id).await?;
+    let assets_root = insert_acc(&mut *tx, "Assets", Some("1000"), "asset", None, true, user_id).await?;
+    let liab_root = insert_acc(&mut *tx, "Liabilities", Some("2000"), "liability", None, true, user_id).await?;
+    let equity_root = insert_acc(&mut *tx, "Equity", Some("3000"), "equity", None, true, user_id).await?;
+    let income_root = insert_acc(&mut *tx, "Income", Some("4000"), "income", None, true, user_id).await?;
+    let expense_root = insert_acc(&mut *tx, "Expenses", Some("5000"), "expense", None, true, user_id).await?;
 
     // 2. Assets Subaccounts
-    let curr_assets = insert_acc(&mut tx, "Current Assets", Some("1100"), "asset", Some(assets_root), true, user_id).await?;
-    let checking = insert_acc(&mut tx, "Checking Account", Some("1110"), "bank", Some(curr_assets), false, user_id).await?;
-    let savings = insert_acc(&mut tx, "Savings Account", Some("1120"), "bank", Some(curr_assets), false, user_id).await?;
-    let cash = insert_acc(&mut tx, "Cash in Wallet", Some("1130"), "cash", Some(curr_assets), false, user_id).await?;
-    let _receivable = insert_acc(&mut tx, "Accounts Receivable", Some("1140"), "receivable", Some(curr_assets), false, user_id).await?;
+    let curr_assets = insert_acc(&mut *tx, "Current Assets", Some("1100"), "asset", Some(assets_root), true, user_id).await?;
+    let checking = insert_acc(&mut *tx, "Checking Account", Some("1110"), "bank", Some(curr_assets), false, user_id).await?;
+    let savings = insert_acc(&mut *tx, "Savings Account", Some("1120"), "bank", Some(curr_assets), false, user_id).await?;
+    let cash = insert_acc(&mut *tx, "Cash in Wallet", Some("1130"), "cash", Some(curr_assets), false, user_id).await?;
+    let _receivable = insert_acc(&mut *tx, "Accounts Receivable", Some("1140"), "receivable", Some(curr_assets), false, user_id).await?;
 
-    let fixed_assets = insert_acc(&mut tx, "Fixed Assets", Some("1500"), "asset", Some(assets_root), true, user_id).await?;
-    let _computer = insert_acc(&mut tx, "Computer & Tech", Some("1510"), "asset", Some(fixed_assets), false, user_id).await?;
-    let _auto_asset = insert_acc(&mut tx, "Automobile", Some("1520"), "asset", Some(fixed_assets), false, user_id).await?;
+    let fixed_assets = insert_acc(&mut *tx, "Fixed Assets", Some("1500"), "asset", Some(assets_root), true, user_id).await?;
+    let _computer = insert_acc(&mut *tx, "Computer & Tech", Some("1510"), "asset", Some(fixed_assets), false, user_id).await?;
+    let _auto_asset = insert_acc(&mut *tx, "Automobile", Some("1520"), "asset", Some(fixed_assets), false, user_id).await?;
 
     // 3. Liabilities Subaccounts
-    let credit_cards = insert_acc(&mut tx, "Credit Cards", Some("2100"), "liability", Some(liab_root), true, user_id).await?;
-    let visa = insert_acc(&mut tx, "Visa Signature Card", Some("2110"), "credit", Some(credit_cards), false, user_id).await?;
-    let mastercard = insert_acc(&mut tx, "Mastercard", Some("2120"), "credit", Some(credit_cards), false, user_id).await?;
-    let _payable = insert_acc(&mut tx, "Accounts Payable", Some("2200"), "payable", Some(liab_root), false, user_id).await?;
+    let credit_cards = insert_acc(&mut *tx, "Credit Cards", Some("2100"), "liability", Some(liab_root), true, user_id).await?;
+    let visa = insert_acc(&mut *tx, "Visa Signature Card", Some("2110"), "credit", Some(credit_cards), false, user_id).await?;
+    let mastercard = insert_acc(&mut *tx, "Mastercard", Some("2120"), "credit", Some(credit_cards), false, user_id).await?;
+    let _payable = insert_acc(&mut *tx, "Accounts Payable", Some("2200"), "payable", Some(liab_root), false, user_id).await?;
 
     // 4. Equity Subaccounts
-    let opening_equity = insert_acc(&mut tx, "Opening Balances", Some("3100"), "equity", Some(equity_root), false, user_id).await?;
-    let _retained = insert_acc(&mut tx, "Retained Earnings", Some("3200"), "equity", Some(equity_root), false, user_id).await?;
+    let opening_equity = insert_acc(&mut *tx, "Opening Balances", Some("3100"), "equity", Some(equity_root), false, user_id).await?;
+    let _retained = insert_acc(&mut *tx, "Retained Earnings", Some("3200"), "equity", Some(equity_root), false, user_id).await?;
 
     // 5. Income Subaccounts
-    let salary = insert_acc(&mut tx, "Salary & Wages", Some("4100"), "income", Some(income_root), false, user_id).await?;
-    let consulting = insert_acc(&mut tx, "Freelance Consulting", Some("4200"), "income", Some(income_root), false, user_id).await?;
-    let interest = insert_acc(&mut tx, "Interest Income", Some("4300"), "income", Some(income_root), false, user_id).await?;
+    let salary = insert_acc(&mut *tx, "Salary & Wages", Some("4100"), "income", Some(income_root), false, user_id).await?;
+    let consulting = insert_acc(&mut *tx, "Freelance Consulting", Some("4200"), "income", Some(income_root), false, user_id).await?;
+    let interest = insert_acc(&mut *tx, "Interest Income", Some("4300"), "income", Some(income_root), false, user_id).await?;
 
     // 6. Expenses Subaccounts
-    let housing = insert_acc(&mut tx, "Housing", Some("5100"), "expense", Some(expense_root), true, user_id).await?;
-    let rent = insert_acc(&mut tx, "Rent", Some("5110"), "expense", Some(housing), false, user_id).await?;
-    let utilities = insert_acc(&mut tx, "Utilities (Electric/Water)", Some("5120"), "expense", Some(housing), false, user_id).await?;
-    let internet = insert_acc(&mut tx, "High-Speed Internet", Some("5130"), "expense", Some(housing), false, user_id).await?;
+    let housing = insert_acc(&mut *tx, "Housing", Some("5100"), "expense", Some(expense_root), true, user_id).await?;
+    let rent = insert_acc(&mut *tx, "Rent", Some("5110"), "expense", Some(housing), false, user_id).await?;
+    let utilities = insert_acc(&mut *tx, "Utilities (Electric/Water)", Some("5120"), "expense", Some(housing), false, user_id).await?;
+    let internet = insert_acc(&mut *tx, "High-Speed Internet", Some("5130"), "expense", Some(housing), false, user_id).await?;
 
-    let food = insert_acc(&mut tx, "Food & Dining", Some("5200"), "expense", Some(expense_root), true, user_id).await?;
-    let groceries = insert_acc(&mut tx, "Groceries", Some("5210"), "expense", Some(food), false, user_id).await?;
-    let dining = insert_acc(&mut tx, "Restaurants & Dining Out", Some("5220"), "expense", Some(food), false, user_id).await?;
+    let food = insert_acc(&mut *tx, "Food & Dining", Some("5200"), "expense", Some(expense_root), true, user_id).await?;
+    let groceries = insert_acc(&mut *tx, "Groceries", Some("5210"), "expense", Some(food), false, user_id).await?;
+    let dining = insert_acc(&mut *tx, "Restaurants & Dining Out", Some("5220"), "expense", Some(food), false, user_id).await?;
 
-    let transport = insert_acc(&mut tx, "Transportation", Some("5300"), "expense", Some(expense_root), true, user_id).await?;
-    let gas = insert_acc(&mut tx, "Gas & Fuel", Some("5310"), "expense", Some(transport), false, user_id).await?;
-    let _transit = insert_acc(&mut tx, "Public Transit", Some("5320"), "expense", Some(transport), false, user_id).await?;
+    let transport = insert_acc(&mut *tx, "Transportation", Some("5300"), "expense", Some(expense_root), true, user_id).await?;
+    let gas = insert_acc(&mut *tx, "Gas & Fuel", Some("5310"), "expense", Some(transport), false, user_id).await?;
+    let _transit = insert_acc(&mut *tx, "Public Transit", Some("5320"), "expense", Some(transport), false, user_id).await?;
 
-    let taxes = insert_acc(&mut tx, "Taxes", Some("5400"), "expense", Some(expense_root), true, user_id).await?;
-    let fed_tax = insert_acc(&mut tx, "Federal Income Tax", Some("5410"), "expense", Some(taxes), false, user_id).await?;
-    let ss_tax = insert_acc(&mut tx, "Social Security & Medicare", Some("5420"), "expense", Some(taxes), false, user_id).await?;
+    let taxes = insert_acc(&mut *tx, "Taxes", Some("5400"), "expense", Some(expense_root), true, user_id).await?;
+    let fed_tax = insert_acc(&mut *tx, "Federal Income Tax", Some("5410"), "expense", Some(taxes), false, user_id).await?;
+    let ss_tax = insert_acc(&mut *tx, "Social Security & Medicare", Some("5420"), "expense", Some(taxes), false, user_id).await?;
 
-    let entertainment = insert_acc(&mut tx, "Entertainment & Media", Some("5500"), "expense", Some(expense_root), false, user_id).await?;
-    let healthcare = insert_acc(&mut tx, "Healthcare & Pharmacy", Some("5600"), "expense", Some(expense_root), false, user_id).await?;
+    let entertainment = insert_acc(&mut *tx, "Entertainment & Media", Some("5500"), "expense", Some(expense_root), false, user_id).await?;
+    let healthcare = insert_acc(&mut *tx, "Healthcare & Pharmacy", Some("5600"), "expense", Some(expense_root), false, user_id).await?;
 
     // Sample Transactions
     // Helper to insert transaction with splits
@@ -247,7 +257,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 1: Opening Balances (Reconciled 'y')
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
         Some("OPEN"),
@@ -263,7 +273,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 2: Bi-weekly Salary 1
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 5).unwrap(),
         Some("DIR-DEP"),
@@ -279,7 +289,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 3: Rent
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 6).unwrap(),
         Some("101"),
@@ -293,7 +303,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 4: Supermarket
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 8).unwrap(),
         None,
@@ -307,7 +317,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 5: Internet on Visa
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 10).unwrap(),
         Some("AUTO"),
@@ -321,7 +331,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 6: Dining on Visa
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 12).unwrap(),
         None,
@@ -335,7 +345,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 7: Gas in Cash
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 14).unwrap(),
         None,
@@ -349,7 +359,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 8: Freelance Consulting
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
         Some("INV-042"),
@@ -363,7 +373,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 9: Utilities Bill
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 18).unwrap(),
         Some("ELEC"),
@@ -377,7 +387,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 10: Bi-weekly Salary 2
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 19).unwrap(),
         Some("DIR-DEP"),
@@ -393,7 +403,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 11: Visa Credit Card Payment
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 20).unwrap(),
         Some("CC-PMT"),
@@ -407,7 +417,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 12: Savings Transfer
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 22).unwrap(),
         Some("XFER"),
@@ -421,7 +431,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 13: Streaming subscriptions on Mastercard
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 24).unwrap(),
         None,
@@ -435,7 +445,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 14: Pharmacy in Cash
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
         None,
@@ -449,7 +459,7 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
 
     // Tx 15: Interest Income on Savings
     insert_tx(
-        &mut tx,
+        &mut *tx,
         user_id,
         NaiveDate::from_ymd_opt(2026, 10, 31).unwrap(),
         Some("INT"),
@@ -461,6 +471,124 @@ pub async fn run_seed(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
         ],
     ).await?;
 
-    tx.commit().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_run_seed_tx_rollback_on_failure() {
+        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://gnucash:gnucash_secret@localhost:5432/gnucash".to_string()
+        });
+        if let Ok(pool) = sqlx::PgPool::connect(&db_url).await {
+            let mut tx = pool.begin().await.expect("begin tx");
+
+            let test_user_id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')"
+            )
+            .bind(test_user_id)
+            .bind(format!("seed_test_{}", test_user_id.simple()))
+            .bind(format!("seed_test_{}@example.com", test_user_id.simple()))
+            .execute(&mut *tx)
+            .await
+            .expect("create test user in tx");
+
+            run_seed_tx(&mut tx, test_user_id).await.expect("seed tx succeeds");
+
+            let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+                .bind(test_user_id)
+                .fetch_one(&mut *tx)
+                .await
+                .expect("fetch account count");
+            assert_eq!(count.0, 37);
+
+            // Rollback transaction to verify nothing persists
+            tx.rollback().await.expect("rollback tx");
+
+            let count_after: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+                .bind(test_user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("fetch account count after rollback");
+            assert_eq!(count_after.0, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reconciled_state_constraint_exists() {
+        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://gnucash:gnucash_secret@localhost:5432/gnucash".to_string()
+        });
+        if let Ok(pool) = sqlx::PgPool::connect(&db_url).await {
+            let exists: (bool,) = sqlx::query_as(
+                "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state')"
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("check pg_constraint");
+            assert!(exists.0, "chk_splits_reconciled_state constraint must exist");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_seed_database_wipe_and_insert_atomic_rollback() {
+        let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://gnucash:gnucash_secret@localhost:5432/gnucash".to_string()
+        });
+        if let Ok(pool) = sqlx::PgPool::connect(&db_url).await {
+            let test_user_id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')"
+            )
+            .bind(test_user_id)
+            .bind(format!("seed_atomic_{}", test_user_id.simple()))
+            .bind(format!("seed_atomic_{}@example.com", test_user_id.simple()))
+            .execute(&pool)
+            .await
+            .expect("create test user");
+
+            // Create initial account for user
+            let acc_id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO accounts (id, name, account_type, currency, placeholder, user_id) VALUES ($1, 'Pre-seed Checking', 'bank', 'INR', false, $2)"
+            )
+            .bind(acc_id)
+            .bind(test_user_id)
+            .execute(&pool)
+            .await
+            .expect("create pre-seed account");
+
+            // Simulate seed_database failure: start tx, wipe accounts, error before commit
+            let mut tx = pool.begin().await.expect("begin tx");
+            sqlx::query("DELETE FROM transactions WHERE user_id = $1")
+                .bind(test_user_id)
+                .execute(&mut *tx)
+                .await
+                .expect("wipe txns");
+            sqlx::query("DELETE FROM accounts WHERE user_id = $1")
+                .bind(test_user_id)
+                .execute(&mut *tx)
+                .await
+                .expect("wipe accounts");
+
+            // Rollback (simulating failed sample insert)
+            tx.rollback().await.expect("rollback simulated failure");
+
+            // Verify pre-seed account is STILL present!
+            let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+                .bind(test_user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("fetch account count");
+            assert_eq!(count.0, 1, "Pre-existing account must be preserved on rollback");
+
+            // Clean up test user
+            let _ = sqlx::query("DELETE FROM accounts WHERE user_id = $1").bind(test_user_id).execute(&pool).await;
+            let _ = sqlx::query("DELETE FROM users WHERE id = $1").bind(test_user_id).execute(&pool).await;
+        }
+    }
 }
