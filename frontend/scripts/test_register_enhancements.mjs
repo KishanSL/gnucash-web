@@ -223,21 +223,23 @@ async function run() {
       return null;
     });
 
-    if (selectedExpense) {
-      console.log(`Switched to expense account: "${selectedExpense}"`);
-      await new Promise((r) => setTimeout(r, 1500));
-      const headers = await page.evaluate(() => {
-        const ths = Array.from(document.querySelectorAll('thead th')).map((th) => th.innerText.trim());
-        return ths;
-      });
-      console.log('Register headers for expense account:', headers);
-      const hasDebitHeader = headers.some((h) => h.includes('Expense / Increase'));
-      const hasCreditHeader = headers.some((h) => h.includes('Rebate / Decrease'));
-      if (!hasDebitHeader || !hasCreditHeader) {
-        throw new Error(`Expense register headers mismatch: expected "Expense / Increase" and "Rebate / Decrease", found: ${JSON.stringify(headers)}`);
-      }
-      console.log('✅ Expense register headers verified: "Expense / Increase" & "Rebate / Decrease"');
+    if (!selectedExpense) {
+      throw new Error('Verification failed: No expense account found in register switcher to verify expense register headers (ACC-7, ACC-3, REG-2)');
     }
+
+    console.log(`Switched to expense account: "${selectedExpense}"`);
+    await new Promise((r) => setTimeout(r, 1500));
+    const headers = await page.evaluate(() => {
+      const ths = Array.from(document.querySelectorAll('thead th')).map((th) => th.innerText.trim());
+      return ths;
+    });
+    console.log('Register headers for expense account:', headers);
+    const hasDebitHeader = headers.some((h) => h.includes('Expense / Increase'));
+    const hasCreditHeader = headers.some((h) => h.includes('Rebate / Decrease'));
+    if (!hasDebitHeader || !hasCreditHeader) {
+      throw new Error(`Expense register headers mismatch: expected "Expense / Increase" and "Rebate / Decrease", found: ${JSON.stringify(headers)}`);
+    }
+    console.log('✅ Expense register headers verified: "Expense / Increase" & "Rebate / Decrease"');
 
     // 6. Mobile Viewport (375x667)
     console.log('6. Testing mobile responsive view (375x667)...');

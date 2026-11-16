@@ -953,6 +953,12 @@ pub async fn save_gnucash_data_to_db(
     mut raw_splits: Vec<RawSplit>,
     format_desc: &str,
 ) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
+    // Record all account names (including ROOT accounts) for error reporting (IMP-11)
+    let initial_account_names: HashMap<String, String> = raw_accounts
+        .iter()
+        .map(|a| (a.guid.clone(), a.name.clone()))
+        .collect();
+
     // 1. Clean up parent_guid if parent is ROOT account
     let root_guids: HashSet<String> = raw_accounts
         .iter()
@@ -1111,23 +1117,56 @@ pub async fn save_gnucash_data_to_db(
     // Fast lookup for transaction metadata during error reporting
     let tx_by_guid: HashMap<String, &RawTransaction> = raw_transactions.iter().map(|t| (t.guid.clone(), t)).collect();
 
+    // Helper to format all accounts in a transaction for error messages (IMP-11)
+    let get_tx_all_accounts = |tx_guid: &str| -> String {
+        let mut acc_names = Vec::new();
+        let mut seen = HashSet::new();
+        for sp in &raw_splits {
+            if sp.tx_guid == tx_guid {
+                let name = if let Some(acc) = acc_by_guid.get(&sp.account_guid) {
+                    build_full_account_name(&acc.guid, &acc_by_guid)
+                } else if let Some(raw_name) = initial_account_names.get(&sp.account_guid) {
+                    if !raw_name.trim().is_empty() {
+                        raw_name.clone()
+                    } else {
+                        sp.account_guid.clone()
+                    }
+                } else {
+                    sp.account_guid.clone()
+                };
+                if seen.insert(name.clone()) {
+                    acc_names.push(name);
+                }
+            }
+        }
+        if acc_names.is_empty() {
+            "none".to_string()
+        } else {
+            acc_names.join(", ")
+        }
+    };
+
     // Issue #39 (ACC-2, IMP-4, IMP-10, IMP-11):
     // Pre-validate all splits: every split MUST reference an imported, non-root account and a known transaction.
     // Splits on the root account or missing accounts must reject the import immediately with 400.
     for s in &raw_splits {
         if !acc_by_guid.contains_key(&s.account_guid) {
-            let (date_str, desc_str) = if let Some(tx) = tx_by_guid.get(&s.tx_guid) {
-                (tx.post_date.to_string(), tx_desc_preview(&tx.description))
+            let (date_str, desc_str, accounts_str) = if let Some(tx) = tx_by_guid.get(&s.tx_guid) {
+                (
+                    tx.post_date.to_string(),
+                    tx_desc_preview(&tx.description),
+                    get_tx_all_accounts(&tx.guid),
+                )
             } else {
-                ("unknown".to_string(), "unknown".to_string())
+                ("unknown".to_string(), "unknown".to_string(), "unknown".to_string())
             };
 
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(json!({
                     "error": format!(
-                        "Import error in transaction (date: {}, description: '{}'): split references unknown or dropped account GUID '{}' (IMP-11, ACC-2, IMP-4)",
-                        date_str, desc_str, s.account_guid
+                        "Import error in transaction (date: {}, description: '{}', accounts: [{}]): split references unknown or dropped account GUID '{}' (IMP-11, ACC-2, IMP-4)",
+                        date_str, desc_str, accounts_str, s.account_guid
                     )
                 })),
             ));

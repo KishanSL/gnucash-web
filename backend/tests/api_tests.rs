@@ -3666,6 +3666,7 @@ async fn test_issue_39_reject_orphan_and_root_splits() {
     assert!(err_msg1.contains("root1"), "Error must name root account GUID: {}", err_msg1);
     assert!(err_msg1.contains("Root Split Transaction"), "Error must name tx description: {}", err_msg1);
     assert!(err_msg1.contains("2026-11-02"), "Error must name post date: {}", err_msg1);
+    assert!(err_msg1.contains("accounts: [") && (err_msg1.contains("Assets:Checking") || err_msg1.contains("Checking")), "Error must name the transaction's other accounts (IMP-11): {}", err_msg1);
 
     // 2. Transaction split references unknown account -> must return HTTP 400 (ACC-2, IMP-4, IMP-10, IMP-11)
     let temp_db2 = tempfile::NamedTempFile::new().unwrap();
@@ -3694,6 +3695,7 @@ async fn test_issue_39_reject_orphan_and_root_splits() {
 
     assert!(err_msg2.contains("missing_acc_guid"), "Error must name missing account GUID: {}", err_msg2);
     assert!(err_msg2.contains("Orphan Split Transaction"), "Error must name tx description: {}", err_msg2);
+    assert!(err_msg2.contains("accounts: [") && (err_msg2.contains("Assets:Checking") || err_msg2.contains("Checking")), "Error must name the transaction's other accounts (IMP-11): {}", err_msg2);
 
     // 3. Transactions with fewer than 2 splits are skipped, transactions with >=2 splits are imported (IMP-10, ACC-1)
     let temp_db3 = tempfile::NamedTempFile::new().unwrap();
@@ -4238,8 +4240,8 @@ async fn test_issue_31_seed_database_atomic_rollback() {
     sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, -100.00, -100.00, 'n')")
         .bind(uuid::Uuid::new_v4()).bind(tx_id).bind(acc_id).execute(&pool).await.unwrap();
 
-    // Trigger failure in seed_database after delete using test hook
-    std::env::set_var("FAIL_SEED_TEST_HOOK", "1");
+    // Trigger failure in seed_database after delete using test hook targeted at this user ID (DATA-2)
+    std::env::set_var("FAIL_SEED_TEST_USER_ID", user_id.to_string());
 
     let app = create_app(pool.clone());
     let resp = app.oneshot(
@@ -4251,7 +4253,7 @@ async fn test_issue_31_seed_database_atomic_rollback() {
             .unwrap()
     ).await.unwrap();
 
-    std::env::remove_var("FAIL_SEED_TEST_HOOK");
+    std::env::remove_var("FAIL_SEED_TEST_USER_ID");
 
     assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
