@@ -258,7 +258,7 @@ pub async fn get_current_user(
 #[derive(Debug, serde::Deserialize)]
 pub struct ResetPasswordRequest {
     pub username: String,
-    pub new_password: Option<String>, // Deprecated / ignored; temporary password is generated on server
+    pub new_password: Option<String>,
 }
 
 pub fn write_reset_notice(content: &str) {
@@ -402,8 +402,22 @@ pub async fn reset_password(
 
     // 2. Generate secure temporary password or use admin-provided password
     let (target_password, is_temporary) = match &payload.new_password {
-        Some(p) if p.trim().len() >= 6 => (p.trim().to_string(), false),
-        _ => {
+        Some(p) => {
+            if p.len() < 6 {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "Password must be at least 6 characters long" })),
+                ));
+            }
+            if p.len() > 72 {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "Password cannot exceed 72 characters" })),
+                ));
+            }
+            (p.clone(), false)
+        }
+        None => {
             let random_part1 = &Uuid::new_v4().simple().to_string()[..8];
             let random_part2 = &Uuid::new_v4().simple().to_string()[..8];
             (format!("TempPass-{}-{}", random_part1, random_part2), true)
