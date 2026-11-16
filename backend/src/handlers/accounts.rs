@@ -17,7 +17,7 @@ use crate::models::{
 };
 
 const VALID_ACCOUNT_TYPES: &[&str] = &[
-    "bank", "cash", "asset", "credit", "liability", "equity", "income", "expense", "receivable", "payable", "root"
+    "bank", "cash", "asset", "credit", "liability", "equity", "income", "expense", "receivable", "payable"
 ];
 
 pub fn account_type_group(account_type: &str) -> Option<&'static str> {
@@ -27,7 +27,6 @@ pub fn account_type_group(account_type: &str) -> Option<&'static str> {
         }
         "income" | "expense" => Some("income_expense"),
         "equity" => Some("equity"),
-        "root" => Some("root"),
         _ => None,
     }
 }
@@ -36,7 +35,6 @@ pub fn are_account_types_compatible(type_a: &str, type_b: &str) -> bool {
     let g_a = account_type_group(type_a);
     let g_b = account_type_group(type_b);
     match (g_a, g_b) {
-        (Some("root"), _) | (_, Some("root")) => true,
         (Some(a), Some(b)) => a == b,
         _ => false,
     }
@@ -205,10 +203,10 @@ pub async fn create_account(
     }
 
     let currency = payload.currency.unwrap_or_else(|| "INR".to_string()).trim().to_uppercase();
-    if currency.len() != 3 {
+    if currency.is_empty() || currency.len() > 64 {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Currency must be a valid 3-letter code (e.g. INR, USD)" })),
+            Json(json!({ "error": "Currency code must be between 1 and 64 characters" })),
         ));
     }
 
@@ -740,4 +738,46 @@ fn build_tree_structure(accounts: Vec<Account>) -> Vec<AccountTreeNode> {
     }
 
     roots
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_account_types_does_not_contain_root() {
+        assert!(!VALID_ACCOUNT_TYPES.contains(&"root"));
+    }
+
+    #[test]
+    fn test_account_type_group_rejects_root() {
+        assert_eq!(account_type_group("root"), None);
+        assert_eq!(account_type_group("ROOT"), None);
+    }
+
+    #[test]
+    fn test_are_account_types_compatible_rejects_root() {
+        assert!(!are_account_types_compatible("root", "asset"));
+        assert!(!are_account_types_compatible("asset", "root"));
+        assert!(!are_account_types_compatible("root", "root"));
+    }
+
+    #[test]
+    fn test_are_account_types_compatible_groups() {
+        // Balance sheet accounts compatible with each other
+        assert!(are_account_types_compatible("bank", "asset"));
+        assert!(are_account_types_compatible("asset", "liability"));
+        assert!(are_account_types_compatible("credit", "payable"));
+
+        // Income/expense compatible with each other
+        assert!(are_account_types_compatible("income", "expense"));
+
+        // Equity only compatible with equity
+        assert!(are_account_types_compatible("equity", "equity"));
+
+        // Incompatible across groups
+        assert!(!are_account_types_compatible("asset", "expense"));
+        assert!(!are_account_types_compatible("income", "liability"));
+        assert!(!are_account_types_compatible("equity", "bank"));
+    }
 }

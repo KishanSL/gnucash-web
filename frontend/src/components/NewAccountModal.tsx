@@ -20,12 +20,11 @@ const isTypeCompatible = (typeA: string, typeB: string): boolean => {
     if (['asset', 'bank', 'cash', 'receivable', 'credit', 'liability', 'payable'].includes(lower)) return 'balance_sheet';
     if (['income', 'expense'].includes(lower)) return 'income_expense';
     if (lower === 'equity') return 'equity';
-    if (lower === 'root') return 'root';
     return lower;
   };
   const gA = getGroup(typeA);
   const gB = getGroup(typeB);
-  return gA === 'root' || gB === 'root' || gA === gB;
+  return gA === gB;
 };
 
 export const NewAccountModal: React.FC<NewAccountModalProps> = ({
