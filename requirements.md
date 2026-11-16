@@ -84,8 +84,9 @@ Requirement IDs (e.g. `INV-2`) are stable. Reference them in issues, commits and
 
 ### Account types and hierarchy
 - **ACC-9** Valid account types: `bank`, `cash`, `asset`, `credit`, `liability`, `equity`,
-  `income`, `expense`, `receivable`, `payable`, `root`. Any other type is rejected (`400`) on
-  create and update.
+  `income`, `expense`, `receivable`, `payable`. Any other type, including `root`, is rejected
+  (`400`) on create and update. GnuCash's hidden root account exists only in GnuCash files: import
+  drops it (IMP-5) and export creates it, so the app never stores a `root` account.
 - **ACC-10** Accounts form a tree. An account cannot be its own parent or the descendant of itself,
   and cycles must never be stored. Setting `parent_id` to `null` moves an account to the top level.
 - **ACC-11** Account name 1–255 characters. Currency/commodity code 1–64 characters.
