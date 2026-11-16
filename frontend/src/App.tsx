@@ -421,7 +421,6 @@ export const App: React.FC = () => {
                     onEditTransaction={handleOpenEditTransaction}
                     onToggleHideAccount={handleToggleHideAccount}
                     onCreateTransaction={handleCreateTransaction}
-                    transactions={transactions}
                   />
                 ) : (
                   <div className="py-16 text-center text-slate-400 bg-white rounded-xl border border-slate-200">

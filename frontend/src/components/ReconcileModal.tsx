@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   CheckCircle2,
-  AlertCircle,
   ArrowDownLeft,
   ArrowUpRight,
   Sparkles,
@@ -38,7 +37,6 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
   const [reconcileData, setReconcileData] = useState<ReconcileData | null>(null);
   const [selectedSplitIds, setSelectedSplitIds] = useState<Set<string>>(new Set());
   const [mobileTab, setMobileTab] = useState<'deposits' | 'withdrawals'>('deposits');
-  const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -46,7 +44,6 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
   const loadData = async (accountId: string, date: string) => {
     if (!accountId) return;
     try {
-      setLoading(true);
       setMessage(null);
       const data = await fetchReconcileInfo(accountId, date);
       setReconcileData(data);
@@ -64,8 +61,6 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
       setSelectedSplitIds(preSelected);
     } catch (err: any) {
       console.error(err);
-    } finally {
-      setLoading(false);
     }
   };
 

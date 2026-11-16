@@ -47,12 +47,43 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
   onToggleHideAccount,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+
+  // Helper to parse stored collapsed state (supporting both array of keys and map of booleans)
+  const parseCollapsedState = (raw: string | null): Record<string, boolean> | null => {
+    if (!raw) return null;
     try {
-      const savedMap = localStorage.getItem('gnucash_accounts_collapsed_map');
-      if (savedMap) return JSON.parse(savedMap);
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        if (parsed.length === 0) return {};
+        const map: Record<string, boolean> = {};
+        parsed.forEach((k: string) => {
+          if (typeof k === 'string') map[k] = true;
+        });
+        return map;
+      }
+      if (typeof parsed === 'object' && parsed !== null) {
+        return parsed;
+      }
     } catch (e) {}
-    return {};
+    return null;
+  };
+
+  const persistCollapsedState = (map: Record<string, boolean>) => {
+    const collapsedKeys = Object.keys(map).filter((k) => !!map[k]);
+    localStorage.setItem('gnucash_accounts_collapsed_keys', JSON.stringify(collapsedKeys));
+    localStorage.setItem('gnucash_accounts_collapsed_map', JSON.stringify(map));
+  };
+
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    const fromKeys = parseCollapsedState(localStorage.getItem('gnucash_accounts_collapsed_keys'));
+    if (fromKeys && Object.keys(fromKeys).length > 0) {
+      return fromKeys;
+    }
+    const fromMap = parseCollapsedState(localStorage.getItem('gnucash_accounts_collapsed_map'));
+    if (fromMap && Object.keys(fromMap).length > 0) {
+      return fromMap;
+    }
+    return fromKeys || fromMap || {};
   });
   const [hideSubaccounts, setHideSubaccounts] = useState<boolean>(() => {
     return localStorage.getItem('gnucash_accounts_hide_subaccounts') === 'true';
@@ -70,7 +101,7 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
   const toggleCollapse = (id: string) => {
     setCollapsed((prev) => {
       const next = { ...prev, [id]: !prev[id] };
-      localStorage.setItem('gnucash_accounts_collapsed_map', JSON.stringify(next));
+      persistCollapsedState(next);
       return next;
     });
   };
@@ -96,7 +127,7 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
         newCollapsed[id] = true;
       });
       setCollapsed(newCollapsed);
-      localStorage.setItem('gnucash_accounts_collapsed_map', JSON.stringify(newCollapsed));
+      persistCollapsedState(newCollapsed);
     }
   }, [tree, hideSubaccounts]);
 
@@ -113,7 +144,7 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
       setCollapsed({});
       setHideSubaccounts(false);
       localStorage.setItem('gnucash_accounts_hide_subaccounts', 'false');
-      localStorage.setItem('gnucash_accounts_collapsed_map', JSON.stringify({}));
+      persistCollapsedState({});
     } else {
       // Hide all sub-accounts: collapse tree so only the first level is showing
       const parentIds = getAllParentIds(tree);
@@ -124,7 +155,7 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
       setCollapsed(newCollapsed);
       setHideSubaccounts(true);
       localStorage.setItem('gnucash_accounts_hide_subaccounts', 'true');
-      localStorage.setItem('gnucash_accounts_collapsed_map', JSON.stringify(newCollapsed));
+      persistCollapsedState(newCollapsed);
     }
   };
 

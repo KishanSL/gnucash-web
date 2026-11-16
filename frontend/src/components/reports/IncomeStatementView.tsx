@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { TrendingUp, Calendar, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { TrendingUp, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { IncomeStatementReport } from '../../types';
 import { fetchIncomeStatement, formatCurrency } from '../../api';
 

@@ -22,18 +22,6 @@ export interface SignupPayload {
   password: string;
 }
 
-export type AccountType =
-  | 'asset'
-  | 'bank'
-  | 'cash'
-  | 'receivable'
-  | 'liability'
-  | 'credit'
-  | 'payable'
-  | 'equity'
-  | 'income'
-  | 'expense';
-
 export interface Account {
   id: string;
   name: string;

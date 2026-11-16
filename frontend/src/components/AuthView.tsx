@@ -9,7 +9,6 @@ import {
   CheckCircle2,
   Eye,
   EyeOff,
-  RotateCcw,
   KeyRound,
   Coins,
   Scale,
@@ -131,7 +130,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between selection:bg-emerald-500 selection:text-white relative">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between relative">
       {/* Ambient background glow for desktop polish */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
         <div className="absolute -top-40 -left-40 w-96 h-96 bg-emerald-600/10 rounded-full blur-3xl" />

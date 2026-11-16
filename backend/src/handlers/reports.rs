@@ -79,9 +79,7 @@ pub async fn get_balance_sheet(
 
     // 3. Build parent map
     let mut parent_to_children: HashMap<Option<Uuid>, Vec<Uuid>> = HashMap::new();
-    let mut account_map: HashMap<Uuid, &AccountRow> = HashMap::new();
     for acc in &accounts {
-        account_map.insert(acc.id, acc);
         parent_to_children.entry(acc.parent_id).or_default().push(acc.id);
     }
 

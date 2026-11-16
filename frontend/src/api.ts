@@ -25,7 +25,7 @@ export function getStoredToken(): string | null {
   return localStorage.getItem('gnucash_token');
 }
 
-export function setStoredToken(token: string | null) {
+function setStoredToken(token: string | null) {
   if (token) {
     localStorage.setItem('gnucash_token', token);
   } else {
@@ -43,7 +43,7 @@ export function getStoredUser(): User | null {
   }
 }
 
-export function setStoredUser(user: User | null) {
+function setStoredUser(user: User | null) {
   if (user) {
     localStorage.setItem('gnucash_user', JSON.stringify(user));
   } else {
@@ -51,7 +51,7 @@ export function setStoredUser(user: User | null) {
   }
 }
 
-export async function fetchWithAuth(input: string, init?: RequestInit): Promise<Response> {
+async function fetchWithAuth(input: string, init?: RequestInit): Promise<Response> {
   const token = getStoredToken();
   const headers = new Headers(init?.headers || {});
 
@@ -102,19 +102,6 @@ export async function login(payload: LoginPayload): Promise<AuthResponse> {
   setStoredToken(data.token);
   setStoredUser(data.user);
   return data;
-}
-
-export async function resetPassword(payload: { username: string; new_password?: string }): Promise<{ success: boolean; message: string }> {
-  const res = await fetch(`${API_BASE}/auth/reset-password`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Failed to reset password');
-  }
-  return res.json();
 }
 
 export async function changePassword(payload: {

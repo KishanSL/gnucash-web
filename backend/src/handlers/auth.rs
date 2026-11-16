@@ -261,7 +261,7 @@ pub struct ResetPasswordRequest {
     pub new_password: Option<String>, // Deprecated / ignored; temporary password is generated on server
 }
 
-pub fn write_reset_notice(content: &str, _temp_password: &str) {
+pub fn write_reset_notice(content: &str) {
     let mut written_paths = Vec::new();
 
     // 1. Env var explicit path if configured
@@ -451,7 +451,7 @@ Next Steps:
             notice_title, timestamp, user.username, user.email, pass_label, target_password
         );
 
-        write_reset_notice(&notice_content, &target_password);
+        write_reset_notice(&notice_content);
     }
 
     Ok(Json(json!({

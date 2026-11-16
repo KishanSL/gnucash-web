@@ -4,7 +4,11 @@
 
 @layer base {
   body {
-    @apply bg-slate-50 text-slate-800 text-sm selection:bg-emerald-500 selection:text-white;
+    @apply bg-slate-50 text-slate-800 text-sm;
+  }
+  ::selection {
+    background-color: #10b981;
+    color: #ffffff;
   }
 
   /* Ensure inputs, selects, and textareas default to high-contrast dark text */

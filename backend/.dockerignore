@@ -1,3 +1,6 @@
 target
 .git
 .env
+tests/
+security/
+*.txt

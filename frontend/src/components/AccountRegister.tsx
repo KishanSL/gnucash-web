@@ -13,13 +13,11 @@ import {
   EyeOff,
   Check,
   X,
-  Sparkles,
-  History,
   AlertCircle,
   Plus,
   Pencil,
 } from 'lucide-react';
-import { Account, CreateTransactionPayload, RegisterEntry, Transaction } from '../types';
+import { Account, CreateTransactionPayload, RegisterEntry } from '../types';
 import { formatCurrency } from '../api';
 import { AccountAutocomplete } from './AccountAutocomplete';
 
@@ -35,7 +33,6 @@ interface AccountRegisterProps {
   onEditTransaction?: (txId: string) => void;
   onToggleHideAccount?: (acc: Account) => void;
   onCreateTransaction?: (payload: CreateTransactionPayload) => Promise<void>;
-  transactions?: Transaction[];
 }
 
 export const AccountRegister: React.FC<AccountRegisterProps> = ({
@@ -50,7 +47,6 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
   onEditTransaction,
   onToggleHideAccount,
   onCreateTransaction,
-  transactions = [],
 }) => {
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -125,7 +121,6 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
   const [isPayeeDropdownOpen, setIsPayeeDropdownOpen] = useState(false);
   const [payeeHighlightIndex, setPayeeHighlightIndex] = useState(0);
   const payeeRef = useRef<HTMLDivElement>(null);
-  const payeeListRef = useRef<HTMLUListElement>(null);
 
   // Bottom scroll refs for auto-scrolling to the end
   const tableBottomRef = useRef<HTMLTableRowElement | null>(null);
@@ -263,7 +258,6 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
 
     const debitNum = parseFloat(newDebit) || 0;
     const creditNum = parseFloat(newCredit) || 0;
-    console.log('handleSaveNewRow called with:', { debitNum, creditNum, newDebit, newCredit, newTransferAccountId });
 
     if (debitNum <= 0 && creditNum <= 0) {
       setNewRowError(`Please enter an amount in either ${debitHeader} or ${creditHeader}`);
@@ -300,13 +294,11 @@ export const AccountRegister: React.FC<AccountRegisterProps> = ({
         },
       ],
     };
-    console.log('Submitting payload:', payload);
 
     try {
       setIsSubmittingNew(true);
       setNewRowError(null);
       await onCreateTransaction(payload);
-      console.log('Transaction successfully created!');
       handleResetNewRow();
     } catch (err: any) {
       console.error('Failed to create transaction:', err);
