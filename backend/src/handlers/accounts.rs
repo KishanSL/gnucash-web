@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
+use crate::handlers::internal_error;
 use crate::models::{
     calculate_display_balance, Account, AccountRow, AccountTreeNode, CreateAccountRequest,
     UpdateAccountRequest,
@@ -40,6 +41,28 @@ pub fn are_account_types_compatible(type_a: &str, type_b: &str) -> bool {
     }
 }
 
+/// Validates and trims account code (SEC-13, Issue #28).
+/// Returns 400 Bad Request if code exceeds 50 characters.
+pub fn sanitize_account_code(code: Option<&str>) -> Result<Option<String>, (StatusCode, Json<serde_json::Value>)> {
+    match code {
+        Some(c) => {
+            let trimmed = c.trim();
+            if trimmed.chars().count() > 50 {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "Account code cannot exceed 50 characters" })),
+                ));
+            }
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+        None => Ok(None),
+    }
+}
+
 pub async fn list_accounts(
     auth: AuthUser,
     State(pool): State<PgPool>,
@@ -51,12 +74,7 @@ pub async fn list_accounts(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to list accounts", e))?;
 
     // Fetch direct balances for user's accounts
     let balances: Vec<(Uuid, Decimal)> = sqlx::query_as::<_, (Uuid, Decimal)>(
@@ -69,12 +87,7 @@ pub async fn list_accounts(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to fetch account balances: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch account balances", e))?;
 
     let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().collect();
     let accounts = build_account_list(rows, &balance_map);
@@ -93,12 +106,7 @@ pub async fn get_account_tree(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch accounts for tree", e))?;
 
     let balances: Vec<(Uuid, Decimal)> = sqlx::query_as::<_, (Uuid, Decimal)>(
         r#"SELECT s.account_id, COALESCE(SUM(s.amount), 0) as balance
@@ -110,12 +118,7 @@ pub async fn get_account_tree(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to fetch account tree balances: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch account tree balances", e))?;
 
     let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().collect();
     let accounts = build_account_list(rows, &balance_map);
@@ -137,12 +140,7 @@ pub async fn get_account(
     .bind(auth.id)
     .fetch_optional(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?
+    .map_err(|e| internal_error("Failed to get account", e))?
     .ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -210,6 +208,8 @@ pub async fn create_account(
         ));
     }
 
+    let code = sanitize_account_code(payload.code.as_deref())?;
+
     // If parent_id is specified, verify it belongs to this user and has compatible type (ACC-12)
     if let Some(pid) = payload.parent_id {
         let parent = sqlx::query_as::<_, (String,)>(
@@ -219,12 +219,7 @@ pub async fn create_account(
         .bind(auth.id)
         .fetch_optional(&pool)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Database error: {}", e) })),
-            )
-        })?;
+        .map_err(|e| internal_error("Failed to query parent account", e))?;
 
         let parent_type = match parent {
             Some((pt,)) => pt,
@@ -258,7 +253,7 @@ pub async fn create_account(
            RETURNING id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at"#
     )
     .bind(name)
-    .bind(payload.code.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
+    .bind(code)
     .bind(&acc_type)
     .bind(payload.parent_id)
     .bind(currency)
@@ -268,12 +263,7 @@ pub async fn create_account(
     .bind(auth.id)
     .fetch_one(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to create account: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to create account", e))?;
 
     let account = Account {
         id: row.id,
@@ -309,12 +299,7 @@ pub async fn update_account(
     .bind(auth.id)
     .fetch_optional(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?
+    .map_err(|e| internal_error("Failed to fetch account for update", e))?
     .ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -337,7 +322,7 @@ pub async fn update_account(
     };
 
     let code = match payload.code {
-        Some(c) => c.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+        Some(ref c) => sanitize_account_code(c.as_deref())?,
         None => existing.code,
     };
 
@@ -398,12 +383,7 @@ pub async fn update_account(
         .bind(auth.id)
         .fetch_optional(&pool)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Database error: {}", e) })),
-            )
-        })?;
+        .map_err(|e| internal_error("Failed to query parent account for update", e))?;
 
         let parent_type = match parent {
             Some((pt,)) => pt,
@@ -459,12 +439,7 @@ pub async fn update_account(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to query child accounts for update", e))?;
 
     for ct in child_types {
         if !are_account_types_compatible(&account_type, &ct) {
@@ -499,12 +474,7 @@ pub async fn update_account(
     .bind(auth.id)
     .fetch_one(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to update account: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to update account", e))?;
 
     let balance_row: Option<(Decimal,)> = sqlx::query_as(
         "SELECT COALESCE(SUM(amount), 0) FROM splits WHERE account_id = $1",
@@ -567,12 +537,7 @@ pub async fn delete_account(
     .bind(auth.id)
     .fetch_one(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to count child accounts for delete", e))?;
 
     if child_count.0 > 0 {
         return Err((
@@ -590,12 +555,7 @@ pub async fn delete_account(
     .bind(id)
     .fetch_one(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to count splits for delete", e))?;
 
     if split_count.0 > 0 {
         return Err((
@@ -611,12 +571,7 @@ pub async fn delete_account(
         .bind(auth.id)
         .execute(&pool)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to delete account: {}", e) })),
-            )
-        })?;
+        .map_err(|e| internal_error("Failed to delete account", e))?;
 
     if deleted.rows_affected() == 0 {
         return Err((
@@ -779,5 +734,25 @@ mod tests {
         assert!(!are_account_types_compatible("asset", "expense"));
         assert!(!are_account_types_compatible("income", "liability"));
         assert!(!are_account_types_compatible("equity", "bank"));
+    }
+
+    #[test]
+    fn test_sanitize_account_code_valid() {
+        assert_eq!(sanitize_account_code(Some("1000")).unwrap(), Some("1000".to_string()));
+        assert_eq!(sanitize_account_code(Some("  1010  ")).unwrap(), Some("1010".to_string()));
+        assert_eq!(sanitize_account_code(Some("")).unwrap(), None);
+        assert_eq!(sanitize_account_code(Some("   ")).unwrap(), None);
+        assert_eq!(sanitize_account_code(None).unwrap(), None);
+    }
+
+    #[test]
+    fn test_sanitize_account_code_boundary_50() {
+        let code_50 = "a".repeat(50);
+        assert_eq!(sanitize_account_code(Some(&code_50)).unwrap(), Some(code_50));
+
+        let code_51 = "a".repeat(51);
+        let err = sanitize_account_code(Some(&code_51)).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(err.1 .0, json!({ "error": "Account code cannot exceed 50 characters" }));
     }
 }

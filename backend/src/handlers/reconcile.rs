@@ -12,6 +12,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
+use crate::handlers::internal_error;
 use crate::models::{
     calculate_display_balance, is_asset_type, is_expense_type, Account, AccountRow,
     FinishReconcileRequest, ReconcileData, ReconcileSplitItem,
@@ -39,12 +40,7 @@ pub async fn get_reconcile_info(
     .bind(auth.id)
     .fetch_optional(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?
+    .map_err(|e| internal_error("Failed to fetch reconcile account", e))?
     .ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -91,12 +87,7 @@ pub async fn get_reconcile_info(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch reconcile account", e))?;
 
     let is_asset = is_asset_type(&acc_row.account_type);
     let is_expense = is_expense_type(&acc_row.account_type);
@@ -198,12 +189,7 @@ pub async fn finish_reconcile(
     .bind(&payload.reconciled_split_ids)
     .execute(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to reconcile splits: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to reconcile splits", e))?;
 
     Ok(Json(json!({
         "message": format!("Successfully reconciled {} splits.", result.rows_affected())

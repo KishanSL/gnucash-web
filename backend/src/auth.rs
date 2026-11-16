@@ -101,7 +101,7 @@ pub fn create_jwt(user_id: Uuid, username: &str, email: &str, token_version: i32
 
     let claims = Claims {
         sub: user_id.to_string(),
-        username: username.to_string(),
+        username: username.to_owned(),
         email: email.to_string(),
         token_version,
         exp: expiration,
@@ -157,9 +157,10 @@ where
         };
 
         let claims = verify_jwt(token).map_err(|e| {
+            tracing::warn!("Invalid or expired token: {}", e);
             (
                 StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": format!("Invalid or expired token: {}", e) })),
+                Json(json!({ "error": "Invalid or expired token" })),
             )
         })?;
 
@@ -178,9 +179,10 @@ where
         .fetch_optional(&pool)
         .await
         .map_err(|e| {
+            tracing::error!("Database error during authentication: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Database error during authentication: {}", e) })),
+                Json(json!({ "error": "Internal server error" })),
             )
         })?
         .ok_or_else(|| {

@@ -7,12 +7,12 @@ use axum::{
 use chrono::{Datelike, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::Deserialize;
-use serde_json::json;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
+use crate::handlers::internal_error;
 use crate::models::{
     calculate_display_balance, is_asset_type, is_equity_type, is_expense_type, is_income_type,
     is_liability_type, AccountRow, BalanceSheetItem, BalanceSheetReport, BalanceSheetSection,
@@ -48,12 +48,7 @@ pub async fn get_balance_sheet(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch balance sheet accounts", e))?;
 
     // 2. Fetch sum of amounts per account up to as_of_date for this user
     let balances: Vec<(Uuid, Decimal)> = sqlx::query_as(
@@ -68,12 +63,7 @@ pub async fn get_balance_sheet(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to fetch balance sheet balances: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch balance sheet balances", e))?;
 
     let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().collect();
 
@@ -239,12 +229,7 @@ pub async fn get_income_statement(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch income statement accounts", e))?;
 
     // Sum splits within date range for user's accounts
     let balances: Vec<(Uuid, Decimal)> = sqlx::query_as(
@@ -260,12 +245,7 @@ pub async fn get_income_statement(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to fetch income statement balances: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch income statement balances", e))?;
 
     let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().collect();
 
@@ -396,12 +376,7 @@ pub async fn get_trial_balance(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch trial balance", e))?;
 
     let mut items = Vec::new();
     let mut total_debit = Decimal::ZERO;

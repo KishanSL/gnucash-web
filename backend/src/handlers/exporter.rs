@@ -8,13 +8,13 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
-use serde_json::json;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
+use crate::handlers::internal_error;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct AccountExportRow {
@@ -158,12 +158,7 @@ pub async fn export_gnucash_sqlite(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to fetch accounts: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch accounts for export", e))?;
 
     // 2. Fetch user transactions
     let transactions = sqlx::query_as::<_, TransactionExportRow>(
@@ -175,12 +170,7 @@ pub async fn export_gnucash_sqlite(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to fetch transactions: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch transactions for export", e))?;
 
     // 3. Fetch user splits
     let splits = sqlx::query_as::<_, SplitExportRow>(
@@ -193,39 +183,19 @@ pub async fn export_gnucash_sqlite(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to fetch splits: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch splits for export", e))?;
 
     // 4. Create SQLite database in temp file via background blocking task (with single transaction)
     let file_bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, (StatusCode, Json<serde_json::Value>)> {
-        let temp_file = NamedTempFile::new().map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Temp file error: {}", e) })),
-            )
-        })?;
+        let temp_file = NamedTempFile::new().map_err(|e| internal_error("Temp file error", e))?;
         let temp_path = temp_file.path().to_path_buf();
 
-        let mut conn = Connection::open(&temp_path).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("SQLite connection failed: {}", e) })),
-            )
-        })?;
+        let mut conn = Connection::open(&temp_path).map_err(|e| internal_error("SQLite connection failed", e))?;
 
         conn.pragma_update(None, "journal_mode", "OFF").ok();
         conn.pragma_update(None, "synchronous", "OFF").ok();
 
-        let sqlite_tx = conn.transaction().map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to start SQLite transaction: {}", e) })),
-            )
-        })?;
+        let sqlite_tx = conn.transaction().map_err(|e| internal_error("Failed to start SQLite transaction", e))?;
 
         // Create standard GnuCash SQLite schema
         sqlite_tx.execute_batch(
@@ -341,12 +311,7 @@ pub async fn export_gnucash_sqlite(
             ('budget_amounts', 1),
             ('schedxactions', 1);
         "#
-    ).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to initialize GnuCash tables: {}", e) })),
-        )
-    })?;
+    ).map_err(|e| internal_error("Failed to initialize GnuCash tables", e))?;
 
     // Generate GUIDs for book and root account
     let book_guid = Uuid::new_v4().to_string().replace('-', "");
@@ -356,24 +321,14 @@ pub async fn export_gnucash_sqlite(
     sqlite_tx.execute(
         "INSERT INTO books (guid, root_account_guid, root_template_guid) VALUES (?1, ?2, ?3)",
         params![book_guid, root_account_guid, root_template_guid],
-    ).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to insert book: {}", e) })),
-        )
-    })?;
+    ).map_err(|e| internal_error("Failed to insert book", e))?;
 
     // Insert SQLite3 ISO dates feature slot on the book
     sqlite_tx.execute(
         "INSERT INTO slots (obj_guid, name, slot_type, string_val)
          VALUES (?1, 'features/ISO-8601 formatted date strings in SQLite3 databases.', 4, 'Use ISO formatted date-time strings in SQLite3 databases (requires at least GnuCash 2.6.20)')",
         params![book_guid],
-    ).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to insert book feature slot: {}", e) })),
-        )
-    })?;
+    ).map_err(|e| internal_error("Failed to insert book feature slot", e))?;
 
     // Collect all currencies and insert commodities (INV-5, EXP-5, Issue #26)
     let (currency_meta, currencies) = resolve_currency_metadata(&accounts);
@@ -402,12 +357,7 @@ pub async fn export_gnucash_sqlite(
                 1,
                 quote_source
             ],
-        ).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to insert commodity: {}", e) })),
-            )
-        })?;
+        ).map_err(|e| internal_error("Failed to insert commodity", e))?;
     }
 
     let book_currency = resolve_book_currency(&accounts, &currency_meta);
@@ -438,12 +388,7 @@ pub async fn export_gnucash_sqlite(
             0,
             0
         ],
-    ).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to insert root account: {}", e) })),
-        )
-    })?;
+    ).map_err(|e| internal_error("Failed to insert root account", e))?;
 
     // Insert Accounts
     let mut account_currency_map: HashMap<Uuid, String> = HashMap::new();
@@ -476,12 +421,7 @@ pub async fn export_gnucash_sqlite(
                 if acc.hidden { 1 } else { 0 },
                 if acc.placeholder { 1 } else { 0 },
             ],
-        ).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to insert account: {}", e) })),
-            )
-        })?;
+        ).map_err(|e| internal_error("Failed to insert account", e))?;
     }
 
     // Map split account currencies to transactions (INV-5, SCOPE-1, Issue #26)
@@ -507,24 +447,14 @@ pub async fn export_gnucash_sqlite(
                 enter_date_str,
                 tx.description,
             ],
-        ).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to insert transaction: {}", e) })),
-            )
-        })?;
+        ).map_err(|e| internal_error("Failed to insert transaction", e))?;
 
         if let Some(ref notes) = tx.notes {
             if !notes.trim().is_empty() {
                 sqlite_tx.execute(
                     "INSERT INTO slots (obj_guid, name, slot_type, string_val) VALUES (?1, 'notes', 4, ?2)",
                     params![tx_guid, notes.trim()],
-                ).map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": format!("Failed to insert transaction notes slot: {}", e) })),
-                    )
-                })?;
+                ).map_err(|e| internal_error("Failed to insert transaction notes slot", e))?;
             }
         }
     }
@@ -569,38 +499,18 @@ pub async fn export_gnucash_sqlite(
                 qty_num,
                 qty_denom,
             ],
-        ).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to insert split: {}", e) })),
-            )
-        })?;
+        ).map_err(|e| internal_error("Failed to insert split", e))?;
     }
 
         // Commit SQLite export transaction
-        sqlite_tx.commit().map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to commit SQLite export: {}", e) })),
-            )
-        })?;
+        sqlite_tx.commit().map_err(|e| internal_error("Failed to commit SQLite export", e))?;
 
         drop(conn);
 
-        std::fs::read(&temp_path).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to read generated SQLite file: {}", e) })),
-            )
-        })
+        std::fs::read(&temp_path).map_err(|e| internal_error("Failed to read generated SQLite file", e))
     })
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Export blocking task failed: {}", e) })),
-        )
-    })??;
+    .map_err(|e| internal_error("Export blocking task failed", e))??;
 
     // Format filename: username_yyyyMMddhhmmss.gnucash
     let timestamp = Utc::now().format("%Y%m%d%H%M%S").to_string();

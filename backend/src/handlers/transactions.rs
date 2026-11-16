@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
+use crate::handlers::internal_error;
 use crate::models::{
     calculate_display_balance, is_asset_type, is_expense_type,
     CreateTransactionRequest, RegisterEntry, SplitRow, SplitWithAccount, TransactionRow,
@@ -88,12 +89,7 @@ pub async fn list_transactions(
     let rows: Vec<TransactionRow> = q
         .fetch_all(&pool)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Database error: {}", e) })),
-            )
-        })?;
+        .map_err(|e| internal_error("Failed to list transactions", e))?;
 
     if rows.is_empty() {
         return Ok(Json(Vec::<TransactionWithSplits>::new()));
@@ -112,12 +108,7 @@ pub async fn list_transactions(
     .bind(&tx_ids)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to fetch splits: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch splits", e))?;
 
     let mut splits_by_tx: HashMap<Uuid, Vec<SplitWithAccount>> = HashMap::new();
     for (id, tx_id, account_id, account_name, account_type, amount, memo, reconciled_state, reconciled_date) in split_rows {
@@ -168,12 +159,7 @@ pub async fn get_transaction(
     .bind(auth.id)
     .fetch_optional(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?
+    .map_err(|e| internal_error("Failed to get transaction", e))?
     .ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -191,12 +177,7 @@ pub async fn get_transaction(
     .bind(id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to fetch splits: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch splits", e))?;
 
     let splits = split_rows
         .into_iter()
@@ -296,12 +277,7 @@ pub async fn create_transaction(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to verify transaction accounts", e))?;
 
     let account_map: HashMap<Uuid, (String, bool)> = accounts
         .into_iter()
@@ -328,12 +304,7 @@ pub async fn create_transaction(
     }
 
     // 4. Execute atomic transaction in PostgreSQL
-    let mut tx = pool.begin().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to start transaction: {}", e) })),
-        )
-    })?;
+    let mut tx = pool.begin().await.map_err(|e| internal_error("Failed to start transaction", e))?;
 
     let tx_row = sqlx::query_as::<_, TransactionRow>(
         r#"INSERT INTO transactions (post_date, num, description, notes, user_id)
@@ -347,12 +318,7 @@ pub async fn create_transaction(
     .bind(auth.id)
     .fetch_one(&mut *tx)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to insert transaction: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to insert transaction", e))?;
 
     let mut created_splits = Vec::new();
     for s in payload.splits {
@@ -372,22 +338,12 @@ pub async fn create_transaction(
         .bind(rec_date)
         .fetch_one(&mut *tx)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to insert split: {}", e) })),
-            )
-        })?;
+        .map_err(|e| internal_error("Failed to insert split", e))?;
 
         created_splits.push(split_row);
     }
 
-    tx.commit().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to commit transaction: {}", e) })),
-        )
-    })?;
+    tx.commit().await.map_err(|e| internal_error("Failed to commit transaction", e))?;
 
     // Format output
     let splits_with_acc = created_splits
@@ -437,12 +393,7 @@ pub async fn update_transaction(
     .bind(auth.id)
     .fetch_optional(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?
+    .map_err(|e| internal_error("Failed to fetch transaction for update", e))?
     .ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -484,12 +435,7 @@ pub async fn update_transaction(
         None => existing.notes,
     };
 
-    let mut tx = pool.begin().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to begin transaction: {}", e) })),
-        )
-    })?;
+    let mut tx = pool.begin().await.map_err(|e| internal_error("Failed to begin transaction for update", e))?;
 
     let _updated_tx = sqlx::query_as::<_, TransactionRow>(
         r#"UPDATE transactions
@@ -505,12 +451,7 @@ pub async fn update_transaction(
     .bind(auth.id)
     .fetch_one(&mut *tx)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to update transaction: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to update transaction", e))?;
 
     if let Some(new_splits) = payload.splits {
         if new_splits.len() < 2 || new_splits.len() > 100 {
@@ -578,12 +519,7 @@ pub async fn update_transaction(
         .bind(id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Failed to fetch existing splits: {}", e) })),
-            )
-        })?;
+        .map_err(|e| internal_error("Failed to fetch existing splits", e))?;
 
         // Match new splits to existing splits to preserve state
         let mut matched_existing: Vec<Option<SplitRow>> = vec![None; new_splits.len()];
@@ -622,24 +558,14 @@ pub async fn update_transaction(
                 .bind(id)
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": format!("Failed to clear splits: {}", e) })),
-                    )
-                })?;
+                .map_err(|e| internal_error("Failed to clear splits", e))?;
         } else {
             sqlx::query("DELETE FROM splits WHERE transaction_id = $1 AND NOT (id = ANY($2))")
                 .bind(id)
                 .bind(&remaining_split_ids)
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": format!("Failed to remove deleted splits: {}", e) })),
-                    )
-                })?;
+                .map_err(|e| internal_error("Failed to remove deleted splits", e))?;
         }
 
         // Update or insert splits
@@ -685,13 +611,7 @@ pub async fn update_transaction(
                 .bind(existing_s.id)
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| {
-                    tracing::error!("Failed to update split: {}", e);
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": "Failed to update split" })),
-                    )
-                })?;
+                .map_err(|e| internal_error("Failed to update split", e))?;
             } else {
                 // Issue #17: Never use client-supplied split id as primary key on insert; always generate fresh UUID
                 let split_id = Uuid::new_v4();
@@ -708,23 +628,12 @@ pub async fn update_transaction(
                 .bind(rec_date)
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| {
-                    tracing::error!("Failed to insert new split: {}", e);
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": "Failed to insert new split" })),
-                    )
-                })?;
+                .map_err(|e| internal_error("Failed to insert new split", e))?;
             }
         }
     }
 
-    tx.commit().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to commit update: {}", e) })),
-        )
-    })?;
+    tx.commit().await.map_err(|e| internal_error("Failed to commit update", e))?;
 
     // Return updated transaction
     get_transaction(auth, State(pool), Path(id)).await
@@ -740,12 +649,7 @@ pub async fn delete_transaction(
         .bind(auth.id)
         .execute(&pool)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Database error: {}", e) })),
-            )
-        })?;
+        .map_err(|e| internal_error("Failed to delete transaction", e))?;
 
     if deleted.rows_affected() == 0 {
         return Err((
@@ -772,12 +676,7 @@ pub async fn get_account_register(
     .bind(auth.id)
     .fetch_optional(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?
+    .map_err(|e| internal_error("Failed to fetch account for register", e))?
     .ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -799,12 +698,7 @@ pub async fn get_account_register(
     .bind(auth.id)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to fetch register splits: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch register splits", e))?;
 
     if rows.is_empty() {
         return Ok(Json(Vec::<RegisterEntry>::new()));
@@ -823,12 +717,7 @@ pub async fn get_account_register(
     .bind(&tx_ids)
     .fetch_all(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to fetch all splits: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to fetch all splits for register", e))?;
 
     let mut splits_by_tx: HashMap<Uuid, Vec<SplitWithAccount>> = HashMap::new();
     for (s_id, tx_id, acc_id, acc_name, acc_type, amount, memo, rec_state, rec_date) in all_tx_splits {

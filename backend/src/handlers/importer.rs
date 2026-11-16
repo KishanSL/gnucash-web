@@ -21,6 +21,7 @@ use tempfile::NamedTempFile;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
+use crate::handlers::internal_error;
 
 #[derive(Debug, Deserialize)]
 pub struct ImportQuery {
@@ -421,7 +422,10 @@ fn parse_gnucash_xml(
                 }
             }
             Ok(Event::Eof) => break,
-            Err(e) => return Err(format!("Error parsing XML at position {}: {:?}", reader.buffer_position(), e)),
+            Err(e) => {
+                tracing::error!("Error parsing XML at position {}: {:?}", reader.buffer_position(), e);
+                return Err("Failed to parse GnuCash XML document".to_string());
+            }
             _ => {}
         }
         buf.clear();
@@ -434,19 +438,34 @@ fn parse_gnucash_sqlite(
     file_bytes: &[u8],
     default_curr: &str,
 ) -> Result<(Vec<RawAccount>, Vec<RawTransaction>, Vec<RawSplit>), String> {
-    let mut temp_file = NamedTempFile::new().map_err(|e| format!("Temp file error: {}", e))?;
-    temp_file.write_all(file_bytes).map_err(|e| format!("Failed to write temp file: {}", e))?;
+    let mut temp_file = NamedTempFile::new().map_err(|e| {
+        tracing::error!("Temp file error: {}", e);
+        "Failed to create temporary file for import".to_string()
+    })?;
+    temp_file.write_all(file_bytes).map_err(|e| {
+        tracing::error!("Failed to write temp file: {}", e);
+        "Failed to write uploaded file to disk".to_string()
+    })?;
     let temp_path = temp_file.path().to_path_buf();
 
     let conn = Connection::open_with_flags(&temp_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| format!("Invalid SQLite file: {}", e))?;
+        .map_err(|e| {
+            tracing::error!("Invalid SQLite file: {}", e);
+            "Invalid SQLite file".to_string()
+        })?;
     conn.pragma_update(None, "trusted_schema", "OFF").ok();
 
     // Verify GnuCash tables exist
     let mut check_stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table'")
-        .map_err(|e| format!("SQLite query failed: {}", e))?;
+        .map_err(|e| {
+            tracing::error!("SQLite query failed: {}", e);
+            "Failed to query SQLite database tables".to_string()
+        })?;
     let table_names: Vec<String> = check_stmt.query_map([], |row| row.get(0))
-        .map_err(|e| format!("Failed to read tables: {}", e))?
+        .map_err(|e| {
+            tracing::error!("Failed to read tables: {}", e);
+            "Failed to read SQLite database tables".to_string()
+        })?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -496,7 +515,10 @@ fn parse_gnucash_sqlite(
     // Read Accounts
     let mut acc_stmt = conn.prepare(
         "SELECT guid, name, account_type, commodity_guid, parent_guid, code, description, hidden, placeholder FROM accounts"
-    ).map_err(|e| format!("Failed to prepare accounts query: {}", e))?;
+    ).map_err(|e| {
+        tracing::error!("Failed to prepare accounts query: {}", e);
+        "Failed to parse accounts from SQLite file".to_string()
+    })?;
 
     let mut raw_accounts = Vec::new();
     let acc_rows = acc_stmt.query_map([], |row| {
@@ -511,7 +533,10 @@ fn parse_gnucash_sqlite(
             row.get::<_, Option<i64>>(7)?,
             row.get::<_, Option<i64>>(8)?,
         ))
-    }).map_err(|e| format!("Failed to query accounts: {}", e))?;
+    }).map_err(|e| {
+        tracing::error!("Failed to query accounts: {}", e);
+        "Failed to parse accounts from SQLite file".to_string()
+    })?;
 
     for r in acc_rows.flatten() {
         let (guid, name, acc_type, commodity_guid, parent_guid, code, desc, hidden, placeholder) = r;
@@ -555,7 +580,10 @@ fn parse_gnucash_sqlite(
             "SELECT guid, post_date, num, description, NULL
              FROM transactions"
         )
-    }.map_err(|e| format!("Failed to prepare transactions query: {}", e))?;
+    }.map_err(|e| {
+        tracing::error!("Failed to prepare transactions query: {}", e);
+        "Failed to parse transactions from SQLite file".to_string()
+    })?;
 
     let mut raw_transactions = Vec::new();
     let tx_rows = tx_stmt.query_map([], |row| {
@@ -566,7 +594,10 @@ fn parse_gnucash_sqlite(
             row.get::<_, Option<String>>(3)?,
             row.get::<_, Option<String>>(4)?,
         ))
-    }).map_err(|e| format!("Failed to query transactions: {}", e))?;
+    }).map_err(|e| {
+        tracing::error!("Failed to query transactions: {}", e);
+        "Failed to parse transactions from SQLite file".to_string()
+    })?;
 
     for r in tx_rows.flatten() {
         let (guid, post_date_str, num, desc, notes) = r;
@@ -585,7 +616,10 @@ fn parse_gnucash_sqlite(
     // Read Splits (Issue #9: query both value and quantity; Issue #27: reconcile_date)
     let mut split_stmt = conn.prepare(
         "SELECT guid, tx_guid, account_guid, memo, reconcile_state, value_num, value_denom, quantity_num, quantity_denom, reconcile_date FROM splits"
-    ).map_err(|e| format!("Failed to prepare splits query: {}", e))?;
+    ).map_err(|e| {
+        tracing::error!("Failed to prepare splits query: {}", e);
+        "Failed to parse splits from SQLite file".to_string()
+    })?;
 
     let mut raw_splits = Vec::new();
     let split_rows = split_stmt.query_map([], |row| {
@@ -608,7 +642,10 @@ fn parse_gnucash_sqlite(
             row.get::<_, i64>(8).unwrap_or(0),
             rec_date_str,
         ))
-    }).map_err(|e| format!("Failed to query splits: {}", e))?;
+    }).map_err(|e| {
+        tracing::error!("Failed to query splits: {}", e);
+        "Failed to parse splits from SQLite file".to_string()
+    })?;
 
     for r in split_rows.flatten() {
         let (guid, tx_guid, account_guid, memo, rec_state, val_num, val_denom, qty_num, qty_denom, rec_date_str) = r;
@@ -701,7 +738,10 @@ pub fn parse_gnucash_file(
             .by_ref()
             .take(MAX_DECOMPRESSED_BYTES)
             .read_to_end(&mut decompressed)
-            .map_err(|e| format!("Failed to decompress GnuCash gzip archive: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("Failed to decompress GnuCash gzip archive: {}", e);
+                "Failed to decompress GnuCash gzip archive".to_string()
+            })?;
 
         let mut extra = [0u8; 1];
         if decoder.read(&mut extra).unwrap_or(0) > 0 {
@@ -748,17 +788,19 @@ pub async fn import_gnucash_sqlite(
     let mut file_bytes = Vec::new();
 
     while let Some(field) = multipart.next_field().await.map_err(|e| {
+        tracing::error!("Multipart error: {}", e);
         (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("Multipart error: {}", e) })),
+            Json(json!({ "error": "Invalid multipart request" })),
         )
     })? {
         let field_name = field.name().unwrap_or_default().to_string();
         if field_name == "file" || field_name == "database" || field_name.is_empty() {
             let data = field.bytes().await.map_err(|e| {
+                tracing::error!("Failed to read file bytes: {}", e);
                 (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("Failed to read file bytes: {}", e) })),
+                    Json(json!({ "error": "Failed to read file payload" })),
                 )
             })?;
             file_bytes = data.to_vec();
@@ -786,12 +828,7 @@ pub async fn import_gnucash_sqlite(
         parse_gnucash_file(&file_bytes, &default_curr_clone)
     })
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Worker task failed: {}", e) })),
-        )
-    })?
+    .map_err(|e| internal_error("Worker task failed", e))?
     .map_err(|e| {
         (
             StatusCode::BAD_REQUEST,

@@ -10,6 +10,7 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::auth::{create_jwt, AuthResponse, AuthUser, LoginRequest, SignupRequest, User, UserWithPassword};
+use crate::handlers::internal_error;
 
 fn verify_admin_key(header_key: Option<&str>) -> bool {
     let header_key = match header_key {
@@ -31,18 +32,8 @@ fn verify_admin_key(header_key: Option<&str>) -> bool {
 async fn hash_password_async(password: String) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
     tokio::task::spawn_blocking(move || bcrypt::hash(password, bcrypt::DEFAULT_COST))
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Password hashing task failed: {}", e) })),
-            )
-        })?
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("Password hashing failed: {}", e) })),
-            )
-        })
+        .map_err(|e| internal_error("Password hashing task failed", e))?
+        .map_err(|e| internal_error("Password hashing failed", e))
 }
 
 async fn verify_password_async(password: String, hash: String) -> bool {
@@ -114,12 +105,7 @@ pub async fn signup(
     .bind(&email)
     .fetch_one(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error checking user: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Database error checking user", e))?;
 
     if existing > 0 {
         return Err((
@@ -140,24 +126,15 @@ pub async fn signup(
     .bind(&password_hash)
     .fetch_one(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to create user: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to create user", e))?;
 
     // Provision standard initial Chart of Accounts for new user
     if let Err(e) = provision_starter_accounts(&pool, user.id).await {
         tracing::error!("Failed to provision starter accounts for user {}: {}", user.id, e);
     }
 
-    let token = create_jwt(user.id, &user.username, &user.email, user.token_version).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to generate token: {}", e) })),
-        )
-    })?;
+    let token = create_jwt(user.id, &user.username, &user.email, user.token_version)
+        .map_err(|e| internal_error("Failed to generate token", e))?;
 
     Ok((StatusCode::CREATED, Json(AuthResponse { token, user })))
 }
@@ -184,12 +161,7 @@ pub async fn login(
     .bind(identifier)
     .fetch_optional(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Database error during login", e))?;
 
     // Constant-time execution to prevent timing-based username enumeration
     // DUMMY_HASH is a valid bcrypt hash so verify performs identical work when user does not exist
@@ -219,12 +191,8 @@ pub async fn login(
         updated_at: user_row.updated_at,
     };
 
-    let token = create_jwt(user.id, &user.username, &user.email, user.token_version).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to generate token: {}", e) })),
-        )
-    })?;
+    let token = create_jwt(user.id, &user.username, &user.email, user.token_version)
+        .map_err(|e| internal_error("Failed to generate token", e))?;
 
     Ok(Json(AuthResponse { token, user }))
 }
@@ -239,12 +207,7 @@ pub async fn get_current_user(
     .bind(auth.id)
     .fetch_optional(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?
+    .map_err(|e| internal_error("Database error fetching user", e))?
     .ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -383,12 +346,7 @@ pub async fn reset_password(
     .bind(identifier)
     .fetch_optional(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Database error finding user for reset", e))?;
 
     let user = match user {
         Some(u) => u,
@@ -435,12 +393,7 @@ pub async fn reset_password(
     .bind(user.id)
     .execute(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error updating password: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Database error updating password", e))?;
 
     // 3. Write new password notice to secure file on server only if temporary password was generated
     if is_temporary {
@@ -519,12 +472,7 @@ pub async fn change_password(
     .bind(auth.id)
     .fetch_optional(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Database error: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Database error finding user for reset", e))?;
 
     let existing_hash = match existing_hash {
         Some(h) => h,
@@ -553,12 +501,7 @@ pub async fn change_password(
     .bind(auth.id)
     .execute(&pool)
     .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("Failed to update password: {}", e) })),
-        )
-    })?;
+    .map_err(|e| internal_error("Failed to update password", e))?;
 
     Ok(Json(json!({
         "success": true,
