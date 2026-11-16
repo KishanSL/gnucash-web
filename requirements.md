@@ -1,6 +1,6 @@
 # GnuCash Web: Requirements
 
-**Status:** Source of truth for expected behaviour. Last updated 2026-11-15.
+**Status:** Source of truth for expected behaviour. Last updated 2026-11-16.
 
 This file defines what GnuCash Web must do. When it disagrees with the code, README.md, AGENTS.md
 or a Forgejo issue, this file wins: either the code has a bug, or the requirement here must be
@@ -73,7 +73,10 @@ Requirement IDs (e.g. `INV-2`) are stable. Reference them in issues, commits and
 ### Balances
 - **ACC-6** An account's balance is the sum of its split amounts (money). Its total balance adds
   the balances of all descendants. Every balance shown anywhere (account list, tree, register,
-  reports) is a money amount; units are never added to money.
+  reports) is a money amount; units are never added to money. Wherever the UI shows an account's
+  balance, it shows the total balance (including all descendants), never the account's own balance
+  alone. API responses the UI doesn't display (e.g. `GET`/`PUT /api/accounts/:id`) may return the
+  account's own balance.
 - **ACC-7** Display sign: asset-type (`asset`, `bank`, `cash`, `receivable`) and `expense` accounts
   show the raw balance; all other types show it negated, so normal balances appear positive.
 - **ACC-8** The balance sheet must balance (Assets = Liabilities + Equity + net income), and the
@@ -86,6 +89,12 @@ Requirement IDs (e.g. `INV-2`) are stable. Reference them in issues, commits and
 - **ACC-10** Accounts form a tree. An account cannot be its own parent or the descendant of itself,
   and cycles must never be stored. Setting `parent_id` to `null` moves an account to the top level.
 - **ACC-11** Account name 1–255 characters. Currency/commodity code 1–64 characters.
+- **ACC-12** An account's type must be compatible with its parent's type, as in desktop GnuCash.
+  The compatible groups are: balance-sheet (`asset`, `bank`, `cash`, `receivable`, `credit`,
+  `liability`, `payable`); income/expense (`income`, `expense`); `equity`. For example, an asset or
+  liability account cannot be placed under an expense account. Create and update reject an
+  incompatible parent with `400`, including when an update changes the type of an account that has
+  a parent or sub-accounts. Top-level accounts may have any type.
 
 ## 4. Transactions, register and reconciliation
 
@@ -163,6 +172,16 @@ recorded at transaction value. Units, prices and market value are not tracked.
 - **IMP-8** GnuCash reconcile states other than `n`/`c`/`y` (e.g. `f`, `v`) are imported as `n`.
 - **IMP-9** Import uses batched statements, not one round trip per row, so books of 50k+ splits
   finish well within the 300 s proxy timeout.
+- **IMP-10** Import never stores a transaction with fewer than 2 splits (ACC-1). Such a transaction
+  is either skipped (and the skip reported in the import result) or rejects the import (IMP-11).
+- **IMP-11** A file containing a value the app cannot store, such as a field longer than its limit
+  (ACC-11, TXN-1, account code 50 characters), rejects the whole import with `400` and nothing is
+  written (IMP-4); nothing is truncated. Every import rejection, including the ACC-2 check in IMP-4,
+  identifies the offending item: for a transaction its post date, description and the accounts of
+  its splits; for an account its full name; plus the field and the limit or rule it breaks.
+- **IMP-12** Post dates are imported exactly as the date written in the file, with no time-zone
+  adjustment. This includes books saved by GnuCash before 2.6.12, which stored post dates at local
+  midnight converted to UTC.
 
 ## 7. GnuCash export
 
