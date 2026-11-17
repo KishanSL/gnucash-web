@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { Account, ReconcileData } from '../types';
 import { fetchReconcileInfo, finishReconciliation, formatCurrency, getErrorMessage } from '../api';
+import { reconcileTotals } from '../lib/money';
 
 interface ReconcileModalProps {
   initialAccount?: Account;
@@ -114,37 +115,30 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
     });
   };
 
-  // Calculations
-  const startingBalanceNum = parseFloat(reconcileData?.starting_balance || '0');
-  const targetEndingNum = parseFloat(statementEndingBalance || '0');
-
-  let clearedDepositsTotal = 0;
-  let clearedWithdrawalsTotal = 0;
-
-  if (reconcileData) {
-    for (const d of reconcileData.deposits) {
-      if (selectedSplitIds.has(d.split_id)) {
-        clearedDepositsTotal += parseFloat(d.display_amount) || 0;
-      }
-    }
-    for (const w of reconcileData.withdrawals) {
-      if (selectedSplitIds.has(w.split_id)) {
-        clearedWithdrawalsTotal += parseFloat(w.display_amount) || 0;
-      }
-    }
-  }
-
   // Account normal balance check (ACC-7: asset, bank, cash, receivable, expense are debit-normal)
   const isDebitNormal = reconcileData?.account
     ? ['bank', 'cash', 'asset', 'receivable', 'expense'].includes(reconcileData.account.account_type.toLowerCase())
     : true;
 
-  const clearedBalance = isDebitNormal
-    ? startingBalanceNum + clearedDepositsTotal - clearedWithdrawalsTotal
-    : startingBalanceNum + clearedWithdrawalsTotal - clearedDepositsTotal;
-
-  const difference = Math.round((targetEndingNum - clearedBalance) * 100) / 100;
-  const isReconciled = Math.abs(difference) < 0.001;
+  // Calculations in integer cents
+  const totals = reconcileTotals({
+    startingBalance: reconcileData?.starting_balance,
+    statementEndingBalance,
+    clearedDeposits: (reconcileData?.deposits ?? [])
+      .filter((d) => selectedSplitIds.has(d.split_id))
+      .map((d) => d.display_amount),
+    clearedWithdrawals: (reconcileData?.withdrawals ?? [])
+      .filter((w) => selectedSplitIds.has(w.split_id))
+      .map((w) => w.display_amount),
+    isDebitNormal,
+  });
+  const startingBalanceNum = totals.startingBalanceCents / 100;
+  const targetEndingNum = totals.statementEndingCents / 100;
+  const clearedDepositsTotal = totals.clearedDepositsCents / 100;
+  const clearedWithdrawalsTotal = totals.clearedWithdrawalsCents / 100;
+  const clearedBalance = totals.clearedBalanceCents / 100;
+  const difference = totals.differenceCents / 100;
+  const isReconciled = totals.isReconciled;
 
   const handleFinish = async () => {
     if (!selectedAccountId || !isReconciled) return;

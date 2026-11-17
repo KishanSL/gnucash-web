@@ -3,10 +3,10 @@
 # no test ever touches the live database:
 #
 #   1. creates a fresh `gnucash_e2e_test` database
-#   2. starts a debug backend on it (port 8092) with a random JWT secret;
+#   2. starts a debug backend on it (127.0.0.1:8092) with a random JWT secret;
 #      the backend creates `kishan` / `Kishan@123` and seeds the sample data
 #   3. adds a fund account (commodity_fraction = 1000) for test_fund_account_decimals
-#   4. builds the frontend and serves it with `vite preview` (port 8093),
+#   4. builds the frontend and serves it with `vite preview` (127.0.0.1:8093),
 #      proxying /api to the throwaway backend
 #   5. runs the scripts, then stops everything and drops the database
 #
@@ -46,6 +46,7 @@ ALL_TESTS=(
     test_register_enhancements
     test_ui_comprehensive
     test_reports_tab
+    test_reconcile_view
     test_fund_account_decimals
     test_export_gnucash
     test_reset_password # last: it resets and restores the password
@@ -132,12 +133,13 @@ echo "==> Starting backend on port $BACKEND_PORT"
     cd "$WORK_DIR"
     exec setsid env -u GNUCASH_TEST_MODE \
         DATABASE_URL="postgres://$PG_USER:$PG_PASSWORD_ENC@127.0.0.1:$PG_PORT/$E2E_DB_NAME" \
+        BIND_ADDR=127.0.0.1 \
         PORT="$BACKEND_PORT" \
         JWT_SECRET="$E2E_JWT_SECRET" \
         INITIAL_ADMIN_USER=kishan \
         INITIAL_ADMIN_PASSWORD='Kishan@123' \
         ALLOW_SIGNUP=false \
-        CORS_ALLOWED_ORIGINS="http://localhost:$FRONTEND_PORT" \
+        CORS_ALLOWED_ORIGINS="http://127.0.0.1:$FRONTEND_PORT" \
         GNUCASH_SEED_DIR="$WORK_DIR/seed" \
         SECURITY_DIR="$WORK_DIR/security" \
         RUST_LOG=warn \
@@ -158,7 +160,7 @@ echo "==> Starting preview on port $FRONTEND_PORT"
 (
     cd "$FRONTEND_DIR"
     exec setsid env API_PROXY_TARGET="http://127.0.0.1:$BACKEND_PORT" \
-        npx vite preview --port "$FRONTEND_PORT" --strictPort
+        npx vite preview --host 127.0.0.1 --port "$FRONTEND_PORT" --strictPort
 ) >"$WORK_DIR/preview.log" 2>&1 &
 PREVIEW_PID=$!
 wait_for "http://127.0.0.1:$FRONTEND_PORT/api/health" "Preview"
@@ -169,9 +171,9 @@ cd "$FRONTEND_DIR"
 for t in "${TESTS[@]}"; do
     echo
     echo "==> $t"
-    if E2E_BASE_URL="http://localhost:$FRONTEND_PORT" \
+    if E2E_BASE_URL="http://127.0.0.1:$FRONTEND_PORT" \
         E2E_ISOLATED=1 \
-        GNUCASH_API_URL="http://localhost:$FRONTEND_PORT" \
+        GNUCASH_API_URL="http://127.0.0.1:$FRONTEND_PORT" \
         ADMIN_API_KEY="$E2E_JWT_SECRET" \
         node "scripts/$t.mjs"; then
         PASSED+=("$t")

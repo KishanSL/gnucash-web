@@ -89,8 +89,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8082);
 
+    // 0.0.0.0 is needed inside the container; local tools such as the e2e runner bind 127.0.0.1
+    let bind_ip: std::net::IpAddr = std::env::var("BIND_ADDR")
+        .ok()
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(std::net::IpAddr::from([0, 0, 0, 0]));
+
     let app = create_app(pool);
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = SocketAddr::new(bind_ip, port);
     info!("GnuCash Backend server listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

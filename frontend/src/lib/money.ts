@@ -89,3 +89,44 @@ export function twoSplitAmounts(amount: string | number, isDeposit: boolean): [s
   const current = isDeposit ? cents : -cents;
   return [centsToAmount(current), centsToAmount(-current)];
 }
+
+export interface ReconcileTotals {
+  startingBalanceCents: number;
+  statementEndingCents: number;
+  clearedDepositsCents: number;
+  clearedWithdrawalsCents: number;
+  clearedBalanceCents: number;
+  differenceCents: number;
+  isReconciled: boolean;
+}
+
+/**
+ * Reconciliation totals in cents. For debit-normal accounts deposits increase the balance;
+ * for credit-normal accounts withdrawals do (ACC-7).
+ */
+export function reconcileTotals(params: {
+  startingBalance: string | number | null | undefined;
+  statementEndingBalance: string | number | null | undefined;
+  clearedDeposits: (string | number)[];
+  clearedWithdrawals: (string | number)[];
+  isDebitNormal: boolean;
+}): ReconcileTotals {
+  const sum = (values: (string | number)[]) => values.reduce<number>((acc, v) => acc + toCents(v), 0);
+  const clearedDepositsCents = sum(params.clearedDeposits);
+  const clearedWithdrawalsCents = sum(params.clearedWithdrawals);
+  const startingBalanceCents = toCents(params.startingBalance);
+  const statementEndingCents = toCents(params.statementEndingBalance);
+  const clearedBalanceCents = params.isDebitNormal
+    ? startingBalanceCents + clearedDepositsCents - clearedWithdrawalsCents
+    : startingBalanceCents + clearedWithdrawalsCents - clearedDepositsCents;
+  const differenceCents = statementEndingCents - clearedBalanceCents;
+  return {
+    startingBalanceCents,
+    statementEndingCents,
+    clearedDepositsCents,
+    clearedWithdrawalsCents,
+    clearedBalanceCents,
+    differenceCents,
+    isReconciled: differenceCents === 0,
+  };
+}

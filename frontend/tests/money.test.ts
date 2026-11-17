@@ -5,6 +5,7 @@ import {
   balancingFields,
   centsToAmount,
   netCents,
+  reconcileTotals,
   splitTotals,
   toCents,
   toDebitCredit,
@@ -139,5 +140,56 @@ describe('twoSplitAmounts', () => {
     assert.equal(a, '1.24');
     assert.equal(b, '-1.24');
     assert.equal(toCents(a) + toCents(b), 0);
+  });
+});
+
+describe('reconcileTotals', () => {
+  it('debit-normal account: deposits increase, withdrawals decrease the cleared balance', () => {
+    const t = reconcileTotals({
+      startingBalance: '1000.00',
+      statementEndingBalance: '1150.25',
+      clearedDeposits: ['200.25', '50'],
+      clearedWithdrawals: ['100.00'],
+      isDebitNormal: true,
+    });
+    assert.equal(t.clearedBalanceCents, 115025);
+    assert.equal(t.differenceCents, 0);
+    assert.equal(t.isReconciled, true);
+  });
+
+  it('credit-normal account: withdrawals increase the cleared balance', () => {
+    const t = reconcileTotals({
+      startingBalance: '500',
+      statementEndingBalance: '550',
+      clearedDeposits: ['20'],
+      clearedWithdrawals: ['70'],
+      isDebitNormal: false,
+    });
+    assert.equal(t.clearedBalanceCents, 55000);
+    assert.equal(t.isReconciled, true);
+  });
+
+  it('is exact with many small amounts', () => {
+    const t = reconcileTotals({
+      startingBalance: '0',
+      statementEndingBalance: '100.00',
+      clearedDeposits: Array(1000).fill('0.10'),
+      clearedWithdrawals: [],
+      isDebitNormal: true,
+    });
+    assert.equal(t.isReconciled, true);
+  });
+
+  it('reports the remaining difference', () => {
+    const t = reconcileTotals({
+      startingBalance: '100',
+      statementEndingBalance: '',
+      clearedDeposits: [],
+      clearedWithdrawals: ['0.01'],
+      isDebitNormal: true,
+    });
+    assert.equal(t.statementEndingCents, 0);
+    assert.equal(t.differenceCents, -9999);
+    assert.equal(t.isReconciled, false);
   });
 });
