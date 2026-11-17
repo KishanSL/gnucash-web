@@ -77,7 +77,7 @@ pub async fn get_balance_sheet(
 
     // 1. Fetch user's accounts
     let accounts: Vec<AccountRow> = sqlx::query_as(
-        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
+        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, commodity_fraction, created_at, updated_at
          FROM accounts
          WHERE user_id = $1
          ORDER BY code ASC NULLS LAST, name ASC",
@@ -258,7 +258,7 @@ pub async fn get_income_statement(
     let to_date = query.to_date.unwrap_or(now);
 
     let accounts: Vec<AccountRow> = sqlx::query_as(
-        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
+        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, commodity_fraction, created_at, updated_at
          FROM accounts
          WHERE user_id = $1
          ORDER BY code ASC NULLS LAST, name ASC",

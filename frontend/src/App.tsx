@@ -42,6 +42,7 @@ import {
   getStoredToken,
   logout,
   fetchCurrentUser,
+  getErrorMessage,
 } from './api';
 import { Scale, TrendingUp, BookCheck, AlertCircle } from 'lucide-react';
 
@@ -139,7 +140,7 @@ export const App: React.FC = () => {
           setRegisterEntries(reg);
         }
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to load data from backend:', err);
       setBackendOnline(false);
     } finally {
@@ -251,8 +252,8 @@ export const App: React.FC = () => {
     try {
       await updateAccount(acc.id, { hidden: !acc.hidden });
       await refreshData();
-    } catch (err: any) {
-      alert(err.message || 'Failed to update account');
+    } catch (err: unknown) {
+      alert(getErrorMessage(err));
     }
   };
 
@@ -279,8 +280,8 @@ export const App: React.FC = () => {
         setStatusMessage(res.message);
         setTimeout(() => setStatusMessage(null), 5000);
         await refreshData();
-      } catch (err: any) {
-        alert(err.message || 'Failed to seed');
+      } catch (err: unknown) {
+        alert(getErrorMessage(err));
       }
     }
   };
@@ -292,8 +293,8 @@ export const App: React.FC = () => {
       await exportGnucashSqlite();
       setStatusMessage('GnuCash SQLite file exported successfully!');
       setTimeout(() => setStatusMessage(null), 3500);
-    } catch (err: any) {
-      alert(err.message || 'Export failed');
+    } catch (err: unknown) {
+      alert(getErrorMessage(err));
       setStatusMessage(null);
     }
   };
@@ -318,8 +319,8 @@ export const App: React.FC = () => {
       setTransactions([]);
       setRegisterEntries([]);
       await refreshData();
-    } catch (err: any) {
-      alert(err.message || 'Failed to reset database');
+    } catch (err: unknown) {
+      alert(getErrorMessage(err));
     } finally {
       setLoading(false);
     }

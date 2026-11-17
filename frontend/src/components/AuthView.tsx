@@ -19,7 +19,7 @@ import {
   Check,
   Activity,
 } from 'lucide-react';
-import { login, signup, checkHealth } from '../api';
+import { login, signup, checkHealth, getErrorMessage } from '../api';
 import { User } from '../types';
 
 interface AuthViewProps {
@@ -76,8 +76,8 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
         password: loginPassword,
       });
       onAuthSuccess(res.user);
-    } catch (err: any) {
-      setError(err.message || 'Login failed. Please check your credentials.');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err) || 'Login failed. Please check your credentials.');
     } finally {
       setLoading(false);
     }
@@ -122,8 +122,8 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
         password: signupPassword,
       });
       onAuthSuccess(res.user);
-    } catch (err: any) {
-      setError(err.message || 'Signup failed');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err));
     } finally {
       setLoading(false);
     }

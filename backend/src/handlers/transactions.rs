@@ -16,7 +16,7 @@ use crate::auth::AuthUser;
 use crate::handlers::internal_error;
 use crate::models::{
     calculate_display_balance, is_asset_type, is_expense_type,
-    CreateTransactionRequest, RegisterEntry, SplitRow, SplitWithAccount, TransactionRow,
+    CreateTransactionRequest, RegisterEntry, RegisterEntryRow, SplitRow, SplitWithAccount, TransactionRow,
     TransactionWithSplits, UpdateTransactionRequest,
 };
 
@@ -98,8 +98,8 @@ pub async fn list_transactions(
     let tx_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
 
     // Fetch splits for all returned transactions
-    let split_rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, String, Decimal, Option<String>, String, Option<chrono::DateTime<chrono::Utc>>)>(
-        r#"SELECT s.id, s.transaction_id, s.account_id, a.name, a.account_type, s.amount, s.memo, s.reconciled_state, s.reconciled_date
+    let split_rows = sqlx::query_as::<_, SplitWithAccount>(
+        r#"SELECT s.id, s.transaction_id, s.account_id, a.name as account_name, a.account_type, s.amount, s.memo, s.reconciled_state, s.reconciled_date
            FROM splits s
            JOIN accounts a ON s.account_id = a.id
            WHERE s.transaction_id = ANY($1)
@@ -111,18 +111,8 @@ pub async fn list_transactions(
     .map_err(|e| internal_error("Failed to fetch splits", e))?;
 
     let mut splits_by_tx: HashMap<Uuid, Vec<SplitWithAccount>> = HashMap::new();
-    for (id, tx_id, account_id, account_name, account_type, amount, memo, reconciled_state, reconciled_date) in split_rows {
-        splits_by_tx.entry(tx_id).or_default().push(SplitWithAccount {
-            id,
-            transaction_id: tx_id,
-            account_id,
-            account_name,
-            account_type,
-            amount,
-            memo,
-            reconciled_state,
-            reconciled_date,
-        });
+    for row in split_rows {
+        splits_by_tx.entry(row.transaction_id).or_default().push(row);
     }
 
     let result: Vec<TransactionWithSplits> = rows
@@ -167,8 +157,8 @@ pub async fn get_transaction(
         )
     })?;
 
-    let split_rows = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, String, Decimal, Option<String>, String, Option<chrono::DateTime<chrono::Utc>>)>(
-        r#"SELECT s.id, s.transaction_id, s.account_id, a.name, a.account_type, s.amount, s.memo, s.reconciled_state, s.reconciled_date
+    let splits = sqlx::query_as::<_, SplitWithAccount>(
+        r#"SELECT s.id, s.transaction_id, s.account_id, a.name as account_name, a.account_type, s.amount, s.memo, s.reconciled_state, s.reconciled_date
            FROM splits s
            JOIN accounts a ON s.account_id = a.id
            WHERE s.transaction_id = $1
@@ -178,21 +168,6 @@ pub async fn get_transaction(
     .fetch_all(&pool)
     .await
     .map_err(|e| internal_error("Failed to fetch splits", e))?;
-
-    let splits = split_rows
-        .into_iter()
-        .map(|(s_id, tx_id, acc_id, acc_name, acc_type, amount, memo, rec_state, rec_date)| SplitWithAccount {
-            id: s_id,
-            transaction_id: tx_id,
-            account_id: acc_id,
-            account_name: acc_name,
-            account_type: acc_type,
-            amount,
-            memo,
-            reconciled_state: rec_state,
-            reconciled_date: rec_date,
-        })
-        .collect();
 
     let result = TransactionWithSplits {
         id: tx.id,
@@ -687,8 +662,8 @@ pub async fn get_account_register(
     let (_, account_type) = account;
 
     // 2. Fetch all splits for this account ordered chronologically
-    let rows = sqlx::query_as::<_, (Uuid, Uuid, NaiveDate, chrono::DateTime<chrono::Utc>, Option<String>, String, Option<String>, Option<String>, String, Decimal)>(
-        r#"SELECT s.id, t.id, t.post_date, t.enter_date, t.num, t.description, t.notes, s.memo, s.reconciled_state, s.amount
+    let rows = sqlx::query_as::<_, RegisterEntryRow>(
+        r#"SELECT t.id as tx_id, s.id as split_id, t.post_date, t.num, t.description, t.notes, s.memo, s.reconciled_state, s.amount
            FROM splits s
            JOIN transactions t ON s.transaction_id = t.id
            WHERE s.account_id = $1 AND t.user_id = $2
@@ -704,11 +679,11 @@ pub async fn get_account_register(
         return Ok(Json(Vec::<RegisterEntry>::new()));
     }
 
-    let tx_ids: Vec<Uuid> = rows.iter().map(|r| r.1).collect();
+    let tx_ids: Vec<Uuid> = rows.iter().map(|r| r.tx_id).collect();
 
     // Fetch all splits for these transactions to show transfer accounts and multi-split breakdowns
-    let all_tx_splits = sqlx::query_as::<_, (Uuid, Uuid, Uuid, String, String, Decimal, Option<String>, String, Option<chrono::DateTime<chrono::Utc>>)>(
-        r#"SELECT s.id, s.transaction_id, s.account_id, a.name, a.account_type, s.amount, s.memo, s.reconciled_state, s.reconciled_date
+    let all_tx_splits = sqlx::query_as::<_, SplitWithAccount>(
+        r#"SELECT s.id, s.transaction_id, s.account_id, a.name as account_name, a.account_type, s.amount, s.memo, s.reconciled_state, s.reconciled_date
            FROM splits s
            JOIN accounts a ON s.account_id = a.id
            WHERE s.transaction_id = ANY($1)
@@ -720,18 +695,8 @@ pub async fn get_account_register(
     .map_err(|e| internal_error("Failed to fetch all splits for register", e))?;
 
     let mut splits_by_tx: HashMap<Uuid, Vec<SplitWithAccount>> = HashMap::new();
-    for (s_id, tx_id, acc_id, acc_name, acc_type, amount, memo, rec_state, rec_date) in all_tx_splits {
-        splits_by_tx.entry(tx_id).or_default().push(SplitWithAccount {
-            id: s_id,
-            transaction_id: tx_id,
-            account_id: acc_id,
-            account_name: acc_name,
-            account_type: acc_type,
-            amount,
-            memo,
-            reconciled_state: rec_state,
-            reconciled_date: rec_date,
-        });
+    for row in all_tx_splits {
+        splits_by_tx.entry(row.transaction_id).or_default().push(row);
     }
 
     let is_asset = is_asset_type(&account_type);
@@ -740,11 +705,11 @@ pub async fn get_account_register(
     let mut running_sum = Decimal::ZERO;
     let mut register_entries = Vec::new();
 
-    for (split_id, tx_id, post_date, _enter_date, num, description, notes, memo, reconciled_state, amount) in rows {
-        running_sum += amount;
+    for row in rows {
+        running_sum += row.amount;
         let display_running_balance = calculate_display_balance(&account_type, running_sum);
 
-        let tx_splits = splits_by_tx.get(&tx_id).cloned().unwrap_or_default();
+        let tx_splits = splits_by_tx.get(&row.tx_id).cloned().unwrap_or_default();
 
         // Determine transfer account string
         let other_splits: Vec<&SplitWithAccount> = tx_splits.iter().filter(|s| s.account_id != account_id).collect();
@@ -758,30 +723,30 @@ pub async fn get_account_register(
 
         // Determine Debit vs Credit columns
         let (debit, credit) = if is_asset || is_expense {
-            if amount >= Decimal::ZERO {
-                (Some(amount), None)
+            if row.amount >= Decimal::ZERO {
+                (Some(row.amount), None)
             } else {
-                (None, Some(-amount))
+                (None, Some(-row.amount))
             }
         } else {
-            if amount < Decimal::ZERO {
-                (None, Some(-amount))
+            if row.amount < Decimal::ZERO {
+                (None, Some(-row.amount))
             } else {
-                (Some(amount), None)
+                (Some(row.amount), None)
             }
         };
 
         register_entries.push(RegisterEntry {
-            transaction_id: tx_id,
-            split_id,
-            post_date,
-            num,
-            description,
-            notes,
+            transaction_id: row.tx_id,
+            split_id: row.split_id,
+            post_date: row.post_date,
+            num: row.num,
+            description: row.description,
+            notes: row.notes,
             transfer_account_name,
-            memo,
-            reconciled_state,
-            amount,
+            memo: row.memo,
+            reconciled_state: row.reconciled_state,
+            amount: row.amount,
             debit,
             credit,
             running_balance: display_running_balance,

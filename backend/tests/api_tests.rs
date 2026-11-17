@@ -2208,6 +2208,85 @@ async fn test_stock_foreign_commodity_import_and_export() {
 }
 
 #[tokio::test]
+async fn test_fund_account_transaction_fixed_2_decimals() {
+    // ACC-3 & INV-5: Transactions on fund accounts (commodity_fraction = 1000)
+    // must strictly enforce 2-decimal scale. 2-decimal splits succeed, >2 decimals fail.
+    let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let username = format!("fund_{}", &user_id.to_string()[..8]);
+    let email = format!("{}@example.com", username);
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')")
+        .bind(user_id)
+        .bind(&username)
+        .bind(&email)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let user_token = gnucash_backend::auth::create_jwt(user_id, &username, &email, 0).unwrap();
+
+    let bank_id = uuid::Uuid::new_v4();
+    let fund_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO accounts (id, name, account_type, currency, user_id, commodity_namespace, commodity_fraction)
+         VALUES ($1, 'Checking', 'bank', 'INR', $3, 'CURRENCY', 100),
+                ($2, 'Mutual Fund', 'asset', 'INF209K01VA3', $3, 'FUND', 1000)"
+    )
+    .bind(bank_id)
+    .bind(fund_id)
+    .bind(user_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let app = create_app(pool.clone());
+
+    // 1. Transaction with 2-decimal splits on fund account must succeed (ACC-3)
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/transactions")
+                .header("authorization", format!("Bearer {}", user_token))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({
+                    "post_date": "2026-11-17",
+                    "description": "Fund SIP 2-decimals",
+                    "splits": [
+                        { "account_id": fund_id, "amount": "5000.50" },
+                        { "account_id": bank_id, "amount": "-5000.50" }
+                    ]
+                }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED, "2-decimal transaction on fund account must succeed");
+
+    // 2. Transaction with 3-decimal splits on fund account must be rejected with 400 (ACC-3)
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/transactions")
+                .header("authorization", format!("Bearer {}", user_token))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({
+                    "post_date": "2026-11-17",
+                    "description": "Fund SIP 3-decimals",
+                    "splits": [
+                        { "account_id": fund_id, "amount": "5000.500" },
+                        { "account_id": bank_id, "amount": "-5000.500" }
+                    ]
+                }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "3-decimal transaction on fund account must be rejected per ACC-3");
+}
+
+#[tokio::test]
 async fn test_issue_19_reject_unbalanced_import() {
     // Issue #19: Importer must strictly reject transactions unbalanced by even 0.01
     let pool = get_test_pool().await;
@@ -4116,105 +4195,87 @@ async fn test_issue_37_reject_root_account_type() {
 
 #[tokio::test]
 async fn test_issue_30_reconciled_state_migration_idempotent() {
-    let pool = get_test_pool().await;
-    let mut conn = pool.acquire().await.unwrap();
+    let base_url = gnucash_backend::db::get_test_database_url();
+    let unique_id = uuid::Uuid::new_v4().simple();
+    let throwaway_db = format!("gnucash_mig_{}_test", unique_id);
+    let mut admin_url = url::Url::parse(&base_url).unwrap();
+    admin_url.set_path("/postgres");
+    let admin_pool = sqlx::PgPool::connect(admin_url.as_str()).await.unwrap();
 
-    // Use an isolated temporary table on a dedicated connection to test migration 003 normalization logic and constraints
-    // without dropping global constraints or interfering with other concurrent test threads
-    sqlx::query(
-        "CREATE TEMPORARY TABLE temp_splits (
-            id UUID PRIMARY KEY,
-            reconciled_state CHAR(1) NOT NULL DEFAULT 'n',
-            reconciled_date TIMESTAMPTZ
-        ) ON COMMIT PRESERVE ROWS"
+    // Clean up any stale migration test databases from previous/interrupted runs (Issue 4)
+    if let Ok(stale_dbs) = sqlx::query_scalar::<_, String>(
+        "SELECT datname FROM pg_database WHERE datname LIKE 'gnucash_mig_%_test'"
     )
-    .execute(&mut *conn)
-    .await
-    .unwrap();
+    .fetch_all(&admin_pool)
+    .await {
+        for stale in stale_dbs {
+            let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", stale)).execute(&admin_pool).await;
+        }
+    }
+
+    // Create throwaway test database to test the actual migration files from disk
+    sqlx::query(&format!("CREATE DATABASE \"{}\"", throwaway_db)).execute(&admin_pool).await.unwrap();
+
+    let mut throwaway_url = url::Url::parse(&base_url).unwrap();
+    throwaway_url.set_path(&format!("/{}", throwaway_db));
+    let test_pool = sqlx::PgPool::connect(throwaway_url.as_str()).await.unwrap();
+
+    // Apply baseline migrations 001 and 002 directly from file
+    let mig_001 = include_str!("../migrations/001_initial_schema.sql");
+    let mig_002 = include_str!("../migrations/002_multi_user.sql");
+    sqlx::raw_sql(mig_001).execute(&test_pool).await.unwrap();
+    sqlx::raw_sql(mig_002).execute(&test_pool).await.unwrap();
+
+    // Insert legacy user, account, transaction, and splits with non-normalized reconciled states
+    let user_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO users (id, username, email, password_hash) VALUES ($1, 'legacy_u', 'legacy@example.com', 'hash')")
+        .bind(user_id).execute(&test_pool).await.unwrap();
+    let acc_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO accounts (id, name, account_type, currency, placeholder, user_id) VALUES ($1, 'Legacy Acc', 'bank', 'INR', false, $2)")
+        .bind(acc_id).bind(user_id).execute(&test_pool).await.unwrap();
+    let tx_id = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO transactions (id, user_id, post_date, description) VALUES ($1, $2, '2026-11-01', 'Legacy Tx')")
+        .bind(tx_id).bind(user_id).execute(&test_pool).await.unwrap();
 
     let sp_y = uuid::Uuid::new_v4();
     let sp_c = uuid::Uuid::new_v4();
     let sp_f = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, reconciled_state, reconciled_date) VALUES ($1, $4, $5, 10, 'Y', NOW()), ($2, $4, $5, -10, 'C', NOW()), ($3, $4, $5, 0, 'f', NOW())")
+        .bind(sp_y).bind(sp_c).bind(sp_f).bind(tx_id).bind(acc_id).execute(&test_pool).await.unwrap();
 
-    sqlx::query("INSERT INTO temp_splits (id, reconciled_state, reconciled_date) VALUES ($1, 'Y', NOW()), ($2, 'C', NOW()), ($3, 'f', NOW())")
-        .bind(sp_y).bind(sp_c).bind(sp_f).execute(&mut *conn).await.unwrap();
+    // Execute the ACTUAL migration file 003_optimizations_and_constraints.sql!
+    let mig_003 = include_str!("../migrations/003_optimizations_and_constraints.sql");
+    sqlx::raw_sql(mig_003).execute(&test_pool).await.unwrap();
 
-    // Run migration normalization statements (from 003_optimizations_and_constraints.sql)
-    sqlx::query("UPDATE temp_splits SET reconciled_state = LOWER(reconciled_state) WHERE reconciled_state <> LOWER(reconciled_state)")
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE temp_splits SET reconciled_state = 'n', reconciled_date = NULL WHERE reconciled_state NOT IN ('n', 'c', 'y')")
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-
-    // Verify rows normalized
-    let state_y: String = sqlx::query_scalar("SELECT reconciled_state FROM temp_splits WHERE id = $1").bind(sp_y).fetch_one(&mut *conn).await.unwrap();
+    // Verify row normalization from running migration 003
+    let state_y: String = sqlx::query_scalar("SELECT reconciled_state FROM splits WHERE id = $1").bind(sp_y).fetch_one(&test_pool).await.unwrap();
     assert_eq!(state_y, "y");
-
-    let state_c: String = sqlx::query_scalar("SELECT reconciled_state FROM temp_splits WHERE id = $1").bind(sp_c).fetch_one(&mut *conn).await.unwrap();
+    let state_c: String = sqlx::query_scalar("SELECT reconciled_state FROM splits WHERE id = $1").bind(sp_c).fetch_one(&test_pool).await.unwrap();
     assert_eq!(state_c, "c");
-
-    let (state_f, rec_date_f): (String, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as("SELECT reconciled_state, reconciled_date FROM temp_splits WHERE id = $1")
-        .bind(sp_f)
-        .fetch_one(&mut *conn)
-        .await
-        .unwrap();
+    let (state_f, rec_date_f): (String, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as("SELECT reconciled_state, reconciled_date FROM splits WHERE id = $1")
+        .bind(sp_f).fetch_one(&test_pool).await.unwrap();
     assert_eq!(state_f, "n");
     assert!(rec_date_f.is_none(), "reconciled_state 'n' must have reconcile_date NULL (DATA-3, REC-1)");
 
-    // Add constraint dynamically with idempotent check
-    sqlx::query(
-        r#"DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_temp_splits_reconciled_state') THEN
-                ALTER TABLE temp_splits ADD CONSTRAINT chk_temp_splits_reconciled_state CHECK (reconciled_state IN ('n', 'c', 'y'));
-            END IF;
-        END $$;"#
-    )
-    .execute(&mut *conn)
-    .await
-    .unwrap();
-
     // Get constraint OID
-    let oid1: i64 = sqlx::query_scalar("SELECT oid::int8 FROM pg_constraint WHERE conname = 'chk_temp_splits_reconciled_state'")
-        .fetch_one(&mut *conn)
-        .await
-        .unwrap();
+    let oid1: i64 = sqlx::query_scalar("SELECT oid::int8 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state'")
+        .fetch_one(&test_pool).await.unwrap();
 
-    // Re-run idempotent constraint block -> OID must be unchanged
-    sqlx::query(
-        r#"DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_temp_splits_reconciled_state') THEN
-                ALTER TABLE temp_splits ADD CONSTRAINT chk_temp_splits_reconciled_state CHECK (reconciled_state IN ('n', 'c', 'y'));
-            END IF;
-        END $$;"#
-    )
-    .execute(&mut *conn)
-    .await
-    .unwrap();
+    // Run migration 003 a SECOND time to verify it is completely idempotent!
+    sqlx::raw_sql(mig_003).execute(&test_pool).await.unwrap();
 
-    let oid2: i64 = sqlx::query_scalar("SELECT oid::int8 FROM pg_constraint WHERE conname = 'chk_temp_splits_reconciled_state'")
-        .fetch_one(&mut *conn)
-        .await
-        .unwrap();
+    let oid2: i64 = sqlx::query_scalar("SELECT oid::int8 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state'")
+        .fetch_one(&test_pool).await.unwrap();
     assert_eq!(oid1, oid2, "Constraint must not be dropped and re-created when valid (idempotent)");
 
-    // Invalid state 'Z' fails constraint
-    let err = sqlx::query("INSERT INTO temp_splits (id, reconciled_state) VALUES ($1, 'Z')")
-        .bind(uuid::Uuid::new_v4()).execute(&mut *conn).await;
+    // Verify invalid state 'Z' fails the constraint
+    let err = sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, reconciled_state) VALUES ($1, $2, $3, 10, 'Z')")
+        .bind(uuid::Uuid::new_v4()).bind(tx_id).bind(acc_id).execute(&test_pool).await;
     assert!(err.is_err(), "Inserting invalid state 'Z' must violate constraint");
 
-    // Also assert that the permanent constraint exists on the main splits table
-    let main_constraint: (bool,) = sqlx::query_as(
-        "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state')"
-    )
-    .fetch_one(&mut *conn)
-    .await
-    .unwrap();
-    assert!(main_constraint.0, "chk_splits_reconciled_state must exist on splits table");
+    // Close pool and clean up throwaway database with FORCE
+    test_pool.close().await;
+    let _ = sqlx::query(&format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", throwaway_db)).execute(&admin_pool).await;
 }
 
 #[tokio::test]

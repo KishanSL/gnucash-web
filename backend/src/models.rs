@@ -15,6 +15,7 @@ pub struct AccountRow {
     pub description: Option<String>,
     pub placeholder: bool,
     pub hidden: bool,
+    pub commodity_fraction: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -30,6 +31,7 @@ pub struct Account {
     pub description: Option<String>,
     pub placeholder: bool,
     pub hidden: bool,
+    pub commodity_fraction: Option<i64>,
     pub balance: Decimal,        // direct balance of this account
     pub total_balance: Decimal,  // includes all children recursively
     pub display_balance: Decimal,// formatted accounting balance according to account normal balance
@@ -101,7 +103,7 @@ pub struct SplitRow {
     pub reconciled_date: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct SplitWithAccount {
     pub id: Uuid,
     pub transaction_id: Uuid,
@@ -308,4 +310,38 @@ pub fn calculate_display_balance(account_type: &str, raw_balance: Decimal) -> De
     } else {
         -raw_balance
     }
+}
+
+// ---------------------------------------------------------------------------
+// Shared Typed Database Query Rows (eliminates raw copied tuples)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct RegisterEntryRow {
+    pub tx_id: Uuid,
+    pub split_id: Uuid,
+    pub post_date: NaiveDate,
+    pub num: Option<String>,
+    pub description: String,
+    pub notes: Option<String>,
+    pub memo: Option<String>,
+    pub reconciled_state: String,
+    pub amount: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AccountBalanceRow {
+    pub account_id: Uuid,
+    pub balance: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct UnreconciledSplitRow {
+    pub id: Uuid,
+    pub transaction_id: Uuid,
+    pub post_date: NaiveDate,
+    pub num: Option<String>,
+    pub description: String,
+    pub amount: Decimal,
+    pub reconciled_state: String,
 }

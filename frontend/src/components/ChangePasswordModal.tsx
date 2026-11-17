@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { KeyRound, Lock, Eye, EyeOff, AlertCircle, CheckCircle2, X } from 'lucide-react';
-import { changePassword } from '../api';
+import { changePassword, getErrorMessage } from '../api';
 
 interface ChangePasswordModalProps {
   isOpen: boolean;
@@ -62,8 +62,8 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
       setTimeout(() => {
         handleClose();
       }, 1500);
-    } catch (err: any) {
-      setError(err.message || 'Failed to change password. Please check your current password.');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err) || 'Failed to change password. Please check your current password.');
     } finally {
       setLoading(false);
     }

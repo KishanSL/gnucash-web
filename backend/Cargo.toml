@@ -26,6 +26,11 @@ jsonwebtoken = { version = "11.1.0", features = ["rust_crypto"] }
 subtle = "2.6"
 url = "2.5"
 
+[features]
+default = []
+test-utils = []
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+gnucash-backend = { path = ".", features = ["test-utils"] }

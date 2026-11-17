@@ -851,6 +851,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "flate2",
+ "gnucash-backend",
  "http-body-util",
  "jsonwebtoken",
  "quick-xml",

@@ -407,17 +407,29 @@ export const SUPPORTED_CURRENCIES = [
   { code: 'CHF', symbol: 'CHF', name: 'Swiss Franc (CHF)' },
 ];
 
+export function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  if (err && typeof err === 'object' && 'message' in err) {
+    return String((err as { message: unknown }).message);
+  }
+  return 'An unexpected error occurred';
+}
+
 export function formatCurrency(
   amount: string | number | undefined | null,
   currency: string = 'INR'
 ): string {
   const currCode = currency ? currency.toUpperCase() : 'INR';
+  const decimals = currCode === 'JPY' ? 0 : 2;
+  const zero = (0).toFixed(decimals);
+
   if (amount === undefined || amount === null || amount === '') {
-    return currCode === 'INR' ? '₹0.00' : `${currCode} 0.00`;
+    return currCode === 'INR' ? `₹${zero}` : `${currCode} ${zero}`;
   }
   const num = typeof amount === 'string' ? parseFloat(amount) : amount;
   if (isNaN(num)) {
-    return currCode === 'INR' ? '₹0.00' : `${currCode} 0.00`;
+    return currCode === 'INR' ? `₹${zero}` : `${currCode} ${zero}`;
   }
 
   // For INR, use en-IN locale which formats lakhs/crores: ₹1,23,456.78
@@ -425,8 +437,8 @@ export function formatCurrency(
     return new Intl.NumberFormat('en-IN', {
       style: 'currency',
       currency: 'INR',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
     }).format(num);
   }
 
@@ -434,10 +446,10 @@ export function formatCurrency(
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: currCode,
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
     }).format(num);
   } catch {
-    return `${currCode} ${num.toFixed(2)}`;
+    return `${currCode} ${num.toFixed(decimals)}`;
   }
 }

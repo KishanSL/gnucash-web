@@ -36,6 +36,18 @@ interface AccountsTreeProps {
   onToggleHideAccount: (account: Account) => void;
 }
 
+// Recursively collect all account IDs that have children
+function getAllParentIds(nodes: AccountTreeNode[]): string[] {
+  let ids: string[] = [];
+  for (const node of nodes) {
+    if (node.children && node.children.length > 0) {
+      ids.push(node.account.id);
+      ids = ids.concat(getAllParentIds(node.children));
+    }
+  }
+  return ids;
+}
+
 export const AccountsTree: React.FC<AccountsTreeProps> = ({
   tree,
   currentCurrency,
@@ -106,18 +118,6 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
       persistCollapsedState(next);
       return next;
     });
-  };
-
-  // Recursively collect all account IDs that have children
-  const getAllParentIds = (nodes: AccountTreeNode[]): string[] => {
-    let ids: string[] = [];
-    for (const node of nodes) {
-      if (node.children && node.children.length > 0) {
-        ids.push(node.account.id);
-        ids = ids.concat(getAllParentIds(node.children));
-      }
-    }
-    return ids;
   };
 
   // Synchronize collapsed state on initial load / refresh if hideSubaccounts was requested

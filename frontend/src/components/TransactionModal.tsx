@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React from 'react';
 import {
   X,
   Plus,
-  Trash2,
   CheckCircle2,
   AlertCircle,
   Wand2,
@@ -12,7 +11,8 @@ import {
 } from 'lucide-react';
 import { Account, CreateTransactionPayload, Transaction, UpdateTransactionPayload } from '../types';
 import { formatCurrency } from '../api';
-import { AccountAutocomplete } from './AccountAutocomplete';
+import { useTransactionModal } from './transaction_modal/useTransactionModal';
+import { TransactionSplitRow } from './transaction_modal/TransactionSplitRow';
 
 interface TransactionModalProps {
   isOpen: boolean;
@@ -26,16 +26,6 @@ interface TransactionModalProps {
   transactions?: Transaction[];
 }
 
-interface SplitRowState {
-  id: string;
-  account_id: string;
-  memo: string;
-  debit: string;
-  credit: string;
-  reconciled_state?: string;
-  reconciled_date?: string | null;
-}
-
 export const TransactionModal: React.FC<TransactionModalProps> = ({
   isOpen,
   onClose,
@@ -47,361 +37,55 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
   currentCurrency,
   transactions = [],
 }) => {
-  const [postDate, setPostDate] = useState(new Date().toISOString().split('T')[0]);
-  const [num, setNum] = useState('');
-  const [description, setDescription] = useState('');
-  const [notes, setNotes] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [autofillBanner, setAutofillBanner] = useState<string | null>(null);
-
-  // Payee autocomplete dropdown states
-  const [isPayeeDropdownOpen, setIsPayeeDropdownOpen] = useState(false);
-  const [payeeHighlightIndex, setPayeeHighlightIndex] = useState(0);
-  const payeeRef = useRef<HTMLDivElement>(null);
-  const payeeListRef = useRef<HTMLUListElement>(null);
-
-  // Non-placeholder accounts only
-  const validAccounts = accounts.filter((a) => !a.placeholder);
-
-  // Group distinct previous payees mapped to their latest transaction
-  const payeeHistory = useMemo(() => {
-    if (!transactions || transactions.length === 0) return [];
-
-    // Sort transactions by post_date DESC, then created_at DESC
-    const sorted = [...transactions].sort((a, b) => {
-      const timeA = new Date(a.post_date).getTime();
-      const timeB = new Date(b.post_date).getTime();
-      if (timeA !== timeB) return timeB - timeA;
-      return (b.created_at || '').localeCompare(a.created_at || '');
-    });
-
-    const map = new Map<string, { payee: string; latestTx: Transaction; count: number }>();
-    for (const tx of sorted) {
-      const p = (tx.description || '').trim();
-      if (!p) continue;
-      const key = p.toLowerCase();
-      if (!map.has(key)) {
-        map.set(key, { payee: p, latestTx: tx, count: 1 });
-      } else {
-        map.get(key)!.count += 1;
-      }
-    }
-
-    return Array.from(map.values());
-  }, [transactions]);
-
-  // Filtered payees matching current description input
-  const filteredPayees = useMemo(() => {
-    const q = description.trim().toLowerCase();
-    if (!q) {
-      return payeeHistory.slice(0, 8);
-    }
-    return payeeHistory
-      .filter((item) => item.payee.toLowerCase().includes(q))
-      .slice(0, 8);
-  }, [payeeHistory, description]);
-
-  useEffect(() => {
-    setPayeeHighlightIndex(0);
-  }, [filteredPayees]);
-
-  // Close payee dropdown on outside click
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (payeeRef.current && !payeeRef.current.contains(e.target as Node)) {
-        setIsPayeeDropdownOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, []);
-
-  // Initialize splits
-  const [splits, setSplits] = useState<SplitRowState[]>([
-    {
-      id: '1',
-      account_id: defaultAccountId || (validAccounts[0]?.id || ''),
-      memo: '',
-      debit: '',
-      credit: '',
-    },
-    {
-      id: '2',
-      account_id: validAccounts[1]?.id || '',
-      memo: '',
-      debit: '',
-      credit: '',
-    },
-  ]);
-
-  useEffect(() => {
-    if (isOpen) {
-      if (editingTransaction) {
-        setPostDate(editingTransaction.post_date);
-        setNum(editingTransaction.num || '');
-        setDescription(editingTransaction.description || '');
-        setNotes(editingTransaction.notes || '');
-        setError(null);
-        setAutofillBanner(null);
-        setIsPayeeDropdownOpen(false);
-        if (editingTransaction.splits && editingTransaction.splits.length >= 2) {
-          setSplits(
-            editingTransaction.splits.map((s, idx) => {
-              const amt = parseFloat(s.amount) || 0;
-              return {
-                id: s.id || String(idx + 1),
-                account_id: s.account_id,
-                memo: s.memo || '',
-                debit: amt > 0 ? amt.toFixed(2) : '',
-                credit: amt < 0 ? Math.abs(amt).toFixed(2) : '',
-                reconciled_state: s.reconciled_state,
-                reconciled_date: s.reconciled_date,
-              };
-            })
-          );
-        }
-      } else {
-        setPostDate(new Date().toISOString().split('T')[0]);
-        setNum('');
-        setDescription('');
-        setNotes('');
-        setError(null);
-        setAutofillBanner(null);
-        setIsPayeeDropdownOpen(false);
-        setSplits([
-          {
-            id: '1',
-            account_id: defaultAccountId || (validAccounts[0]?.id || ''),
-            memo: '',
-            debit: '',
-            credit: '',
-          },
-          {
-            id: '2',
-            account_id: validAccounts[1]?.id || '',
-            memo: '',
-            debit: '',
-            credit: '',
-          },
-        ]);
-      }
-    }
-  }, [isOpen, defaultAccountId, editingTransaction]);
-
-  const handleSelectPayee = (item: { payee: string; latestTx: Transaction; count: number }) => {
-    setDescription(item.payee);
-    if (item.latestTx.notes) {
-      setNotes(item.latestTx.notes);
-    }
-
-    // Autofill splits from latest transaction of this payee
-    if (item.latestTx.splits && item.latestTx.splits.length >= 2) {
-      const newSplits: SplitRowState[] = item.latestTx.splits.map((s) => {
-        const val = parseFloat(s.amount) || 0;
-        const debit = val > 0 ? val.toFixed(2) : '';
-        const credit = val < 0 ? Math.abs(val).toFixed(2) : '';
-
-        const exists = validAccounts.some((a) => a.id === s.account_id);
-        const finalAccId = exists ? s.account_id : validAccounts[0]?.id || '';
-
-        return {
-          id: Math.random().toString(),
-          account_id: finalAccId,
-          memo: s.memo || '',
-          debit,
-          credit,
-        };
-      });
-
-      setSplits(newSplits);
-      setAutofillBanner(
-        `Autofilled ${newSplits.length} splits and details from last transaction (${item.latestTx.post_date})`
-      );
-    }
-
-    setIsPayeeDropdownOpen(false);
-  };
-
-  const handlePayeeKeyDown = (e: React.KeyboardEvent) => {
-    if (!isPayeeDropdownOpen || filteredPayees.length === 0) {
-      if (e.key === 'ArrowDown' && filteredPayees.length > 0) {
-        e.preventDefault();
-        setIsPayeeDropdownOpen(true);
-      }
-      return;
-    }
-
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      setPayeeHighlightIndex((prev) =>
-        prev < filteredPayees.length - 1 ? prev + 1 : 0
-      );
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setPayeeHighlightIndex((prev) =>
-        prev > 0 ? prev - 1 : filteredPayees.length - 1
-      );
-    } else if (e.key === 'Enter') {
-      if (filteredPayees[payeeHighlightIndex]) {
-        e.preventDefault();
-        handleSelectPayee(filteredPayees[payeeHighlightIndex]);
-      }
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      setIsPayeeDropdownOpen(false);
-    }
-  };
+  const modal = useTransactionModal({
+    isOpen,
+    onClose,
+    onSubmit,
+    onUpdate,
+    editingTransaction,
+    accounts,
+    defaultAccountId,
+    currentCurrency,
+    transactions,
+  });
 
   if (!isOpen) return null;
 
-  const handleSplitChange = (index: number, field: keyof SplitRowState, value: string) => {
-    setSplits((prev) => {
-      const next = [...prev];
-      if (field === 'debit' && value) {
-        next[index] = { ...next[index], debit: value, credit: '' };
-      } else if (field === 'credit' && value) {
-        next[index] = { ...next[index], credit: value, debit: '' };
-      } else {
-        next[index] = { ...next[index], [field]: value };
-      }
-      return next;
-    });
-  };
-
-  const addSplitRow = () => {
-    setSplits((prev) => [
-      ...prev,
-      {
-        id: Math.random().toString(),
-        account_id: validAccounts[0]?.id || '',
-        memo: '',
-        debit: '',
-        credit: '',
-      },
-    ]);
-  };
-
-  const removeSplitRow = (index: number) => {
-    if (splits.length <= 2) {
-      alert('A double-entry transaction must contain at least 2 splits.');
-      return;
-    }
-    setSplits((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  // Calculate totals
-  let totalDebits = 0;
-  let totalCredits = 0;
-
-  for (const s of splits) {
-    if (s.debit) totalDebits += parseFloat(s.debit) || 0;
-    if (s.credit) totalCredits += parseFloat(s.credit) || 0;
-  }
-
-  const imbalance = Math.round((totalDebits - totalCredits) * 100) / 100;
-  const isBalanced = Math.abs(imbalance) < 0.001 && totalDebits > 0;
-
-  // Auto-balance button: adjusts or fills the remaining difference
-  const handleAutoBalance = () => {
-    if (Math.abs(imbalance) < 0.001) return;
-
-    setSplits((prev) => {
-      const next = [...prev];
-      const lastIndex = next.length - 1;
-
-      if (imbalance > 0) {
-        // Debits exceed credits: add/increase credit on last row
-        const currentCredit = parseFloat(next[lastIndex].credit) || 0;
-        next[lastIndex].credit = (currentCredit + imbalance).toFixed(2);
-        next[lastIndex].debit = '';
-      } else {
-        // Credits exceed debits: add/increase debit on last row
-        const currentDebit = parseFloat(next[lastIndex].debit) || 0;
-        next[lastIndex].debit = (currentDebit + Math.abs(imbalance)).toFixed(2);
-        next[lastIndex].credit = '';
-      }
-      return next;
-    });
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-
-    if (!description.trim()) {
-      setError('Please provide a description or payee for the transaction.');
-      return;
-    }
-
-    if (splits.length < 2) {
-      setError('A transaction must have at least 2 splits.');
-      return;
-    }
-
-    if (!isBalanced) {
-      setError(
-        `Transaction is not balanced! Total Debits (${formatCurrency(
-          totalDebits,
-          currentCurrency
-        )}) must equal Total Credits (${formatCurrency(totalCredits, currentCurrency)}). Imbalance: ${formatCurrency(
-          imbalance,
-          currentCurrency
-        )}`
-      );
-      return;
-    }
-
-    // Build payload
-    const payloadSplits = splits.map((s) => {
-      const debitVal = parseFloat(s.debit) || 0;
-      const creditVal = parseFloat(s.credit) || 0;
-      const netAmount = debitVal > 0 ? debitVal : -creditVal;
-
-      // Find original split from editingTransaction
-      const origSplit = editingTransaction?.splits?.find((orig) => orig.id === s.id);
-      const isUnchanged =
-        origSplit &&
-        origSplit.account_id === s.account_id &&
-        Math.abs(parseFloat(origSplit.amount) - netAmount) < 0.001;
-
-      return {
-        id: s.id && s.id.length === 36 ? s.id : undefined,
-        account_id: s.account_id,
-        amount: netAmount.toFixed(2),
-        memo: s.memo.trim() ? s.memo.trim() : null,
-        reconciled_state: isUnchanged ? s.reconciled_state : 'n',
-      };
-    });
-
-    try {
-      setSubmitting(true);
-      if (editingTransaction && onUpdate) {
-        await onUpdate(editingTransaction.id, {
-          post_date: postDate,
-          num: num.trim() ? num.trim() : null,
-          description: description.trim(),
-          notes: notes.trim() ? notes.trim() : null,
-          splits: payloadSplits,
-        });
-      } else {
-        await onSubmit({
-          post_date: postDate,
-          num: num.trim() ? num.trim() : null,
-          description: description.trim(),
-          notes: notes.trim() ? notes.trim() : null,
-          splits: payloadSplits,
-        });
-      }
-      onClose();
-    } catch (err: any) {
-      setError(err.message || 'Failed to save transaction');
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const {
+    postDate,
+    setPostDate,
+    num,
+    setNum,
+    description,
+    setDescription,
+    notes,
+    setNotes,
+    submitting,
+    error,
+    autofillBanner,
+    setAutofillBanner,
+    isPayeeDropdownOpen,
+    setIsPayeeDropdownOpen,
+    payeeHighlightIndex,
+    setPayeeHighlightIndex,
+    payeeRef,
+    payeeListRef,
+    validAccounts,
+    payeeHistory,
+    filteredPayees,
+    handleSelectPayee,
+    handlePayeeKeyDown,
+    splits,
+    handleSplitChange,
+    addSplitRow,
+    removeSplitRow,
+    totalDebits,
+    totalCredits,
+    imbalance,
+    isBalanced,
+    handleAutoBalance,
+    handleSubmit,
+  } = modal;
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4">
@@ -612,66 +296,15 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
             {/* Mobile View: Split Cards (< sm) */}
             <div className="sm:hidden space-y-2.5">
               {splits.map((s, idx) => (
-                <div key={s.id} className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold text-slate-600">Split #{idx + 1}</span>
-                    <button
-                      type="button"
-                      onClick={() => removeSplitRow(idx)}
-                      className="text-slate-400 hover:text-rose-500 p-1"
-                      title="Remove split"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] uppercase font-semibold text-slate-400 mb-0.5">Account</label>
-                    <AccountAutocomplete
-                      accounts={validAccounts}
-                      value={s.account_id}
-                      onChange={(accountId) => handleSplitChange(idx, 'account_id', accountId)}
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] uppercase font-semibold text-slate-400 mb-0.5">Memo</label>
-                    <input
-                      type="text"
-                      placeholder="Optional memo"
-                      value={s.memo}
-                      onChange={(e) => handleSplitChange(idx, 'memo', e.target.value)}
-                      className="w-full py-1.5 px-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-[10px] uppercase font-semibold text-emerald-700 mb-0.5">Debit (+)</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        placeholder="0.00"
-                        value={s.debit}
-                        onChange={(e) => handleSplitChange(idx, 'debit', e.target.value)}
-                        className="w-full py-1.5 px-2 text-xs text-right font-mono bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 text-emerald-700 font-bold"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] uppercase font-semibold text-rose-700 mb-0.5">Credit (-)</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        placeholder="0.00"
-                        value={s.credit}
-                        onChange={(e) => handleSplitChange(idx, 'credit', e.target.value)}
-                        className="w-full py-1.5 px-2 text-xs text-right font-mono bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 text-rose-700 font-bold"
-                      />
-                    </div>
-                  </div>
-                </div>
+                <TransactionSplitRow
+                  key={s.id}
+                  split={s}
+                  index={idx}
+                  validAccounts={validAccounts}
+                  onSplitChange={handleSplitChange}
+                  onRemoveSplit={removeSplitRow}
+                  mode="mobile"
+                />
               ))}
             </div>
 
@@ -689,65 +322,15 @@ export const TransactionModal: React.FC<TransactionModalProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {splits.map((s, idx) => (
-                    <tr key={s.id} className="hover:bg-slate-50">
-                      {/* Account Selector */}
-                      <td className="py-1.5 px-3 min-w-[240px]">
-                        <AccountAutocomplete
-                          accounts={validAccounts}
-                          value={s.account_id}
-                          onChange={(accountId) => handleSplitChange(idx, 'account_id', accountId)}
-                        />
-                      </td>
-
-                      {/* Memo */}
-                      <td className="py-1.5 px-2">
-                        <input
-                          type="text"
-                          placeholder="Optional memo"
-                          value={s.memo}
-                          onChange={(e) => handleSplitChange(idx, 'memo', e.target.value)}
-                          className="w-full py-1 px-2 text-xs bg-white border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                        />
-                      </td>
-
-                      {/* Debit */}
-                      <td className="py-1.5 px-2">
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          placeholder="0.00"
-                          value={s.debit}
-                          onChange={(e) => handleSplitChange(idx, 'debit', e.target.value)}
-                          className="w-full py-1 px-2 text-xs text-right font-mono bg-white border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500 text-emerald-700 font-semibold"
-                        />
-                      </td>
-
-                      {/* Credit */}
-                      <td className="py-1.5 px-2">
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          placeholder="0.00"
-                          value={s.credit}
-                          onChange={(e) => handleSplitChange(idx, 'credit', e.target.value)}
-                          className="w-full py-1 px-2 text-xs text-right font-mono bg-white border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500 text-rose-700 font-semibold"
-                        />
-                      </td>
-
-                      {/* Remove split */}
-                      <td className="py-1.5 px-2 text-center">
-                        <button
-                          type="button"
-                          onClick={() => removeSplitRow(idx)}
-                          className="text-slate-300 hover:text-rose-500 transition p-1"
-                          title="Remove split"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </td>
-                    </tr>
+                    <TransactionSplitRow
+                      key={s.id}
+                      split={s}
+                      index={idx}
+                      validAccounts={validAccounts}
+                      onSplitChange={handleSplitChange}
+                      onRemoveSplit={removeSplitRow}
+                      mode="desktop"
+                    />
                   ))}
                 </tbody>
               </table>

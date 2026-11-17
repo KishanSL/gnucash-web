@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::auth::AuthUser;
 use crate::handlers::internal_error;
 use crate::models::{
-    calculate_display_balance, Account, AccountRow, AccountTreeNode, CreateAccountRequest,
+    calculate_display_balance, Account, AccountBalanceRow, AccountRow, AccountTreeNode, CreateAccountRequest,
     UpdateAccountRequest,
 };
 
@@ -68,7 +68,7 @@ pub async fn list_accounts(
     State(pool): State<PgPool>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let rows: Vec<AccountRow> = sqlx::query_as::<_, AccountRow>(
-        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
+        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, commodity_fraction, created_at, updated_at
          FROM accounts WHERE user_id = $1 ORDER BY code ASC NULLS LAST, name ASC",
     )
     .bind(auth.id)
@@ -77,7 +77,7 @@ pub async fn list_accounts(
     .map_err(|e| internal_error("Failed to list accounts", e))?;
 
     // Fetch direct balances for user's accounts
-    let balances: Vec<(Uuid, Decimal)> = sqlx::query_as::<_, (Uuid, Decimal)>(
+    let balances: Vec<AccountBalanceRow> = sqlx::query_as::<_, AccountBalanceRow>(
         r#"SELECT s.account_id, COALESCE(SUM(s.amount), 0) as balance
            FROM splits s
            JOIN accounts a ON s.account_id = a.id
@@ -89,7 +89,7 @@ pub async fn list_accounts(
     .await
     .map_err(|e| internal_error("Failed to fetch account balances", e))?;
 
-    let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().collect();
+    let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().map(|b| (b.account_id, b.balance)).collect();
     let accounts = build_account_list(rows, &balance_map);
 
     Ok(Json(accounts))
@@ -100,7 +100,7 @@ pub async fn get_account_tree(
     State(pool): State<PgPool>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let rows: Vec<AccountRow> = sqlx::query_as::<_, AccountRow>(
-        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
+        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, commodity_fraction, created_at, updated_at
          FROM accounts WHERE user_id = $1 ORDER BY code ASC NULLS LAST, name ASC",
     )
     .bind(auth.id)
@@ -108,7 +108,7 @@ pub async fn get_account_tree(
     .await
     .map_err(|e| internal_error("Failed to fetch accounts for tree", e))?;
 
-    let balances: Vec<(Uuid, Decimal)> = sqlx::query_as::<_, (Uuid, Decimal)>(
+    let balances: Vec<AccountBalanceRow> = sqlx::query_as::<_, AccountBalanceRow>(
         r#"SELECT s.account_id, COALESCE(SUM(s.amount), 0) as balance
            FROM splits s
            JOIN accounts a ON s.account_id = a.id
@@ -120,7 +120,7 @@ pub async fn get_account_tree(
     .await
     .map_err(|e| internal_error("Failed to fetch account tree balances", e))?;
 
-    let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().collect();
+    let balance_map: HashMap<Uuid, Decimal> = balances.into_iter().map(|b| (b.account_id, b.balance)).collect();
     let accounts = build_account_list(rows, &balance_map);
 
     let tree = build_tree_structure(accounts);
@@ -133,7 +133,7 @@ pub async fn get_account(
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let row = sqlx::query_as::<_, AccountRow>(
-        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
+        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, commodity_fraction, created_at, updated_at
          FROM accounts WHERE id = $1 AND user_id = $2",
     )
     .bind(id)
@@ -169,6 +169,7 @@ pub async fn get_account(
         description: row.description,
         placeholder: row.placeholder,
         hidden: row.hidden,
+        commodity_fraction: row.commodity_fraction,
         balance,
         total_balance: balance,
         display_balance,
@@ -250,7 +251,7 @@ pub async fn create_account(
     let row = sqlx::query_as::<_, AccountRow>(
         r#"INSERT INTO accounts (name, code, account_type, parent_id, currency, description, placeholder, hidden, user_id)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-           RETURNING id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at"#
+           RETURNING id, name, code, account_type, parent_id, currency, description, placeholder, hidden, commodity_fraction, created_at, updated_at"#
     )
     .bind(name)
     .bind(code)
@@ -275,6 +276,7 @@ pub async fn create_account(
         description: row.description,
         placeholder: row.placeholder,
         hidden: row.hidden,
+        commodity_fraction: row.commodity_fraction,
         balance: Decimal::ZERO,
         total_balance: Decimal::ZERO,
         display_balance: Decimal::ZERO,
@@ -292,7 +294,7 @@ pub async fn update_account(
     Json(payload): Json<UpdateAccountRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let existing = sqlx::query_as::<_, AccountRow>(
-        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
+        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, commodity_fraction, created_at, updated_at
          FROM accounts WHERE id = $1 AND user_id = $2",
     )
     .bind(id)
@@ -460,7 +462,7 @@ pub async fn update_account(
            SET name = $1, code = $2, account_type = $3, parent_id = $4, currency = $5,
                description = $6, placeholder = $7, hidden = $8, updated_at = NOW()
            WHERE id = $9 AND user_id = $10
-           RETURNING id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at"#
+           RETURNING id, name, code, account_type, parent_id, currency, description, placeholder, hidden, commodity_fraction, created_at, updated_at"#
     )
     .bind(name)
     .bind(code)
@@ -497,6 +499,7 @@ pub async fn update_account(
         description: updated.description,
         placeholder: updated.placeholder,
         hidden: updated.hidden,
+        commodity_fraction: updated.commodity_fraction,
         balance,
         total_balance: balance,
         display_balance,
@@ -637,6 +640,7 @@ fn build_account_list(rows: Vec<AccountRow>, balance_map: &HashMap<Uuid, Decimal
             description: r.description,
             placeholder: r.placeholder,
             hidden: r.hidden,
+            commodity_fraction: r.commodity_fraction,
             balance: direct_b,
             total_balance: total_b,
             display_balance: display_b,

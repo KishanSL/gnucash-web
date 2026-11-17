@@ -2,12 +2,14 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use std::time::Duration;
 use tracing::info;
+#[cfg(any(test, feature = "test-utils"))]
 use url::Url;
 use uuid::Uuid;
 
 /// Resolves a guaranteed safe test database URL.
 /// Strictly asserts that the target database name ends with '_test' to prevent any possibility
 /// of tests executing against production or live application data.
+#[cfg(any(test, feature = "test-utils"))]
 pub fn get_test_database_url() -> String {
     let raw = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
         std::env::var("DATABASE_URL").unwrap_or_else(|_| {
@@ -41,15 +43,24 @@ pub fn get_test_database_url() -> String {
 
 /// Ensures the test database exists on the PostgreSQL server, automatically creating it
 /// via the maintenance 'postgres' database if running against a brand-new instance.
+#[cfg(any(test, feature = "test-utils"))]
 pub async fn ensure_test_database_exists(test_url: &str) {
-    if let Ok(mut admin_url) = Url::parse(test_url) {
-        let test_db_name = admin_url.path().trim_start_matches('/').to_string();
-        if test_db_name.is_empty() {
+    let mut admin_url = match Url::parse(test_url) {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!("Failed to parse test database URL '{}': {}", test_url, e);
             return;
         }
+    };
 
-        admin_url.set_path("/postgres");
-        if let Ok(admin_pool) = sqlx::PgPool::connect(admin_url.as_str()).await {
+    let test_db_name = admin_url.path().trim_start_matches('/').to_string();
+    if test_db_name.is_empty() {
+        return;
+    }
+
+    admin_url.set_path("/postgres");
+    match sqlx::PgPool::connect(admin_url.as_str()).await {
+        Ok(admin_pool) => {
             let exists: Result<(bool,), sqlx::Error> = sqlx::query_as(
                 "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)"
             )
@@ -57,14 +68,34 @@ pub async fn ensure_test_database_exists(test_url: &str) {
             .fetch_one(&admin_pool)
             .await;
 
-            if let Ok((false,)) = exists {
-                let create_sql = format!("CREATE DATABASE \"{}\"", test_db_name.replace('"', "\"\""));
-                if let Err(e) = sqlx::query(&create_sql).execute(&admin_pool).await {
-                    tracing::warn!("Could not auto-create test database '{}': {}", test_db_name, e);
-                } else {
-                    tracing::info!("Auto-created test database '{}'", test_db_name);
+            match exists {
+                Ok((false,)) => {
+                    let create_sql = format!("CREATE DATABASE \"{}\"", test_db_name.replace('"', "\"\""));
+                    if let Err(e) = sqlx::query(&create_sql).execute(&admin_pool).await {
+                        tracing::warn!("Could not auto-create test database '{}': {}", test_db_name, e);
+                    } else {
+                        tracing::info!("Auto-created test database '{}'", test_db_name);
+                    }
+                }
+                Ok((true,)) => {
+                    // Database already exists
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to check if database '{}' exists: {}", test_db_name, e);
                 }
             }
+        }
+        Err(e) => {
+            eprintln!(
+                "Failed to connect to maintenance postgres DB at '{}' to ensure '{}' exists: {}",
+                admin_url, test_db_name, e
+            );
+            tracing::warn!(
+                "Failed to connect to maintenance postgres DB at '{}' to ensure '{}' exists: {}",
+                admin_url,
+                test_db_name,
+                e
+            );
         }
     }
 }

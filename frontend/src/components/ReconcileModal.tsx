@@ -7,7 +7,7 @@ import {
   Calendar,
 } from 'lucide-react';
 import { Account, ReconcileData } from '../types';
-import { fetchReconcileInfo, finishReconciliation, formatCurrency } from '../api';
+import { fetchReconcileInfo, finishReconciliation, formatCurrency, getErrorMessage } from '../api';
 
 interface ReconcileModalProps {
   initialAccount?: Account;
@@ -59,7 +59,7 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
         if (w.reconciled_state === 'c') preSelected.add(w.split_id);
       });
       setSelectedSplitIds(preSelected);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
     }
   };
@@ -158,8 +158,8 @@ export const ReconcileModal: React.FC<ReconcileModalProps> = ({
       setMessage(res.message);
       onReconciledSuccess();
       await loadData(selectedAccountId, statementDate);
-    } catch (err: any) {
-      alert(err.message || 'Failed to finish reconciliation');
+    } catch (err: unknown) {
+      alert(getErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
