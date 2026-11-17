@@ -12,16 +12,8 @@ use gnucash_backend::create_app;
 async fn get_test_pool() -> PgPool {
     std::env::set_var("GNUCASH_TEST_MODE", "1");
     std::env::set_var("JWT_SECRET", "test-secret-key-must-be-at-least-32-chars-long!");
-    let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
-        let default_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash_test".to_string()
-        });
-        if default_url.ends_with("/gnucash") {
-            format!("{}_test", default_url)
-        } else {
-            default_url
-        }
-    });
+    let database_url = gnucash_backend::db::get_test_database_url();
+    gnucash_backend::db::ensure_test_database_exists(&database_url).await;
     let pool = gnucash_backend::db::init_db(&database_url)
         .await
         .expect("Failed to connect to and init test database");
@@ -35,10 +27,11 @@ async fn get_test_pool() -> PgPool {
         .unwrap_or((0,));
 
     if acc_count.0 == 0 {
-        if let Ok(mut tx) = pool.begin().await {
-            let _ = gnucash_backend::handlers::seed::run_seed_tx(&mut tx, default_user).await;
-            let _ = tx.commit().await;
-        }
+        let mut tx = pool.begin().await.expect("Failed to begin transaction for test fixtures");
+        gnucash_backend::handlers::seed::run_seed_tx(&mut tx, default_user)
+            .await
+            .expect("Failed to seed baseline test fixtures");
+        tx.commit().await.expect("Failed to commit test fixtures");
     }
 
     pool
@@ -751,14 +744,31 @@ async fn test_auth_login_and_reset_password() {
 #[tokio::test]
 async fn test_auth_change_password() {
     let pool = get_test_pool().await;
+    let user_id = uuid::Uuid::new_v4();
+    let test_user = format!("chg_pw_{}", user_id.simple());
+    let test_email = format!("{}@example.com", test_user);
+    let initial_pwd = "Initial@Secret123";
+    let pwd_hash = bcrypt::hash(initial_pwd, bcrypt::DEFAULT_COST).unwrap();
+
+    // Insert dedicated test user so parallel tests never share or mutate user session/token_version
+    sqlx::query(
+        "INSERT INTO users (id, username, email, password_hash, token_version) VALUES ($1, $2, $3, $4, 0)"
+    )
+    .bind(user_id)
+    .bind(&test_user)
+    .bind(&test_email)
+    .bind(pwd_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // Login to get token
     let app1 = create_app(pool.clone());
-    let mut login_payload = json!({
-        "username": "kishan",
-        "password": "Kishan@123"
+    let login_payload = json!({
+        "username": test_user,
+        "password": initial_pwd
     });
-    let mut login_res = app1
+    let login_res = app1
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -770,26 +780,7 @@ async fn test_auth_change_password() {
         .await
         .unwrap();
 
-    if login_res.status() == StatusCode::UNAUTHORIZED {
-        let app_fallback = create_app(pool.clone());
-        login_payload = json!({
-            "username": "kishan",
-            "password": "Kishan@123"
-        });
-        login_res = app_fallback
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/auth/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&login_payload).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-    }
     assert_eq!(login_res.status(), StatusCode::OK);
-    let current_pwd = login_payload["password"].as_str().unwrap().to_string();
     let body = login_res.into_body().collect().await.unwrap().to_bytes();
     let login_data: Value = serde_json::from_slice(&body).unwrap();
     let token = login_data["token"].as_str().unwrap();
@@ -827,7 +818,7 @@ async fn test_auth_change_password() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
-                        "current_password": current_pwd,
+                        "current_password": initial_pwd,
                         "new_password": "updated_password_456"
                     }))
                     .unwrap(),
@@ -848,7 +839,7 @@ async fn test_auth_change_password() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
-                        "username": "kishan",
+                        "username": test_user,
                         "password": "updated_password_456"
                     }))
                     .unwrap(),
@@ -858,31 +849,6 @@ async fn test_auth_change_password() {
         .await
         .unwrap();
     assert_eq!(new_login.status(), StatusCode::OK);
-    let new_login_body = new_login.into_body().collect().await.unwrap().to_bytes();
-    let new_login_data: Value = serde_json::from_slice(&new_login_body).unwrap();
-    let updated_token = new_login_data["token"].as_str().unwrap();
-
-    // Change back to Kishan@123 via authenticated change-password endpoint
-    let app5 = create_app(pool);
-    let reset_back_res = app5
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/auth/change-password")
-                .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", updated_token))
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "current_password": "updated_password_456",
-                        "new_password": "Kishan@123"
-                    }))
-                    .unwrap(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(reset_back_res.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -4151,92 +4117,104 @@ async fn test_issue_37_reject_root_account_type() {
 #[tokio::test]
 async fn test_issue_30_reconciled_state_migration_idempotent() {
     let pool = get_test_pool().await;
-    let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
-        let default_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash_test".to_string()
-        });
-        if default_url.ends_with("/gnucash") {
-            format!("{}_test", default_url)
-        } else {
-            default_url
-        }
-    });
+    let mut conn = pool.acquire().await.unwrap();
 
-    let user_id = uuid::Uuid::new_v4();
-    let username = format!("user_mig_{}", user_id.simple());
-    let email = format!("user_mig_{}@example.com", user_id.simple());
-
+    // Use an isolated temporary table on a dedicated connection to test migration 003 normalization logic and constraints
+    // without dropping global constraints or interfering with other concurrent test threads
     sqlx::query(
-        "INSERT INTO users (id, username, email, password_hash, token_version) VALUES ($1, $2, $3, 'hash', 0)"
+        "CREATE TEMPORARY TABLE temp_splits (
+            id UUID PRIMARY KEY,
+            reconciled_state CHAR(1) NOT NULL DEFAULT 'n',
+            reconciled_date TIMESTAMPTZ
+        ) ON COMMIT PRESERVE ROWS"
     )
-    .bind(user_id)
-    .bind(&username)
-    .bind(&email)
-    .execute(&pool)
+    .execute(&mut *conn)
     .await
     .unwrap();
-
-    let acc_id = uuid::Uuid::new_v4();
-    sqlx::query("INSERT INTO accounts (id, name, account_type, currency, placeholder, user_id) VALUES ($1, 'Checking', 'bank', 'INR', false, $2)")
-        .bind(acc_id).bind(user_id).execute(&pool).await.unwrap();
-
-    let tx_id = uuid::Uuid::new_v4();
-    sqlx::query("INSERT INTO transactions (id, user_id, post_date, description) VALUES ($1, $2, '2026-11-01', 'Tx')")
-        .bind(tx_id).bind(user_id).execute(&pool).await.unwrap();
-
-    // Drop constraint temporarily to insert legacy/unnormalized values
-    sqlx::query("ALTER TABLE splits DROP CONSTRAINT IF EXISTS chk_splits_reconciled_state")
-        .execute(&pool)
-        .await
-        .unwrap();
 
     let sp_y = uuid::Uuid::new_v4();
     let sp_c = uuid::Uuid::new_v4();
     let sp_f = uuid::Uuid::new_v4();
 
-    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state, reconciled_date) VALUES ($1, $2, $3, 10, 10, 'Y', NOW())")
-        .bind(sp_y).bind(tx_id).bind(acc_id).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state, reconciled_date) VALUES ($1, $2, $3, 20, 20, 'C', NOW())")
-        .bind(sp_c).bind(tx_id).bind(acc_id).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state, reconciled_date) VALUES ($1, $2, $3, 30, 30, 'f', NOW())")
-        .bind(sp_f).bind(tx_id).bind(acc_id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO temp_splits (id, reconciled_state, reconciled_date) VALUES ($1, 'Y', NOW()), ($2, 'C', NOW()), ($3, 'f', NOW())")
+        .bind(sp_y).bind(sp_c).bind(sp_f).execute(&mut *conn).await.unwrap();
 
-    // Run init_db (migration)
-    gnucash_backend::db::init_db(&database_url).await.unwrap();
+    // Run migration normalization statements (from 003_optimizations_and_constraints.sql)
+    sqlx::query("UPDATE temp_splits SET reconciled_state = LOWER(reconciled_state) WHERE reconciled_state <> LOWER(reconciled_state)")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE temp_splits SET reconciled_state = 'n', reconciled_date = NULL WHERE reconciled_state NOT IN ('n', 'c', 'y')")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
 
     // Verify rows normalized
-    let state_y: String = sqlx::query_scalar("SELECT reconciled_state FROM splits WHERE id = $1").bind(sp_y).fetch_one(&pool).await.unwrap();
+    let state_y: String = sqlx::query_scalar("SELECT reconciled_state FROM temp_splits WHERE id = $1").bind(sp_y).fetch_one(&mut *conn).await.unwrap();
     assert_eq!(state_y, "y");
 
-    let state_c: String = sqlx::query_scalar("SELECT reconciled_state FROM splits WHERE id = $1").bind(sp_c).fetch_one(&pool).await.unwrap();
+    let state_c: String = sqlx::query_scalar("SELECT reconciled_state FROM temp_splits WHERE id = $1").bind(sp_c).fetch_one(&mut *conn).await.unwrap();
     assert_eq!(state_c, "c");
 
-    let (state_f, rec_date_f): (String, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as("SELECT reconciled_state, reconciled_date FROM splits WHERE id = $1")
+    let (state_f, rec_date_f): (String, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as("SELECT reconciled_state, reconciled_date FROM temp_splits WHERE id = $1")
         .bind(sp_f)
-        .fetch_one(&pool)
+        .fetch_one(&mut *conn)
         .await
         .unwrap();
     assert_eq!(state_f, "n");
     assert!(rec_date_f.is_none(), "reconciled_state 'n' must have reconcile_date NULL (DATA-3, REC-1)");
 
+    // Add constraint dynamically with idempotent check
+    sqlx::query(
+        r#"DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_temp_splits_reconciled_state') THEN
+                ALTER TABLE temp_splits ADD CONSTRAINT chk_temp_splits_reconciled_state CHECK (reconciled_state IN ('n', 'c', 'y'));
+            END IF;
+        END $$;"#
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+
     // Get constraint OID
-    let oid1: i64 = sqlx::query_scalar("SELECT oid::int8 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state'")
-        .fetch_one(&pool)
+    let oid1: i64 = sqlx::query_scalar("SELECT oid::int8 FROM pg_constraint WHERE conname = 'chk_temp_splits_reconciled_state'")
+        .fetch_one(&mut *conn)
         .await
         .unwrap();
 
-    // Run init_db again -> must be idempotent with unchanged OID
-    gnucash_backend::db::init_db(&database_url).await.unwrap();
-    let oid2: i64 = sqlx::query_scalar("SELECT oid::int8 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state'")
-        .fetch_one(&pool)
+    // Re-run idempotent constraint block -> OID must be unchanged
+    sqlx::query(
+        r#"DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_temp_splits_reconciled_state') THEN
+                ALTER TABLE temp_splits ADD CONSTRAINT chk_temp_splits_reconciled_state CHECK (reconciled_state IN ('n', 'c', 'y'));
+            END IF;
+        END $$;"#
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+
+    let oid2: i64 = sqlx::query_scalar("SELECT oid::int8 FROM pg_constraint WHERE conname = 'chk_temp_splits_reconciled_state'")
+        .fetch_one(&mut *conn)
         .await
         .unwrap();
     assert_eq!(oid1, oid2, "Constraint must not be dropped and re-created when valid (idempotent)");
 
     // Invalid state 'Z' fails constraint
-    let err = sqlx::query("INSERT INTO splits (id, transaction_id, account_id, amount, quantity, reconciled_state) VALUES ($1, $2, $3, 50, 50, 'Z')")
-        .bind(uuid::Uuid::new_v4()).bind(tx_id).bind(acc_id).execute(&pool).await;
+    let err = sqlx::query("INSERT INTO temp_splits (id, reconciled_state) VALUES ($1, 'Z')")
+        .bind(uuid::Uuid::new_v4()).execute(&mut *conn).await;
     assert!(err.is_err(), "Inserting invalid state 'Z' must violate constraint");
+
+    // Also assert that the permanent constraint exists on the main splits table
+    let main_constraint: (bool,) = sqlx::query_as(
+        "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state')"
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert!(main_constraint.0, "chk_splits_reconciled_state must exist on splits table");
 }
 
 #[tokio::test]

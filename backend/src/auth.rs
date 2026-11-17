@@ -210,9 +210,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_jwt_secret_validation() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let valid_secret = "0123456789abcdef0123456789abcdef";
         std::env::set_var("JWT_SECRET", valid_secret);
         assert_eq!(get_jwt_secret(), valid_secret);
@@ -227,6 +231,7 @@ mod tests {
 
     #[test]
     fn test_create_and_verify_jwt_token_version() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let user_id = Uuid::new_v4();
         let token = create_jwt(user_id, "alice", "alice@example.com", 2).unwrap();
         let claims = verify_jwt(&token).unwrap();

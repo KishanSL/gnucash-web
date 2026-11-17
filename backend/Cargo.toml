@@ -24,6 +24,7 @@ quick-xml = "0.42.0"
 bcrypt = "0.19.3"
 jsonwebtoken = { version = "11.1.0", features = ["rust_crypto"] }
 subtle = "2.6"
+url = "2.5"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

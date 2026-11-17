@@ -64,7 +64,9 @@ export const AccountsTree: React.FC<AccountsTreeProps> = ({
       if (typeof parsed === 'object' && parsed !== null) {
         return parsed;
       }
-    } catch (e) {}
+    } catch {
+      // Ignore JSON parse error and fall back to default expansion
+    }
     return null;
   };
 
