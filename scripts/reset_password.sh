@@ -22,8 +22,12 @@ fi
 
 IDENTIFIER="$1"
 CUSTOM_PASSWORD="${2:-}"
+API_URL="${GNUCASH_API_URL:-http://localhost:8081}"
 
-if [ -f "$ENV_FILE" ]; then
+ADMIN_KEY="${ADMIN_API_KEY:-}"
+if [ -n "$ADMIN_KEY" ]; then
+  :
+elif [ -f "$ENV_FILE" ]; then
   ADMIN_KEY=$(grep -E "^ADMIN_API_KEY=" "$ENV_FILE" | cut -d'=' -f2- | tr -d ' "\r\n' || true)
   if [ -z "$ADMIN_KEY" ]; then
     ADMIN_KEY=$(grep -E "^JWT_SECRET=" "$ENV_FILE" | cut -d'=' -f2- | tr -d ' "\r\n' || true)
@@ -46,7 +50,7 @@ fi
 
 echo "Resetting password for '$IDENTIFIER'..."
 
-RES=$(echo "$PAYLOAD" | curl -s -X POST http://localhost:8081/api/auth/reset-password \
+RES=$(echo "$PAYLOAD" | curl -s -X POST "$API_URL/api/auth/reset-password" \
   -H "Content-Type: application/json" \
   -H "X-Admin-Key: ${ADMIN_KEY}" \
   -d @-)
@@ -62,11 +66,11 @@ if echo "$RES" | grep -q '"success":true'; then
     echo "Temporary Password : $TEMP_PASS"
     echo ""
     echo "Next Steps:"
-    echo "  1. Log in at http://localhost:8081 with '$IDENTIFIER' and this temporary password."
+    echo "  1. Log in at $API_URL with '$IDENTIFIER' and this temporary password."
     echo "  2. Go to User Menu -> Change Password to update to your permanent password."
   else
     echo "Permanent password has been updated as requested."
-    echo "You can now log in at http://localhost:8081 with '$IDENTIFIER'."
+    echo "You can now log in at $API_URL with '$IDENTIFIER'."
   fi
   echo "=========================================================="
 else

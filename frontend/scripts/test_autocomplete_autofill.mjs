@@ -1,6 +1,9 @@
 import puppeteer from 'puppeteer';
 import fs from 'fs';
 import path from 'path';
+import { BASE_URL, requireIsolatedEnv } from './lib/e2e.mjs';
+
+requireIsolatedEnv('test_autocomplete_autofill');
 
 (async () => {
   const screenshotsDir = path.resolve('screenshots');
@@ -16,8 +19,8 @@ import path from 'path';
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900 });
 
-  console.log('1. Navigating to http://localhost:8081...');
-  await page.goto('http://localhost:8081', { waitUntil: 'networkidle0' });
+  console.log(`1. Navigating to ${BASE_URL}...`);
+  await page.goto(BASE_URL, { waitUntil: 'networkidle0' });
 
   // Handle Login
   const isAuthPage = await page.$('input[placeholder="Enter your username or email"]');

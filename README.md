@@ -222,6 +222,7 @@ Includes **37 automated tests** (35 integration tests in `tests/api_tests.rs` an
 ```bash
 cd frontend
 npm run build
-node scripts/test_ui.mjs
+node scripts/test_ui.mjs   # read-only smoke check against the deployed app
+npm run test:e2e           # full Puppeteer suite in an isolated, throwaway environment
 ```
-Verifies TypeScript compilation, production asset bundling, and browser UI interaction.
+Verifies TypeScript compilation, production asset bundling, and browser UI interaction. `npm run test:e2e` runs against a temporary `gnucash_e2e_test` database, so it never touches live data.

@@ -30,14 +30,22 @@ Puppeteer testing suites are configured in `frontend/scripts/`:
 - `frontend/scripts/test_register_autocomplete.mjs` — Complete account history autocomplete & autofill verification.
 - `frontend/scripts/test_register_enhancements.mjs` — Register 2-line mode, inline blank row, and transaction edit modal.
 - `frontend/scripts/test_reset_password.mjs` — Server-secured password reset flow, server notice file extraction, and logged-in password update.
+- `frontend/scripts/test_fund_account_decimals.mjs` — Fund account (commodity fraction 1000) entry still sends 2-decimal amounts (ACC-3, INV-5).
+- Other suites: `test_ui_comprehensive`, `test_autocomplete_autofill`, `test_tree_collapse`, `test_currency_dropdown`, `test_export_gnucash`.
 
 - **Default Test Credentials**: `kishan` / `Kishan@123`
 - **Frontend URL**: `http://localhost:8081`
-- **Run the test script**:
+- **Isolated test environment (never test against live data)**:
+  `npm run test:e2e` (`frontend/scripts/run_e2e.sh`) creates a throwaway `gnucash_e2e_test` database, starts a debug backend on port `8092` and a preview build on port `8093`, runs the suites, then stops everything and drops the database.
+  Scripts that create, change or delete data (`test_register_enhancements`, `test_ui_comprehensive`, `test_autocomplete_autofill`, `test_tree_collapse`, `test_fund_account_decimals`, `test_reset_password`) call `requireIsolatedEnv()` and refuse to run outside it.
+  ```bash
+  cd frontend && npm run test:e2e                                   # all suites, isolated
+  cd frontend && npm run test:e2e -- test_register_enhancements     # selected suites, isolated
+  ```
+- **Read-only smoke checks against the deployed app** (default `http://localhost:8081`, override with `E2E_BASE_URL`):
   ```bash
   cd frontend && node scripts/test_ui.mjs
   cd frontend && node scripts/test_register_autocomplete.mjs
-  cd frontend && node scripts/test_reset_password.mjs
   ```
 - **Screenshots Directory**: `frontend/screenshots/`
 

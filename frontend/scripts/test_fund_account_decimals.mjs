@@ -1,8 +1,10 @@
 import puppeteer from 'puppeteer';
-import { execSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { BASE_URL, requireIsolatedEnv } from './lib/e2e.mjs';
+
+requireIsolatedEnv('test_fund_account_decimals');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,18 +17,25 @@ if (!fs.existsSync(screenshotsDir)) {
 async function run() {
   console.log('🚀 Running Fund Account Decimals Verification (ACC-3 & INV-5)...');
 
-  // 1. Ensure user 'kishan' has an account with commodity_fraction = 1000
-  console.log('1. Ensuring test fund account exists with commodity_fraction = 1000 in DB...');
-  const checkCmd = `podman exec -i gnucash-postgres psql -U gnucash -d gnucash -t -c "SELECT id FROM accounts WHERE user_id = (SELECT id FROM users WHERE username = 'kishan') AND commodity_fraction = 1000 LIMIT 1;"`;
-  let fundAccId = execSync(checkCmd, { encoding: 'utf-8' }).trim();
-  if (!fundAccId) {
-    const insertCmd = `podman exec -i gnucash-postgres psql -U gnucash -d gnucash -c "INSERT INTO accounts (id, name, account_type, currency, user_id, commodity_namespace, commodity_fraction) VALUES (gen_random_uuid(), 'Aditya Birla Mutual Fund', 'asset', 'INF209K01VA3', (SELECT id FROM users WHERE username = 'kishan'), 'FUND', 1000);"`;
-    execSync(insertCmd);
-    fundAccId = execSync(checkCmd, { encoding: 'utf-8' }).trim();
-    console.log(`Created new fund account with id: ${fundAccId}`);
-  } else {
-    console.log(`Found existing fund account with id: ${fundAccId}`);
+  // 1. Find the fund account (commodity_fraction = 1000) that scripts/run_e2e.sh creates
+  console.log('1. Looking up a fund account with commodity_fraction = 1000 via the API...');
+  const loginRes = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'kishan', password: 'Kishan@123' }),
+  });
+  if (!loginRes.ok) throw new Error(`API login failed with status ${loginRes.status}`);
+  const { token } = await loginRes.json();
+  const accountsRes = await fetch(`${BASE_URL}/api/accounts`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!accountsRes.ok) throw new Error(`GET /api/accounts failed with status ${accountsRes.status}`);
+  const fundAccount = (await accountsRes.json()).find((a) => a.commodity_fraction === 1000 && !a.placeholder);
+  if (!fundAccount) {
+    throw new Error('No non-placeholder account with commodity_fraction = 1000 found. Run this test via: npm run test:e2e');
   }
+  const fundName = fundAccount.name;
+  console.log(`Using fund account "${fundName}" (${fundAccount.id})`);
 
   const browser = await puppeteer.launch({
     headless: 'new',
@@ -38,8 +47,8 @@ async function run() {
     await page.setViewport({ width: 1440, height: 900 });
 
     // 2. Navigate & Login
-    console.log('2. Navigating to http://localhost:8081...');
-    await page.goto('http://localhost:8081', { waitUntil: 'networkidle2' });
+    console.log(`2. Navigating to ${BASE_URL}...`);
+    await page.goto(BASE_URL, { waitUntil: 'networkidle2' });
 
     const loginInput = await page.$('input[type="text"]');
     if (loginInput) {
@@ -50,20 +59,20 @@ async function run() {
       await new Promise((r) => setTimeout(r, 2000));
     }
 
-    // 3. Open Register for Aditya Birla Mutual Fund
-    console.log('3. Opening register for Aditya Birla Mutual Fund via double-click...');
-    const openedAccount = await page.evaluate(() => {
+    // 3. Open the fund account's register
+    console.log(`3. Opening register for ${fundName} via double-click...`);
+    const openedAccount = await page.evaluate((name) => {
       const rows = Array.from(document.querySelectorAll('tbody tr'));
-      const fundRow = rows.find((r) => r.innerText.includes('Aditya Birla Mutual Fund'));
+      const fundRow = rows.find((r) => r.innerText.includes(name));
       if (fundRow) {
         fundRow.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-        return 'Aditya Birla Mutual Fund';
+        return name;
       }
       return null;
-    });
+    }, fundName);
 
     if (!openedAccount) {
-      throw new Error('Aditya Birla Mutual Fund account row not found in accounts tree!');
+      throw new Error(`${fundName} account row not found in accounts tree!`);
     }
     console.log(`Opened register for: "${openedAccount}"`);
     await new Promise((r) => setTimeout(r, 2000));

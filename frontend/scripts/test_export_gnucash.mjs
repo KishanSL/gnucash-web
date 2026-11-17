@@ -2,6 +2,7 @@ import puppeteer from 'puppeteer';
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
+import { BASE_URL } from './lib/e2e.mjs';
 
 (async () => {
   const screenshotsDir = path.resolve('screenshots');
@@ -17,8 +18,8 @@ import { execSync } from 'child_process';
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900 });
 
-  console.log('1. Navigating to http://localhost:8081...');
-  await page.goto('http://localhost:8081', { waitUntil: 'networkidle0' });
+  console.log(`1. Navigating to ${BASE_URL}...`);
+  await page.goto(BASE_URL, { waitUntil: 'networkidle0' });
 
   // Login
   const isAuth = await page.$('input[placeholder="Enter your username or email"]');
@@ -106,7 +107,7 @@ import { execSync } from 'child_process';
   const tempExportPath = '/tmp/test_downloaded.gnucash';
   // Re-fetch full file to disk for sqlite3 analysis
   execSync(
-    `curl -s -H "Authorization: Bearer $(curl -s -X POST http://localhost:8081/api/auth/login -H 'Content-Type: application/json' -d '{"username":"kishan","password":"Kishan@123"}' | jq -r '.token')" http://localhost:8081/api/export/gnucash-sqlite -o ${tempExportPath}`
+    `curl -s -H "Authorization: Bearer $(curl -s -X POST ${BASE_URL}/api/auth/login -H 'Content-Type: application/json' -d '{"username":"kishan","password":"Kishan@123"}' | jq -r '.token')" ${BASE_URL}/api/export/gnucash-sqlite -o ${tempExportPath}`
   );
 
   console.log('5. Verifying SQLite database structure in downloaded file...');

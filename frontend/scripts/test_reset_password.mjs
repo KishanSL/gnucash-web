@@ -1,5 +1,8 @@
 import puppeteer from 'puppeteer';
 import { execSync } from 'child_process';
+import { BASE_URL, requireIsolatedEnv } from './lib/e2e.mjs';
+
+requireIsolatedEnv('test_reset_password');
 
 (async () => {
   const browser = await puppeteer.launch({
@@ -11,13 +14,13 @@ import { execSync } from 'child_process';
     const page = await browser.newPage();
     await page.setViewport({ width: 1440, height: 900 });
 
-    console.log('1. Navigating to http://localhost:8081...');
-    await page.goto('http://localhost:8081', { waitUntil: 'networkidle0' });
+    console.log(`1. Navigating to ${BASE_URL}...`);
+    await page.goto(BASE_URL, { waitUntil: 'networkidle0' });
 
     // Step A: Verify public API call to /api/auth/reset-password is rejected with 403 Forbidden
     console.log('2. Verifying public POST /api/auth/reset-password returns 403 Forbidden...');
     const forbiddenCheck = execSync(
-      `curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8081/api/auth/reset-password -H "Content-Type: application/json" -d '{"username":"kishan"}'`,
+      `curl -s -o /dev/null -w "%{http_code}" -X POST ${BASE_URL}/api/auth/reset-password -H "Content-Type: application/json" -d '{"username":"kishan"}'`,
       { encoding: 'utf-8' }
     ).trim();
     if (forbiddenCheck !== '403') {
@@ -28,7 +31,7 @@ import { execSync } from 'child_process';
     // Step B: Verify non-enumeration on login with non-existent user and wrong password
     console.log('3. Verifying login non-enumeration...');
     const invalidLoginRes = execSync(
-      `curl -s -X POST http://localhost:8081/api/auth/login -H "Content-Type: application/json" -d '{"username":"non_existent_attacker_test","password":"any_password"}'`,
+      `curl -s -X POST ${BASE_URL}/api/auth/login -H "Content-Type: application/json" -d '{"username":"non_existent_attacker_test","password":"any_password"}'`,
       { encoding: 'utf-8' }
     );
     if (!invalidLoginRes.includes('Invalid username or password')) {
