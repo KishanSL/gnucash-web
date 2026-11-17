@@ -67,17 +67,37 @@ const finishEnabled = (page) =>
     await sleep(2000);
 
     console.log('3. Ticking every listed deposit and withdrawal...');
-    const checkboxState = () =>
-      page.evaluate(() => {
-        const boxes = Array.from(document.querySelectorAll('input[type="checkbox"]'));
-        return { total: boxes.length, checked: boxes.filter((b) => b.checked).length };
-      });
-    // "Select / Clear All" toggles, so press it until every box is ticked (at most twice)
-    for (let i = 0; i < 2 && (await checkboxState()).checked < (await checkboxState()).total; i++) {
-      if ((await clickButtonWithText(page, 'Select / Clear All')) < 2) throw new Error('"Select / Clear All" buttons not found');
-      await sleep(500);
+    // Each panel's "Select / Clear All" toggles that panel only, so press it per panel until the
+    // panel is fully ticked (panels can start partly ticked when splits are already cleared)
+    const panelStates = () =>
+      page.evaluate(() =>
+        Array.from(document.querySelectorAll('button'))
+          .filter((b) => b.innerText.trim() === 'Select / Clear All')
+          .map((b) => {
+            const boxes = Array.from(b.closest('.flex-col').querySelectorAll('input[type="checkbox"]'));
+            return { total: boxes.length, checked: boxes.filter((x) => x.checked).length };
+          })
+      );
+    const clickPanelToggle = (index) =>
+      page.evaluate((i) => {
+        const btns = Array.from(document.querySelectorAll('button')).filter((b) => b.innerText.trim() === 'Select / Clear All');
+        btns[i].click();
+      }, index);
+
+    const initial = await panelStates();
+    if (initial.length !== 2) throw new Error(`Expected 2 reconcile panels, found ${initial.length}`);
+    for (let i = 0; i < initial.length; i++) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const panel = (await panelStates())[i];
+        if (panel.checked === panel.total) break;
+        await clickPanelToggle(i);
+        await sleep(400);
+      }
     }
-    const boxes = await checkboxState();
+    const boxes = (await panelStates()).reduce(
+      (acc, p) => ({ total: acc.total + p.total, checked: acc.checked + p.checked }),
+      { total: 0, checked: 0 }
+    );
     if (boxes.total === 0) throw new Error('No uncleared splits listed; the seed data should provide some');
     if (boxes.checked !== boxes.total) throw new Error(`Only ${boxes.checked} of ${boxes.total} splits ticked`);
 

@@ -1,33 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import {
   Landmark,
-  Lock,
-  User as UserIcon,
-  Mail,
   AlertCircle,
-  ArrowRight,
   CheckCircle2,
-  Eye,
-  EyeOff,
-  KeyRound,
   Coins,
-  Scale,
-  TrendingUp,
-  Layers,
-  ShieldCheck,
-  Sparkles,
-  Check,
-  Activity,
 } from 'lucide-react';
 import { login, signup, checkHealth, getErrorMessage } from '../api';
 import { User } from '../types';
+import { AuthShowcase } from './auth/AuthShowcase';
+import { LoginForm } from './auth/LoginForm';
+import { SignupForm } from './auth/SignupForm';
+import { ResetPasswordGuidance } from './auth/ResetPasswordGuidance';
+import { AuthTab } from './auth/types';
 
 interface AuthViewProps {
   onAuthSuccess: (user: User) => void;
 }
 
 export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
-  const [tab, setTab] = useState<'login' | 'signup' | 'reset'>('login');
+  const [tab, setTab] = useState<AuthTab>('login');
 
   // Login form state
   const [loginUsername, setLoginUsername] = useState('');
@@ -193,97 +184,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 xl:gap-16 items-center">
             {/* Desktop Left Column: Product Showcase & Financial Capabilities */}
-            <div className="hidden lg:flex lg:col-span-7 flex-col space-y-8 pr-2">
-              <div className="space-y-4">
-                <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-xs font-semibold uppercase tracking-wider">
-                  <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Pure Double-Entry Financial Engine</span>
-                </div>
-
-                <h2 className="text-3xl xl:text-4xl 2xl:text-5xl font-black text-white tracking-tight leading-[1.15]">
-                  Precision accounting & financial clarity,{' '}
-                  <span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 via-teal-300 to-emerald-200">
-                    built for the web
-                  </span>
-                  .
-                </h2>
-
-                <p className="text-sm xl:text-base text-slate-300 leading-relaxed max-w-xl">
-                  GnuCash Web brings the mathematical precision of desktop double-entry accounting
-                  to a modern browser experience. Manage hierarchical accounts, record multi-split
-                  transactions, and generate real-time financial statements with zero-sum ledger integrity.
-                </p>
-              </div>
-
-              {/* 2x2 Feature Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800/80 backdrop-blur-xs hover:border-emerald-500/40 transition">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center mb-2.5 border border-emerald-500/20">
-                    <Scale className="w-4 h-4" />
-                  </div>
-                  <h3 className="text-sm font-bold text-white mb-1">
-                    Strict Double-Entry Ledger
-                  </h3>
-                  <p className="text-xs text-slate-400 leading-normal">
-                    Debits strictly equal credits on every transaction. Guaranteed mathematical integrity with PostgreSQL transaction atomicity.
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800/80 backdrop-blur-xs hover:border-emerald-500/40 transition">
-                  <div className="w-8 h-8 rounded-lg bg-teal-500/10 text-teal-400 flex items-center justify-center mb-2.5 border border-teal-500/20">
-                    <TrendingUp className="w-4 h-4" />
-                  </div>
-                  <h3 className="text-sm font-bold text-white mb-1">
-                    Real-Time Financial Reports
-                  </h3>
-                  <p className="text-xs text-slate-400 leading-normal">
-                    Instant Balance Sheets, Profit & Loss (Income Statement), and Trial Balances calculated dynamically from your journal.
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800/80 backdrop-blur-xs hover:border-emerald-500/40 transition">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center mb-2.5 border border-emerald-500/20">
-                    <Layers className="w-4 h-4" />
-                  </div>
-                  <h3 className="text-sm font-bold text-white mb-1">
-                    Chart of Accounts & Registers
-                  </h3>
-                  <p className="text-xs text-slate-400 leading-normal">
-                    Unlimited hierarchy across 5 core types (Assets, Liabilities, Equity, Income, Expenses) with checkbook register views.
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800/80 backdrop-blur-xs hover:border-emerald-500/40 transition">
-                  <div className="w-8 h-8 rounded-lg bg-teal-500/10 text-teal-400 flex items-center justify-center mb-2.5 border border-teal-500/20">
-                    <ShieldCheck className="w-4 h-4" />
-                  </div>
-                  <h3 className="text-sm font-bold text-white mb-1">
-                    Isolated Multi-User Security
-                  </h3>
-                  <p className="text-xs text-slate-400 leading-normal">
-                    Strict per-user data segregation, Argon2 password encryption, and native import for GnuCash SQLite & XML files.
-                  </p>
-                </div>
-              </div>
-
-              {/* Specs & Highlights Pills */}
-              <div className="flex flex-wrap items-center gap-3 pt-2 text-xs text-slate-400">
-                <span className="inline-flex items-center space-x-1.5 text-slate-300">
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Zero-Sum Balance Enforced</span>
-                </span>
-                <span className="text-slate-700">•</span>
-                <span className="inline-flex items-center space-x-1.5 text-slate-300">
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Bank Statement Reconcile</span>
-                </span>
-                <span className="text-slate-700">•</span>
-                <span className="inline-flex items-center space-x-1.5 text-slate-300">
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Multi-Currency Ready (INR, USD, EUR, GBP)</span>
-                </span>
-              </div>
-            </div>
+            <AuthShowcase />
 
             {/* Right Column: Authentication Card */}
             <div className="lg:col-span-5 w-full max-w-md mx-auto lg:max-w-none">
@@ -389,291 +290,48 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
 
                   {/* Login Form */}
                   {tab === 'login' && (
-                    <form onSubmit={handleLogin} className="space-y-4">
-                      <div>
-                        <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                          Username or Email
-                        </label>
-                        <div className="relative">
-                          <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                          <input
-                            type="text"
-                            required
-                            autoComplete="username"
-                            placeholder="Enter your username or email"
-                            value={loginUsername}
-                            onChange={(e) => setLoginUsername(e.target.value)}
-                            className="w-full pl-9 pr-3 py-2.5 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-medium transition"
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <label className="block text-xs font-semibold text-slate-700">
-                            Password
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setTab('reset');
-                              setError(null);
-                            }}
-                            className="text-[11px] text-emerald-600 hover:text-emerald-700 hover:underline font-semibold"
-                          >
-                            Forgot password?
-                          </button>
-                        </div>
-                        <div className="relative">
-                          <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                          <input
-                            type={showLoginPassword ? 'text' : 'password'}
-                            required
-                            autoComplete="current-password"
-                            placeholder="••••••••"
-                            value={loginPassword}
-                            onChange={(e) => setLoginPassword(e.target.value)}
-                            className="w-full pl-9 pr-10 py-2.5 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-mono transition"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowLoginPassword(!showLoginPassword)}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition p-0.5"
-                            tabIndex={-1}
-                          >
-                            {showLoginPassword ? (
-                              <EyeOff className="w-4 h-4" />
-                            ) : (
-                              <Eye className="w-4 h-4" />
-                            )}
-                          </button>
-                        </div>
-                      </div>
-
-                      <button
-                        type="submit"
-                        disabled={loading}
-                        className="w-full mt-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs sm:text-sm font-semibold transition shadow-md shadow-emerald-700/20 disabled:opacity-50 flex items-center justify-center space-x-2 active:scale-[0.99]"
-                      >
-                        {loading ? (
-                          <>
-                            <Activity className="w-4 h-4 animate-spin" />
-                            <span>Signing in...</span>
-                          </>
-                        ) : (
-                          <>
-                            <span>Sign In</span>
-                            <ArrowRight className="w-4 h-4" />
-                          </>
-                        )}
-                      </button>
-
-                      {allowSignup && (
-                        <div className="text-center pt-3 border-t border-slate-100">
-                          <p className="text-xs text-slate-500">
-                            Don't have an account?{' '}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setTab('signup');
-                                setError(null);
-                              }}
-                              className="font-bold text-emerald-600 hover:text-emerald-700 hover:underline"
-                            >
-                              Create an account
-                            </button>
-                          </p>
-                        </div>
-                      )}
-                    </form>
+                    <LoginForm
+                      setTab={setTab}
+                      loginUsername={loginUsername}
+                      setLoginUsername={setLoginUsername}
+                      loginPassword={loginPassword}
+                      setLoginPassword={setLoginPassword}
+                      showLoginPassword={showLoginPassword}
+                      setShowLoginPassword={setShowLoginPassword}
+                      loading={loading}
+                      setError={setError}
+                      allowSignup={allowSignup}
+                      handleLogin={handleLogin}
+                    />
                   )}
 
                   {/* Signup Form */}
                   {tab === 'signup' && (
-                    !allowSignup ? (
-                      <div className="text-center py-6 space-y-3">
-                        <div className="w-12 h-12 bg-amber-50 border border-amber-200 text-amber-700 rounded-2xl mx-auto flex items-center justify-center shadow-xs">
-                          <ShieldCheck className="w-6 h-6" />
-                        </div>
-                        <h4 className="text-sm font-bold text-slate-900">Registration Disabled</h4>
-                        <p className="text-xs text-slate-500 max-w-xs mx-auto leading-relaxed">
-                          Public account registration is disabled on this server. Please contact your administrator for access.
-                        </p>
-                        <div className="pt-2">
-                          <button
-                            type="button"
-                            onClick={() => setTab('login')}
-                            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow-xs transition"
-                          >
-                            Return to Sign In
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                    <form onSubmit={handleSignup} className="space-y-3.5">
-                      <div>
-                        <label className="block text-xs font-semibold text-slate-700 mb-1">
-                          Username *
-                        </label>
-                        <div className="relative">
-                          <UserIcon className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                          <input
-                            type="text"
-                            required
-                            autoComplete="username"
-                            placeholder="At least 3 characters"
-                            value={signupUsername}
-                            onChange={(e) => setSignupUsername(e.target.value)}
-                            className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-medium transition"
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-semibold text-slate-700 mb-1">
-                          Email Address *
-                        </label>
-                        <div className="relative">
-                          <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                          <input
-                            type="email"
-                            required
-                            autoComplete="email"
-                            placeholder="name@example.com"
-                            value={signupEmail}
-                            onChange={(e) => setSignupEmail(e.target.value)}
-                            className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-medium transition"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-xs font-semibold text-slate-700 mb-1">
-                            Password *
-                          </label>
-                          <div className="relative">
-                            <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                            <input
-                              type={showSignupPassword ? 'text' : 'password'}
-                              required
-                              autoComplete="new-password"
-                              placeholder="6+ chars"
-                              value={signupPassword}
-                              onChange={(e) => setSignupPassword(e.target.value)}
-                              className="w-full pl-9 pr-8 py-2 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-mono transition"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setShowSignupPassword(!showSignupPassword)}
-                              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition"
-                              tabIndex={-1}
-                            >
-                              {showSignupPassword ? (
-                                <EyeOff className="w-3.5 h-3.5" />
-                              ) : (
-                                <Eye className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="block text-xs font-semibold text-slate-700 mb-1">
-                            Confirm Password *
-                          </label>
-                          <div className="relative">
-                            <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                            <input
-                              type={showSignupPassword ? 'text' : 'password'}
-                              required
-                              autoComplete="new-password"
-                              placeholder="Repeat password"
-                              value={signupConfirm}
-                              onChange={(e) => setSignupConfirm(e.target.value)}
-                              className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:bg-white font-mono transition"
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="p-3 bg-emerald-50/80 border border-emerald-100 rounded-lg flex items-start space-x-2 text-[11px] text-emerald-800">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
-                        <span className="leading-relaxed">
-                          Your ledger is initialized with standard GnuCash accounts (Assets, Liabilities, Equity, Income, Expenses).
-                        </span>
-                      </div>
-
-                      <button
-                        type="submit"
-                        disabled={loading}
-                        className="w-full mt-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs sm:text-sm font-semibold transition shadow-md shadow-emerald-700/20 disabled:opacity-50 flex items-center justify-center space-x-2 active:scale-[0.99]"
-                      >
-                        {loading ? (
-                          <>
-                            <Activity className="w-4 h-4 animate-spin" />
-                            <span>Creating account...</span>
-                          </>
-                        ) : (
-                          <>
-                            <span>Create Account & Sign In</span>
-                            <ArrowRight className="w-4 h-4" />
-                          </>
-                        )}
-                      </button>
-
-                      <div className="text-center pt-2.5 border-t border-slate-100">
-                        <p className="text-xs text-slate-500">
-                          Already have an account?{' '}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setTab('login');
-                              setError(null);
-                            }}
-                            className="font-bold text-emerald-600 hover:text-emerald-700 hover:underline"
-                          >
-                            Sign in
-                          </button>
-                        </p>
-                      </div>
-                    </form>
-                  ))}
+                    <SignupForm
+                      setTab={setTab}
+                      signupUsername={signupUsername}
+                      setSignupUsername={setSignupUsername}
+                      signupEmail={signupEmail}
+                      setSignupEmail={setSignupEmail}
+                      signupPassword={signupPassword}
+                      setSignupPassword={setSignupPassword}
+                      signupConfirm={signupConfirm}
+                      setSignupConfirm={setSignupConfirm}
+                      showSignupPassword={showSignupPassword}
+                      setShowSignupPassword={setShowSignupPassword}
+                      loading={loading}
+                      setError={setError}
+                      allowSignup={allowSignup}
+                      handleSignup={handleSignup}
+                    />
+                  )}
 
                   {/* Reset Password Guidance */}
                   {tab === 'reset' && (
-                    <div className="space-y-4">
-                      <div className="p-3.5 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-300 space-y-2">
-                        <p className="font-semibold text-amber-400 flex items-center space-x-1.5">
-                          <KeyRound className="w-4 h-4 text-amber-400" />
-                          <span>CLI Admin Password Reset</span>
-                        </p>
-                        <p className="text-[11px] text-slate-400 leading-relaxed">
-                          To protect against account lockout, username enumeration, and unauthorized password resets over the network, self-service password reset is disabled on this server.
-                        </p>
-                        <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 font-mono text-[11px] text-emerald-400 space-y-1">
-                          <p className="text-slate-400 text-[10px]"># Run in repository on server console / SSH:</p>
-                          <p>./scripts/reset_password.sh &lt;username&gt; [new_password]</p>
-                        </div>
-                        <p className="text-[11px] text-slate-400">
-                          If <code className="text-emerald-400 font-mono text-[10px]">new_password</code> is omitted, a random temporary password will be written to <code className="text-amber-300 font-mono text-[10px]">password_reset.txt</code> on the server.
-                        </p>
-                      </div>
-
-                      <div className="pt-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setTab('login');
-                            setError(null);
-                          }}
-                          className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs sm:text-sm font-semibold transition shadow-sm text-center flex items-center justify-center space-x-1.5"
-                        >
-                          <ArrowRight className="w-4 h-4" />
-                          <span>Back to Sign In</span>
-                        </button>
-                      </div>
-                    </div>
+                    <ResetPasswordGuidance
+                      setTab={setTab}
+                      setError={setError}
+                    />
                   )}
                 </div>
               </div>
