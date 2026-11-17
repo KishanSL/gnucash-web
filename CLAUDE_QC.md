@@ -1,8 +1,8 @@
 # Codebase Quality Check
 
 - **Date:** 2026-11-17
-- **Branch:** `refactor/codebase-review-and-cleanup` (after `9e398b9`: SEC-14/SEC-15, strict CSP, database-error fixes)
-- **Score:** **91 / 100** (up from 87; CI coverage is written but not yet running)
+- **Branch:** `refactor/codebase-review-and-cleanup` (first green CI run on `7acfb61`)
+- **Score:** **93 / 100** (up from 91: CI now runs on a self-hosted Forgejo runner)
 - **Reviewer note:** most changes since the previous review were made by the same reviewer (Claude), so this is a self-review. An independent review is recommended for the last 12 commits.
 
 The core is in good shape:
@@ -10,7 +10,7 @@ The core is in good shape:
 - Tenant isolation and security hardening are solid.
 - Tests never touch live data, and the large files have been split into focused modules.
 
-What keeps it from the mid-90s is mostly operational: CI has never actually run, because no runner is registered.
+CI now runs on every push (backend, frontend and all 12 Puppeteer suites), and the first run was green. What remains is mostly polish.
 
 ## What was run
 
@@ -25,6 +25,7 @@ What keeps it from the mid-90s is mostly operational: CI has never actually run,
 | `npm run test:e2e` (Puppeteer, isolated) | 12 of 12 suites pass against a throwaway `gnucash_e2e_test` database. Ports 8092 and 8093 are bound to `127.0.0.1` only. |
 | Read-only Puppeteer smoke checks against the deployed app | Pass. The live data was unchanged (1 user, 37 accounts, 15 transactions). |
 | Strict CSP check on the deployed app | `script-src 'self'`. Logging in, visiting every tab and opening the user menu produces 0 CSP violations. |
+| Forgejo CI (`7acfb61`, first real run) | All 3 jobs green: backend 11 min, frontend 10 min, Puppeteer 21.5 min (no cache yet). |
 
 ## Scorecard
 
@@ -36,12 +37,12 @@ What keeps it from the mid-90s is mostly operational: CI has never actually run,
 | Frontend structure | 8.5/10 | `App.tsx` is 332 lines and composes hooks in `src/app/`. The register, transaction modal, auth view, accounts tree and navbar are split into focused components and hooks. The largest components left are `RegisterInlineEntry.tsx` (478 lines) and `ReconcileModal.tsx` (459). |
 | Database and migrations | 8/10 | Migrations are tracked with `sqlx::migrate!`, and the migration test runs the real `003` file against a throwaway database. |
 | Testing | 9/10 | Backend integration tests are split by area and use their own users. Pure validation, split-sync and tree helpers have unit tests, and the frontend money logic has unit tests. The Puppeteer suites run in an isolated environment, and scripts that change data refuse to run against the live app. Gap: no frontend component tests, and the Puppeteer suites aren't in CI (issue 4). |
-| Tooling, CI and docs | 7.5/10 | The Forgejo workflow covers clippy (warnings as errors), the backend tests against Postgres 16, typecheck, ESLint, unit tests, the build and the Puppeteer suites (isolated, against a Postgres service). `./scripts/ci_local.sh` runs the same pipeline locally. **No runner is registered, so CI has never run** (issue 1). `requirements.md`, `AGENTS.md` and the README are current. The backend shuts down gracefully, with a 0.2 s restart instead of a 10 s kill. |
+| Tooling, CI and docs | 9/10 | Forgejo CI runs on a self-hosted runner and covers clippy (warnings as errors), the backend tests against Postgres 16, typecheck, ESLint, unit tests, the build and the Puppeteer suites (isolated, against a Postgres service). `./scripts/ci_local.sh` runs the same pipeline locally. Deduction: runs are slow until the runner cache works (issue 1). `requirements.md`, `AGENTS.md` and the README are current. The backend shuts down gracefully, with a 0.2 s restart instead of a 10 s kill. |
 
 ## Open issues, in order of payoff
 
-1. **CI has never run.** Forgejo Actions is enabled and the workflow triggers on `refactor/**`, but no runner is registered for the repository or the user, and `actions/tasks` shows 0 runs ever. Install and register a `forgejo-runner` that can run containers, so the `services: postgres` blocks work, and map the `ubuntu-latest` label. The workflow reaches Postgres at the service hostname `postgres`; that, the `upload-artifact@v3` step and `--install-deps` (needs root) are unverified until the first run. Until then, run `./scripts/ci_local.sh` before pushing.
-2. **React component tests.** The Puppeteer suites now have a CI job (`e2e` in `.forgejo/workflows/ci.yml`, runs once a runner exists), and `./scripts/ci_local.sh` runs the full pipeline locally. There are still no React component tests; UI behaviour is covered only by the Puppeteer suites. This is low priority.
+1. **CI speed.** The first run took about 43 minutes. The runner's cache server wasn't reachable from job containers (`rust-cache`: `ETIMEDOUT`), so every run compiles Rust from scratch and downloads all npm packages. The fix is in the runner config: a `cache:` section with `host: host.docker.internal` and fixed, published ports. Raising `capacity` to 2 runs jobs in parallel. Chrome is no longer downloaded during `npm ci`.
+2. **React component tests.** The Puppeteer suites now have a CI job (`e2e` in `.forgejo/workflows/ci.yml`, runs on every push), and `./scripts/ci_local.sh` runs the full pipeline locally. There are still no React component tests; UI behaviour is covered only by the Puppeteer suites. This is low priority.
 3. **Remaining larger components.** `frontend/src/components/register/RegisterInlineEntry.tsx` (478 lines) and `frontend/src/components/ReconcileModal.tsx` (459) could be split into a hook plus presentational parts, like the rest of the UI. This is low priority.
 
 ## Decided, not issues
@@ -50,4 +51,4 @@ What keeps it from the mid-90s is mostly operational: CI has never actually run,
 - **Compile-time SQL checks** (`sqlx::query!`): considered and declined by the owner on 2026-11-17. There are 99 queries, 7 of them dynamic, and the integration tests already run them against a real database. Revisit if the schema starts changing often.
 - **Login rate limiting:** not covered by `requirements.md`, and the app is bound to localhost. Add it there first if it becomes a requirement.
 
-Getting CI running (issue 1), with the UI suites now included, would put this at about 93–94.
+Fixing the CI cache (issue 1) and adding a few React component tests (issue 2) would take this to about 95.

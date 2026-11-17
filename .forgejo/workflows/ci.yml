@@ -57,6 +57,9 @@ jobs:
   frontend:
     name: Frontend Typecheck & Lint
     runs-on: ubuntu-latest
+    env:
+      # Puppeteer's postinstall would download Chrome (~150 MB); this job never runs a browser
+      PUPPETEER_SKIP_DOWNLOAD: "true"
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -137,6 +140,9 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install Frontend Dependencies
+        env:
+          # Chrome is installed once by the next step, together with its system libraries
+          PUPPETEER_SKIP_DOWNLOAD: "true"
         run: |
           cd frontend
           npm ci
