@@ -427,7 +427,9 @@ export function formatCurrency(
   if (amount === undefined || amount === null || amount === '') {
     return currCode === 'INR' ? `₹${zero}` : `${currCode} ${zero}`;
   }
-  const num = typeof amount === 'string' ? parseFloat(amount) : amount;
+  const parsed = typeof amount === 'string' ? parseFloat(amount) : amount;
+  // Treat -0 as 0 so a zero balance never renders as "-₹0.00"
+  const num = parsed === 0 ? 0 : parsed;
   if (isNaN(num)) {
     return currCode === 'INR' ? `₹${zero}` : `${currCode} ${zero}`;
   }

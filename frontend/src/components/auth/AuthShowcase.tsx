@@ -71,7 +71,7 @@ export const AuthShowcase: React.FC = () => (
                       Isolated Multi-User Security
                     </h3>
                     <p className="text-xs text-slate-400 leading-normal">
-                      Strict per-user data segregation, Argon2 password encryption, and native import for GnuCash SQLite & XML files.
+                      Strict per-user data segregation, bcrypt password hashing, and native import for GnuCash SQLite & XML files.
                     </p>
                   </div>
                 </div>
