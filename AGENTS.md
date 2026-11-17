@@ -42,6 +42,12 @@ Puppeteer testing suites are configured in `frontend/scripts/`:
   cd frontend && npm run test:e2e                                   # all suites, isolated
   cd frontend && npm run test:e2e -- test_register_enhancements     # selected suites, isolated
   ```
+- **CI**: the `e2e` job in `.forgejo/workflows/ci.yml` runs the same suites against a Postgres service (`E2E_DB_PROVISIONED=1`, no `psql` needed). The fund-account fixture is imported through the import API from `frontend/scripts/fixtures/fund_account.gnucash.xml`.
+- **Full pipeline locally** (same steps as CI; use it before pushing while no Forgejo runner is registered):
+  ```bash
+  ./scripts/ci_local.sh            # clippy, cargo test, typecheck, ESLint, unit tests, build, Puppeteer
+  ./scripts/ci_local.sh --no-e2e   # without the Puppeteer suites
+  ```
 - **Read-only smoke checks against the deployed app** (default `http://localhost:8081`, override with `E2E_BASE_URL`):
   ```bash
   cd frontend && node scripts/test_ui.mjs

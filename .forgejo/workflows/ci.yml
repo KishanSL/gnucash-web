@@ -46,8 +46,9 @@ jobs:
 
       - name: Cargo Test Suite
         env:
-          DATABASE_URL: postgres://gnucash:gnucash_secret@localhost:5432/gnucash_test
-          TEST_DATABASE_URL: postgres://gnucash:gnucash_secret@localhost:5432/gnucash_test
+          # Jobs run in a container on Forgejo runners; services are reached by their name
+          DATABASE_URL: postgres://gnucash:gnucash_secret@postgres:5432/gnucash_test
+          TEST_DATABASE_URL: postgres://gnucash:gnucash_secret@postgres:5432/gnucash_test
         run: |
           cd backend
           cargo test
@@ -90,3 +91,76 @@ jobs:
         run: |
           cd frontend
           npm run build
+
+  e2e:
+    name: Puppeteer UI Suites (isolated)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gnucash
+          POSTGRES_PASSWORD: gnucash_secret
+          # Created empty by the service; run_e2e.sh is told not to create or drop it
+          POSTGRES_DB: gnucash_e2e_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install jq and python3 if missing
+        run: |
+          if ! command -v jq >/dev/null || ! command -v python3 >/dev/null; then
+            SUDO=$(command -v sudo || true)
+            $SUDO apt-get update && $SUDO apt-get install -y jq python3
+          fi
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Frontend Dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Install Chrome and its system libraries for Puppeteer
+        # --install-deps uses apt-get and needs root (the default in Forgejo runner job containers)
+        run: |
+          cd frontend
+          npx puppeteer browsers install chrome --install-deps
+
+      - name: Run Puppeteer suites
+        env:
+          E2E_DB_PROVISIONED: "1"
+          PG_CONTAINER: ""
+          PG_HOST: postgres
+          POSTGRES_USER: gnucash
+          POSTGRES_PASSWORD: gnucash_secret
+          POSTGRES_PORT: "5432"
+        run: |
+          cd frontend
+          npm run test:e2e
+
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: e2e-screenshots
+          path: frontend/screenshots/

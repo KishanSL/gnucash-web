@@ -2,7 +2,7 @@
 
 - **Date:** 2026-11-17
 - **Branch:** `refactor/codebase-review-and-cleanup` (after `9e398b9`: SEC-14/SEC-15, strict CSP, database-error fixes)
-- **Score:** **91 / 100** (up from 87)
+- **Score:** **91 / 100** (up from 87; CI coverage is written but not yet running)
 - **Reviewer note:** most changes since the previous review were made by the same reviewer (Claude), so this is a self-review. An independent review is recommended for the last 12 commits.
 
 The core is in good shape:
@@ -36,12 +36,12 @@ What keeps it from the mid-90s is mostly operational: CI has never actually run,
 | Frontend structure | 8.5/10 | `App.tsx` is 332 lines and composes hooks in `src/app/`. The register, transaction modal, auth view, accounts tree and navbar are split into focused components and hooks. The largest components left are `RegisterInlineEntry.tsx` (478 lines) and `ReconcileModal.tsx` (459). |
 | Database and migrations | 8/10 | Migrations are tracked with `sqlx::migrate!`, and the migration test runs the real `003` file against a throwaway database. |
 | Testing | 9/10 | Backend integration tests are split by area and use their own users. Pure validation, split-sync and tree helpers have unit tests, and the frontend money logic has unit tests. The Puppeteer suites run in an isolated environment, and scripts that change data refuse to run against the live app. Gap: no frontend component tests, and the Puppeteer suites aren't in CI (issue 4). |
-| Tooling, CI and docs | 7/10 | The Forgejo workflow covers clippy (warnings as errors), the backend tests against Postgres 16, typecheck, ESLint, unit tests and the build. **No runner is registered, so CI has never run** (issue 1). `requirements.md`, `AGENTS.md` and the README are current. The backend shuts down gracefully, with a 0.2 s restart instead of a 10 s kill. |
+| Tooling, CI and docs | 7.5/10 | The Forgejo workflow covers clippy (warnings as errors), the backend tests against Postgres 16, typecheck, ESLint, unit tests, the build and the Puppeteer suites (isolated, against a Postgres service). `./scripts/ci_local.sh` runs the same pipeline locally. **No runner is registered, so CI has never run** (issue 1). `requirements.md`, `AGENTS.md` and the README are current. The backend shuts down gracefully, with a 0.2 s restart instead of a 10 s kill. |
 
 ## Open issues, in order of payoff
 
-1. **CI has never run.** Forgejo Actions is enabled and the workflow triggers on `refactor/**`, but no runner is registered for the repository or the user, and `actions/tasks` shows 0 runs ever. Install and register a `forgejo-runner` that can run containers, so the `services: postgres` block works, and map the `ubuntu-latest` label. Until then, every CI check has only been run locally.
-2. **Puppeteer suites and the UI in CI.** `npm run test:e2e` needs `podman` and the local Postgres container, so it can't run in the current CI workflow. Once a runner exists, consider a CI job that starts Postgres as a service and runs the same suites. There are also no React component tests; UI behaviour is covered only by the Puppeteer suites.
+1. **CI has never run.** Forgejo Actions is enabled and the workflow triggers on `refactor/**`, but no runner is registered for the repository or the user, and `actions/tasks` shows 0 runs ever. Install and register a `forgejo-runner` that can run containers, so the `services: postgres` blocks work, and map the `ubuntu-latest` label. The workflow reaches Postgres at the service hostname `postgres`; that, the `upload-artifact@v3` step and `--install-deps` (needs root) are unverified until the first run. Until then, run `./scripts/ci_local.sh` before pushing.
+2. **React component tests.** The Puppeteer suites now have a CI job (`e2e` in `.forgejo/workflows/ci.yml`, runs once a runner exists), and `./scripts/ci_local.sh` runs the full pipeline locally. There are still no React component tests; UI behaviour is covered only by the Puppeteer suites. This is low priority.
 3. **Remaining larger components.** `frontend/src/components/register/RegisterInlineEntry.tsx` (478 lines) and `frontend/src/components/ReconcileModal.tsx` (459) could be split into a hook plus presentational parts, like the rest of the UI. This is low priority.
 
 ## Decided, not issues
@@ -50,4 +50,4 @@ What keeps it from the mid-90s is mostly operational: CI has never actually run,
 - **Compile-time SQL checks** (`sqlx::query!`): considered and declined by the owner on 2026-11-17. There are 99 queries, 7 of them dynamic, and the integration tests already run them against a real database. Revisit if the schema starts changing often.
 - **Login rate limiting:** not covered by `requirements.md`, and the app is bound to localhost. Add it there first if it becomes a requirement.
 
-Getting CI running (issue 1) would put this at about 93. Adding CI coverage for the UI (issue 2) would take it into the mid-90s.
+Getting CI running (issue 1), with the UI suites now included, would put this at about 93–94.

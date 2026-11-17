@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- E2E fixture: one mutual-fund account (FUND commodity, fraction 1000), imported by
+     scripts/run_e2e.sh through POST /api/import/gnucash-sqlite (INV-4, INV-5). -->
+<gnc-v2 xmlns:gnc="http://www.gnucash.org/XML/gnc" xmlns:act="http://www.gnucash.org/XML/act" xmlns:cmdty="http://www.gnucash.org/XML/cmdty">
+<gnc:book version="2.0.0">
+  <gnc:account version="2.0.0">
+    <act:name>Root Account</act:name>
+    <act:id type="guid">e2e00000000000000000000000000001</act:id>
+    <act:type>ROOT</act:type>
+  </gnc:account>
+  <gnc:account version="2.0.0">
+    <act:name>E2E Mutual Fund</act:name>
+    <act:id type="guid">e2e00000000000000000000000000002</act:id>
+    <act:type>MUTUAL</act:type>
+    <act:commodity>
+      <cmdty:space>FUND</cmdty:space>
+      <cmdty:id>INF209K01VA3</cmdty:id>
+    </act:commodity>
+    <act:commodity-scu>1000</act:commodity-scu>
+    <act:parent type="guid">e2e00000000000000000000000000001</act:parent>
+  </gnc:account>
+</gnc:book>
+</gnc-v2>

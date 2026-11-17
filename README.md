@@ -225,4 +225,9 @@ npm run build
 node scripts/test_ui.mjs   # read-only smoke check against the deployed app
 npm run test:e2e           # full Puppeteer suite in an isolated, throwaway environment
 ```
+
+### Whole CI pipeline locally:
+```bash
+./scripts/ci_local.sh      # the same checks as .forgejo/workflows/ci.yml (add --no-e2e to skip Puppeteer)
+```
 Verifies TypeScript compilation, production asset bundling, and browser UI interaction. `npm run test:e2e` runs against a temporary `gnucash_e2e_test` database, so it never touches live data.

@@ -5,7 +5,8 @@
 #   1. creates a fresh `gnucash_e2e_test` database
 #   2. starts a debug backend on it (127.0.0.1:8092) with a random JWT secret;
 #      the backend creates `kishan` / `Kishan@123` and seeds the sample data
-#   3. adds a fund account (commodity_fraction = 1000) for test_fund_account_decimals
+#   3. imports a fund account (commodity_fraction = 1000) for test_fund_account_decimals through
+#      the app's GnuCash import API (scripts/fixtures/fund_account.gnucash.xml)
 #   4. builds the frontend and serves it with `vite preview` (127.0.0.1:8093),
 #      proxying /api to the throwaway backend
 #   5. runs the scripts, then stops everything and drops the database
@@ -14,7 +15,12 @@
 #   npm run test:e2e                          # all scripts
 #   npm run test:e2e -- test_register_enhancements test_ui
 #
-# Environment overrides: E2E_DB_NAME, E2E_BACKEND_PORT, E2E_FRONTEND_PORT, PG_CONTAINER.
+# Environment overrides: E2E_DB_NAME, E2E_BACKEND_PORT, E2E_FRONTEND_PORT, PG_HOST, PG_CONTAINER.
+#
+# Database lifecycle: locally the database is created and dropped with `podman exec` in the
+# PG_CONTAINER (default gnucash-postgres). In CI, set E2E_DB_PROVISIONED=1 when the Postgres service
+# has already created an empty E2E_DB_NAME; it is then neither created nor dropped. No psql client
+# is needed in either case.
 
 set -euo pipefail
 
@@ -33,6 +39,7 @@ PG_CONTAINER="${PG_CONTAINER:-gnucash-postgres}"
 PG_USER="${POSTGRES_USER:-gnucash}"
 PG_PASSWORD="${POSTGRES_PASSWORD:-gnucash_secret}"
 PG_PORT="${POSTGRES_PORT:-5432}"
+PG_HOST="${PG_HOST:-127.0.0.1}"
 E2E_DB_NAME="${E2E_DB_NAME:-gnucash_e2e_test}"
 BACKEND_PORT="${E2E_BACKEND_PORT:-8092}"
 FRONTEND_PORT="${E2E_FRONTEND_PORT:-8093}"
@@ -73,11 +80,20 @@ for port in "$BACKEND_PORT" "$FRONTEND_PORT"; do
     fi
 done
 
+if [ "${E2E_DB_PROVISIONED:-0}" = 1 ]; then
+    MANAGE_DB=0
+elif [ -n "$PG_CONTAINER" ] && command -v podman >/dev/null 2>&1 \
+    && podman container exists "$PG_CONTAINER" 2>/dev/null; then
+    MANAGE_DB=1
+else
+    echo "The '$PG_CONTAINER' container is not available. Start it, or set E2E_DB_PROVISIONED=1" >&2
+    echo "when $E2E_DB_NAME has already been created (e.g. by a CI Postgres service)." >&2
+    exit 1
+fi
+
+# Admin SQL (create/drop database) inside the local Postgres container
 psql_admin() {
     podman exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 -qAt -c "$1"
-}
-psql_e2e() {
-    podman exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$E2E_DB_NAME" -v ON_ERROR_STOP=1 -qAt -c "$1"
 }
 
 WORK_DIR="$(mktemp -d)"
@@ -89,7 +105,9 @@ cleanup() {
     [ -n "$PREVIEW_PID" ] && kill -- "-$PREVIEW_PID" 2>/dev/null || true
     [ -n "$BACKEND_PID" ] && kill -- "-$BACKEND_PID" 2>/dev/null || true
     wait 2>/dev/null || true
-    psql_admin "DROP DATABASE IF EXISTS \"$E2E_DB_NAME\" WITH (FORCE)" >/dev/null 2>&1 || true
+    if [ "$MANAGE_DB" = 1 ]; then
+        psql_admin "DROP DATABASE IF EXISTS \"$E2E_DB_NAME\" WITH (FORCE)" >/dev/null 2>&1 || true
+    fi
     rm -rf "$WORK_DIR"
     exit "$status"
 }
@@ -113,9 +131,13 @@ wait_for() {
     return 1
 }
 
-echo "==> Creating database $E2E_DB_NAME"
-psql_admin "DROP DATABASE IF EXISTS \"$E2E_DB_NAME\" WITH (FORCE)"
-psql_admin "CREATE DATABASE \"$E2E_DB_NAME\""
+if [ "$MANAGE_DB" = 1 ]; then
+    echo "==> Creating database $E2E_DB_NAME"
+    psql_admin "DROP DATABASE IF EXISTS \"$E2E_DB_NAME\" WITH (FORCE)"
+    psql_admin "CREATE DATABASE \"$E2E_DB_NAME\""
+else
+    echo "==> Using pre-provisioned database $E2E_DB_NAME"
+fi
 
 echo "==> Building backend (debug)"
 (cd "$BACKEND_DIR" && cargo build -q)
@@ -132,7 +154,7 @@ echo "==> Starting backend on port $BACKEND_PORT"
 (
     cd "$WORK_DIR"
     exec setsid env -u GNUCASH_TEST_MODE \
-        DATABASE_URL="postgres://$PG_USER:$PG_PASSWORD_ENC@127.0.0.1:$PG_PORT/$E2E_DB_NAME" \
+        DATABASE_URL="postgres://$PG_USER:$PG_PASSWORD_ENC@$PG_HOST:$PG_PORT/$E2E_DB_NAME" \
         BIND_ADDR=127.0.0.1 \
         PORT="$BACKEND_PORT" \
         JWT_SECRET="$E2E_JWT_SECRET" \
@@ -148,10 +170,19 @@ echo "==> Starting backend on port $BACKEND_PORT"
 BACKEND_PID=$!
 wait_for "http://127.0.0.1:$BACKEND_PORT/api/health" "Backend"
 
-echo "==> Adding fund account fixture (commodity_fraction = 1000)"
-psql_e2e "INSERT INTO accounts (name, account_type, currency, user_id, commodity_namespace, commodity_fraction)
-          VALUES ('E2E Mutual Fund', 'asset', 'INF209K01VA3',
-                  (SELECT id FROM users WHERE username = 'kishan'), 'FUND', 1000)" >/dev/null
+echo "==> Importing fund account fixture (commodity_fraction = 1000) via the import API"
+API="http://127.0.0.1:$BACKEND_PORT/api"
+E2E_TOKEN="$(curl -sf -X POST "$API/auth/login" -H 'Content-Type: application/json' \
+    -d '{"username":"kishan","password":"Kishan@123"}' \
+    | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["token"])')"
+if ! curl -sf -o "$WORK_DIR/import.json" -H "Authorization: Bearer $E2E_TOKEN" \
+    -F "file=@$FRONTEND_DIR/scripts/fixtures/fund_account.gnucash.xml" \
+    "$API/import/gnucash-sqlite?wipe=false"; then
+    echo "Fixture import failed" >&2
+    cat "$WORK_DIR/import.json" 2>/dev/null >&2
+    show_logs
+    exit 1
+fi
 
 echo "==> Building frontend"
 (cd "$FRONTEND_DIR" && npm run -s build >/dev/null)
