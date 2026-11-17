@@ -603,15 +603,32 @@ async fn test_import_from_path_is_disabled() {
 #[tokio::test]
 async fn test_auth_login_and_reset_password() {
     let pool = get_test_pool().await;
-    let app = create_app(pool.clone());
 
-    // 1. Successful login with default user
-    let mut login_payload = json!({
-        "username": "kishan",
-        "password": "Kishan@123"
+    // Dedicated user so a failure mid-test never leaves a shared user with an unknown password
+    let user_id = uuid::Uuid::new_v4();
+    let test_user = format!("reset_pw_{}", user_id.simple());
+    let test_email = format!("{}@example.com", test_user);
+    let initial_pwd = "Initial@Secret123";
+    let pwd_hash = bcrypt::hash(initial_pwd, bcrypt::DEFAULT_COST).unwrap();
+    sqlx::query(
+        "INSERT INTO users (id, username, email, password_hash, token_version) VALUES ($1, $2, $3, $4, 0)"
+    )
+    .bind(user_id)
+    .bind(&test_user)
+    .bind(&test_email)
+    .bind(pwd_hash)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 1. Successful login
+    let app = create_app(pool.clone());
+    let login_payload = json!({
+        "username": test_user,
+        "password": initial_pwd
     });
 
-    let mut res = app
+    let res = app
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -623,34 +640,15 @@ async fn test_auth_login_and_reset_password() {
         .await
         .unwrap();
 
-    if res.status() == StatusCode::UNAUTHORIZED {
-        let app_fallback = create_app(pool.clone());
-        login_payload = json!({
-            "username": "kishan",
-            "password": "Kishan@123"
-        });
-        res = app_fallback
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/auth/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&login_payload).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-    }
-
     assert_eq!(res.status(), StatusCode::OK);
     let body = res.into_body().collect().await.unwrap().to_bytes();
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert!(json.get("token").is_some());
-    assert_eq!(json["user"]["username"], "kishan");
+    assert_eq!(json["user"]["username"], test_user.as_str());
 
     // 2. Request password reset without admin key (must be rejected 403 Forbidden)
     let reset_payload = json!({
-        "username": "kishan"
+        "username": test_user
     });
 
     let app_forbidden = create_app(pool.clone());
@@ -697,7 +695,7 @@ async fn test_auth_login_and_reset_password() {
     // 3. Login with temporary password retrieved from server file
     let app3 = create_app(pool.clone());
     let temp_login_payload = json!({
-        "username": "kishan",
+        "username": test_user,
         "password": temp_password
     });
 
@@ -718,11 +716,11 @@ async fn test_auth_login_and_reset_password() {
     let temp_login_json: Value = serde_json::from_slice(&temp_login_body).unwrap();
     let temp_token = temp_login_json["token"].as_str().unwrap();
 
-    // 4. In logged-in user space, change password back to Kishan@123
+    // 4. In logged-in user space, set a new permanent password
     let app4 = create_app(pool);
     let change_pwd_payload = json!({
         "current_password": temp_password,
-        "new_password": "Kishan@123"
+        "new_password": "Permanent@Secret456"
     });
 
     let res4 = app4

@@ -157,6 +157,275 @@ pub fn resolve_entity_or_char_ref(s: &str) -> Option<String> {
     }
 }
 
+/// Normalizes a GnuCash reconcile state to `n`/`c`/`y`. Only reconciled (`y`) splits keep a
+/// reconcile date, defaulting to now when the file has none (REC-1, DATA-3).
+fn normalize_reconcile(raw_state: &str, date: Option<DateTime<Utc>>) -> (String, Option<DateTime<Utc>>) {
+    match raw_state.to_lowercase().as_str() {
+        "y" => ("y".to_string(), date.or_else(|| Some(Utc::now()))),
+        "c" => ("c".to_string(), None),
+        _ => ("n".to_string(), None),
+    }
+}
+
+/// Removes scheduled-transaction template accounts (and every transaction touching them)
+/// from a parsed book (Issue #7).
+fn remove_template_entries(
+    accounts: &mut Vec<RawAccount>,
+    transactions: &mut Vec<RawTransaction>,
+    splits: &mut Vec<RawSplit>,
+    root_account_guid: Option<&str>,
+    root_template_guid: Option<&str>,
+) {
+    let mut template_guids = HashSet::new();
+    if let Some(rtg) = root_template_guid {
+        template_guids.insert(rtg.to_string());
+    }
+    if let Some(rag) = root_account_guid {
+        for a in accounts.iter() {
+            if a.account_type.eq_ignore_ascii_case("ROOT") && a.guid != rag {
+                template_guids.insert(a.guid.clone());
+            }
+        }
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for a in accounts.iter() {
+            if let Some(ref pg) = a.parent_guid {
+                if template_guids.contains(pg) && !template_guids.contains(&a.guid) {
+                    template_guids.insert(a.guid.clone());
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if template_guids.is_empty() {
+        return;
+    }
+
+    let template_tx_guids: HashSet<String> = splits
+        .iter()
+        .filter(|s| template_guids.contains(&s.account_guid))
+        .map(|s| s.tx_guid.clone())
+        .collect();
+
+    accounts.retain(|a| !template_guids.contains(&a.guid));
+    splits.retain(|s| !template_tx_guids.contains(&s.tx_guid));
+    transactions.retain(|t| !template_tx_guids.contains(&t.guid));
+}
+
+// ---------------------------------------------------------------------------
+// XML
+// ---------------------------------------------------------------------------
+
+fn apply_account_field(
+    acc: &mut RawAccount,
+    slot_key: &mut Option<String>,
+    tag: &str,
+    parent_tag: &str,
+    text: &str,
+) {
+    match tag {
+        "act:id" => acc.guid = text.to_string(),
+        "act:name" => acc.name = text.to_string(),
+        "act:type" => acc.account_type = text.to_string(),
+        "act:description" => acc.description = Some(text.to_string()),
+        "act:code" => acc.code = Some(text.to_string()),
+        "act:parent" => acc.parent_guid = Some(text.to_string()),
+        "cmdty:id" => {
+            if parent_tag == "act:commodity" && !text.eq_ignore_ascii_case("template") {
+                acc.currency = text.to_string();
+            }
+        }
+        "cmdty:space" => {
+            if parent_tag == "act:commodity" {
+                acc.commodity_namespace = text.to_string();
+            }
+        }
+        "act:commodity-scu" => {
+            if let Ok(scu) = text.parse::<i64>() {
+                acc.commodity_fraction = scu;
+            }
+        }
+        "slot:key" => *slot_key = Some(text.to_string()),
+        "slot:value" => match slot_key.as_deref() {
+            Some("placeholder") => acc.placeholder = text.eq_ignore_ascii_case("true"),
+            Some("hidden") => acc.hidden = text.eq_ignore_ascii_case("true"),
+            Some("notes") if acc.description.is_none() => acc.description = Some(text.to_string()),
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
+fn apply_split_field(sp: &mut RawSplit, tag: &str, parent_tag: &str, text: &str) {
+    match tag {
+        "split:id" => sp.guid = text.to_string(),
+        "split:account" => sp.account_guid = text.to_string(),
+        "split:memo" => sp.memo = Some(text.to_string()),
+        "split:reconciled-state" => sp.reconciled_state = text.to_lowercase(),
+        "split:value" => {
+            if let Some(dec) = parse_fraction(text) {
+                sp.amount = dec;
+            }
+        }
+        "split:quantity" => {
+            if let Some(dec) = parse_fraction(text) {
+                sp.quantity = dec;
+            }
+        }
+        "ts:date" | "gdate" => {
+            if parent_tag == "split:reconcile-date" || parent_tag.ends_with("reconcile-date") {
+                sp.reconcile_date = parse_gnucash_datetime(text);
+            }
+        }
+        _ => {
+            if tag.ends_with("reconcile-date") {
+                if let Some(dt) = parse_gnucash_datetime(text) {
+                    sp.reconcile_date = Some(dt);
+                }
+            }
+        }
+    }
+}
+
+fn apply_transaction_field(
+    tx: &mut RawTransaction,
+    slot_key: &mut Option<String>,
+    tag: &str,
+    parent_tag: &str,
+    text: &str,
+) {
+    match tag {
+        "trn:id" => tx.guid = text.to_string(),
+        "trn:description" => tx.description = text.to_string(),
+        "trn:num" => tx.num = Some(text.to_string()),
+        "ts:date" => {
+            if parent_tag == "trn:date-posted" {
+                tx.post_date = parse_gnucash_date(text);
+            }
+        }
+        "gdate" => {
+            if let Ok(d) = NaiveDate::parse_from_str(text, "%Y-%m-%d") {
+                tx.post_date = d;
+            }
+        }
+        "slot:key" => *slot_key = Some(text.to_string()),
+        "slot:value" if slot_key.as_deref() == Some("notes") => tx.notes = Some(text.to_string()),
+        _ => {}
+    }
+}
+
+/// Element-level state of the streaming GnuCash XML parser.
+#[derive(Default)]
+struct XmlParseState {
+    accounts: Vec<RawAccount>,
+    transactions: Vec<RawTransaction>,
+    splits: Vec<RawSplit>,
+    tag_stack: Vec<String>,
+    in_template_transactions: bool,
+    curr_account: Option<RawAccount>,
+    curr_tx: Option<RawTransaction>,
+    curr_split: Option<RawSplit>,
+    curr_slot_key: Option<String>,
+}
+
+impl XmlParseState {
+    fn start_element(&mut self, name: String, default_curr: &str) {
+        match name.as_str() {
+            "gnc:template-transactions" => self.in_template_transactions = true,
+            "gnc:account" if !self.in_template_transactions => {
+                self.curr_account = Some(RawAccount {
+                    currency: default_curr.to_string(),
+                    ..Default::default()
+                });
+            }
+            "gnc:transaction" if !self.in_template_transactions => {
+                self.curr_tx = Some(RawTransaction {
+                    post_date: Utc::now().date_naive(),
+                    ..Default::default()
+                });
+            }
+            "trn:split" if !self.in_template_transactions => {
+                let tx_guid = self.curr_tx.as_ref().map(|tx| tx.guid.clone()).unwrap_or_default();
+                self.curr_split = Some(RawSplit {
+                    tx_guid,
+                    reconciled_state: "n".to_string(),
+                    ..Default::default()
+                });
+            }
+            _ => {}
+        }
+        self.tag_stack.push(name);
+    }
+
+    fn end_element(&mut self, tag: &str, text: &str) {
+        let parent_tag = if self.tag_stack.len() >= 2 {
+            self.tag_stack[self.tag_stack.len() - 2].clone()
+        } else {
+            String::new()
+        };
+
+        if let Some(acc) = self.curr_account.as_mut() {
+            apply_account_field(acc, &mut self.curr_slot_key, tag, &parent_tag, text);
+        }
+        if let Some(sp) = self.curr_split.as_mut() {
+            apply_split_field(sp, tag, &parent_tag, text);
+        } else if let Some(tx) = self.curr_tx.as_mut() {
+            apply_transaction_field(tx, &mut self.curr_slot_key, tag, &parent_tag, text);
+        }
+
+        self.close_container(tag);
+        self.tag_stack.pop();
+    }
+
+    fn close_container(&mut self, tag: &str) {
+        match tag {
+            "gnc:template-transactions" => self.in_template_transactions = false,
+            "gnc:account" => {
+                if let Some(mut acc) = self.curr_account.take() {
+                    if !acc.guid.is_empty() {
+                        acc.account_type = normalize_account_type(&acc.account_type);
+                        self.accounts.push(acc);
+                    }
+                }
+            }
+            "gnc:transaction" => {
+                if let Some(mut tx) = self.curr_tx.take() {
+                    if !tx.guid.is_empty() {
+                        if tx.description.trim().is_empty() {
+                            tx.description = "GnuCash Transaction".to_string();
+                        }
+                        self.transactions.push(tx);
+                    }
+                }
+            }
+            "trn:split" => {
+                if let Some(mut sp) = self.curr_split.take() {
+                    if !sp.guid.is_empty() && !sp.account_guid.is_empty() {
+                        if sp.quantity == Decimal::ZERO && sp.amount != Decimal::ZERO {
+                            sp.quantity = sp.amount;
+                        }
+                        if sp.tx_guid.is_empty() {
+                            if let Some(ref tx) = self.curr_tx {
+                                sp.tx_guid = tx.guid.clone();
+                            }
+                        }
+                        let (state, date) = normalize_reconcile(&sp.reconciled_state, sp.reconcile_date);
+                        sp.reconciled_state = state;
+                        sp.reconcile_date = date;
+                        self.splits.push(sp);
+                    }
+                }
+            }
+            "slot" => self.curr_slot_key = None,
+            _ => {}
+        }
+    }
+}
+
 pub fn parse_gnucash_xml(
     xml_bytes: &[u8],
     default_curr: &str,
@@ -165,18 +434,7 @@ pub fn parse_gnucash_xml(
     // Note: Do not enable trim_text(true) here as it strips whitespace around entity boundaries (Issue #23)
     reader.config_mut().trim_text(false);
 
-    let mut accounts = Vec::new();
-    let mut transactions = Vec::new();
-    let mut splits = Vec::new();
-
-    let mut tag_stack: Vec<String> = Vec::new();
-
-    let mut in_template_transactions = false;
-    let mut curr_account: Option<RawAccount> = None;
-    let mut curr_tx: Option<RawTransaction> = None;
-    let mut curr_split: Option<RawSplit> = None;
-    let mut curr_slot_key: Option<String> = None;
-
+    let mut state = XmlParseState::default();
     let mut curr_text = String::new();
     let mut buf = Vec::new();
 
@@ -185,33 +443,7 @@ pub fn parse_gnucash_xml(
             Ok(Event::Start(e)) => {
                 let name = e.name().as_ref().to_string();
                 curr_text.clear();
-                match name.as_str() {
-                    "gnc:template-transactions" => {
-                        in_template_transactions = true;
-                    }
-                    "gnc:account" if !in_template_transactions => {
-                        curr_account = Some(RawAccount {
-                            currency: default_curr.to_string(),
-                            ..Default::default()
-                        });
-                    }
-                    "gnc:transaction" if !in_template_transactions => {
-                        curr_tx = Some(RawTransaction {
-                            post_date: Utc::now().date_naive(),
-                            ..Default::default()
-                        });
-                    }
-                    "trn:split" if !in_template_transactions => {
-                        let tx_guid = curr_tx.as_ref().map(|tx| tx.guid.clone()).unwrap_or_default();
-                        curr_split = Some(RawSplit {
-                            tx_guid,
-                            reconciled_state: "n".to_string(),
-                            ..Default::default()
-                        });
-                    }
-                    _ => {}
-                }
-                tag_stack.push(name);
+                state.start_element(name, default_curr);
             }
             Ok(Event::Text(e)) => {
                 curr_text.push_str(e.as_ref());
@@ -230,174 +462,9 @@ pub fn parse_gnucash_xml(
             }
             Ok(Event::End(e)) => {
                 let name = e.name().as_ref().to_string();
-                let current_tag = name.as_str();
-                let parent_tag = if tag_stack.len() >= 2 {
-                    tag_stack[tag_stack.len() - 2].as_str()
-                } else {
-                    ""
-                };
                 let text = curr_text.trim().to_string();
-
-                // Account fields
-                if let Some(ref mut acc) = curr_account {
-                    match current_tag {
-                        "act:id" => acc.guid = text.clone(),
-                        "act:name" => acc.name = text.clone(),
-                        "act:type" => acc.account_type = text.clone(),
-                        "act:description" => acc.description = Some(text.clone()),
-                        "act:code" => acc.code = Some(text.clone()),
-                        "act:parent" => acc.parent_guid = Some(text.clone()),
-                        "cmdty:id" => {
-                            if parent_tag == "act:commodity" && !text.eq_ignore_ascii_case("template") {
-                                acc.currency = text.clone();
-                            }
-                        }
-                        "cmdty:space" => {
-                            if parent_tag == "act:commodity" {
-                                acc.commodity_namespace = text.clone();
-                            }
-                        }
-                        "act:commodity-scu" => {
-                            if let Ok(scu) = text.parse::<i64>() {
-                                acc.commodity_fraction = scu;
-                            }
-                        }
-                        "slot:key" => {
-                            curr_slot_key = Some(text.clone());
-                        }
-                        "slot:value" => {
-                            if let Some(ref key) = curr_slot_key {
-                                if key == "placeholder" {
-                                    acc.placeholder = text.eq_ignore_ascii_case("true");
-                                } else if key == "hidden" {
-                                    acc.hidden = text.eq_ignore_ascii_case("true");
-                                } else if key == "notes" && acc.description.is_none() {
-                                    acc.description = Some(text.clone());
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Split fields
-                if let Some(ref mut sp) = curr_split {
-                    match current_tag {
-                        "split:id" => sp.guid = text.clone(),
-                        "split:account" => sp.account_guid = text.clone(),
-                        "split:memo" => sp.memo = Some(text.clone()),
-                        "split:reconciled-state" => sp.reconciled_state = text.to_lowercase(),
-                        "split:value" => {
-                            if let Some(dec) = parse_fraction(&text) {
-                                sp.amount = dec;
-                            }
-                        }
-                        "split:quantity" => {
-                            if let Some(dec) = parse_fraction(&text) {
-                                sp.quantity = dec;
-                            }
-                        }
-                        "ts:date" | "gdate" => {
-                            if parent_tag == "split:reconcile-date" || parent_tag.ends_with("reconcile-date") {
-                                sp.reconcile_date = parse_gnucash_datetime(&text);
-                            }
-                        }
-                        _ => {
-                            if current_tag.ends_with("reconcile-date") {
-                                if let Some(dt) = parse_gnucash_datetime(&text) {
-                                    sp.reconcile_date = Some(dt);
-                                }
-                            }
-                        }
-                    }
-                } else if let Some(ref mut tx) = curr_tx {
-                    // Transaction fields
-                    match current_tag {
-                        "trn:id" => tx.guid = text.clone(),
-                        "trn:description" => tx.description = text.clone(),
-                        "trn:num" => tx.num = Some(text.clone()),
-                        "ts:date" => {
-                            if parent_tag == "trn:date-posted" {
-                                tx.post_date = parse_gnucash_date(&text);
-                            }
-                        }
-                        "gdate" => {
-                            if let Ok(d) = NaiveDate::parse_from_str(&text, "%Y-%m-%d") {
-                                tx.post_date = d;
-                            }
-                        }
-                        "slot:key" => {
-                            curr_slot_key = Some(text.clone());
-                        }
-                        "slot:value" => {
-                            if let Some(ref key) = curr_slot_key {
-                                if key == "notes" {
-                                    tx.notes = Some(text.clone());
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Handle closing containers
-                match current_tag {
-                    "gnc:template-transactions" => {
-                        in_template_transactions = false;
-                    }
-                    "gnc:account" => {
-                        if let Some(mut acc) = curr_account.take() {
-                            if !acc.guid.is_empty() {
-                                acc.account_type = normalize_account_type(&acc.account_type);
-                                accounts.push(acc);
-                            }
-                        }
-                    }
-                    "gnc:transaction" => {
-                        if let Some(mut tx) = curr_tx.take() {
-                            if !tx.guid.is_empty() {
-                                if tx.description.trim().is_empty() {
-                                    tx.description = "GnuCash Transaction".to_string();
-                                }
-                                transactions.push(tx);
-                            }
-                        }
-                    }
-                    "trn:split" => {
-                        if let Some(mut sp) = curr_split.take() {
-                            if !sp.guid.is_empty() && !sp.account_guid.is_empty() {
-                                if sp.quantity == Decimal::ZERO && sp.amount != Decimal::ZERO {
-                                    sp.quantity = sp.amount;
-                                }
-                                if sp.tx_guid.is_empty() {
-                                    if let Some(ref tx) = curr_tx {
-                                        sp.tx_guid = tx.guid.clone();
-                                    }
-                                }
-                                sp.reconciled_state = match sp.reconciled_state.to_lowercase().as_str() {
-                                    "y" => "y".to_string(),
-                                    "c" => "c".to_string(),
-                                    _ => "n".to_string(),
-                                };
-                                if sp.reconciled_state == "y" {
-                                    if sp.reconcile_date.is_none() {
-                                        sp.reconcile_date = Some(Utc::now());
-                                    }
-                                } else {
-                                    sp.reconcile_date = None;
-                                }
-                                splits.push(sp);
-                            }
-                        }
-                    }
-                    "slot" => {
-                        curr_slot_key = None;
-                    }
-                    _ => {}
-                }
-
+                state.end_element(&name, &text);
                 curr_text.clear();
-                tag_stack.pop();
             }
             Ok(Event::Eof) => break,
             Err(e) => {
@@ -409,13 +476,16 @@ pub fn parse_gnucash_xml(
         buf.clear();
     }
 
-    Ok((accounts, transactions, splits))
+    Ok((state.accounts, state.transactions, state.splits))
 }
 
-pub fn parse_gnucash_sqlite(
-    file_bytes: &[u8],
-    default_curr: &str,
-) -> Result<ParsedGnuCashData, String> {
+// ---------------------------------------------------------------------------
+// SQLite
+// ---------------------------------------------------------------------------
+
+/// Writes the upload to a temporary file and opens it read-only. The returned temp file
+/// must outlive the connection.
+fn open_sqlite(file_bytes: &[u8]) -> Result<(NamedTempFile, Connection), String> {
     let mut temp_file = NamedTempFile::new().map_err(|e| {
         tracing::error!("Temp file error: {}", e);
         "Failed to create temporary file for import".to_string()
@@ -424,35 +494,35 @@ pub fn parse_gnucash_sqlite(
         tracing::error!("Failed to write temp file: {}", e);
         "Failed to write uploaded file to disk".to_string()
     })?;
-    let temp_path = temp_file.path().to_path_buf();
 
-    let conn = Connection::open_with_flags(&temp_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    let conn = Connection::open_with_flags(temp_file.path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| {
             tracing::error!("Invalid SQLite file: {}", e);
             "Invalid SQLite file".to_string()
         })?;
     conn.pragma_update(None, "trusted_schema", "OFF").ok();
+    Ok((temp_file, conn))
+}
 
-    // Verify GnuCash tables exist
+fn read_sqlite_table_names(conn: &Connection) -> Result<Vec<String>, String> {
     let mut check_stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table'")
         .map_err(|e| {
             tracing::error!("SQLite query failed: {}", e);
             "Failed to query SQLite database tables".to_string()
         })?;
-    let table_names: Vec<String> = check_stmt.query_map([], |row| row.get(0))
+    let table_names = check_stmt.query_map([], |row| row.get(0))
         .map_err(|e| {
             tracing::error!("Failed to read tables: {}", e);
             "Failed to read SQLite database tables".to_string()
         })?
         .filter_map(|r| r.ok())
         .collect();
+    Ok(table_names)
+}
 
-    if !table_names.contains(&"accounts".to_string()) || !table_names.contains(&"transactions".to_string()) || !table_names.contains(&"splits".to_string()) {
-        return Err("Uploaded database is not a valid GnuCash SQLite file (missing accounts, transactions, or splits tables).".to_string());
-    }
-
-    // Fetch commodities if present (Issue #9)
-    let mut commodity_map: HashMap<String, CommInfo> = HashMap::new();
+/// Commodities, if present (Issue #9).
+fn read_sqlite_commodities(conn: &Connection) -> HashMap<String, CommInfo> {
+    let mut commodity_map = HashMap::new();
     if let Ok(mut stmt) = conn.prepare("SELECT guid, namespace, mnemonic, fraction FROM commodities") {
         if let Ok(rows) = stmt.query_map([], |row| {
             Ok((
@@ -471,20 +541,26 @@ pub fn parse_gnucash_sqlite(
             }
         }
     }
+    commodity_map
+}
 
-    // Read root account and template root guids if books table is present
-    let mut root_account_guid: Option<String> = None;
-    let mut root_template_guid: Option<String> = None;
+/// Root account and template root guids, if the books table is present.
+fn read_sqlite_book_roots(conn: &Connection) -> (Option<String>, Option<String>) {
     if let Ok(mut stmt) = conn.prepare("SELECT root_account_guid, root_template_guid FROM books") {
         if let Ok(mut rows) = stmt.query([]) {
             if let Ok(Some(row)) = rows.next() {
-                root_account_guid = row.get(0).ok();
-                root_template_guid = row.get(1).ok();
+                return (row.get(0).ok(), row.get(1).ok());
             }
         }
     }
+    (None, None)
+}
 
-    // Read Accounts
+fn read_sqlite_accounts(
+    conn: &Connection,
+    commodity_map: &HashMap<String, CommInfo>,
+    default_curr: &str,
+) -> Result<Vec<RawAccount>, String> {
     let mut acc_stmt = conn.prepare(
         "SELECT guid, name, account_type, commodity_guid, parent_guid, code, description, hidden, placeholder FROM accounts"
     ).map_err(|e| {
@@ -492,7 +568,6 @@ pub fn parse_gnucash_sqlite(
         "Failed to parse accounts from SQLite file".to_string()
     })?;
 
-    let mut raw_accounts = Vec::new();
     let acc_rows = acc_stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -510,6 +585,7 @@ pub fn parse_gnucash_sqlite(
         "Failed to parse accounts from SQLite file".to_string()
     })?;
 
+    let mut raw_accounts = Vec::new();
     for r in acc_rows.flatten() {
         let (guid, name, acc_type, commodity_guid, parent_guid, code, desc, hidden, placeholder) = r;
 
@@ -538,9 +614,11 @@ pub fn parse_gnucash_sqlite(
             commodity_fraction,
         });
     }
+    Ok(raw_accounts)
+}
 
-    // Read Transactions with notes from slots table if present
-    let has_slots = table_names.contains(&"slots".to_string());
+/// Transactions, with notes from the slots table when present.
+fn read_sqlite_transactions(conn: &Connection, has_slots: bool) -> Result<Vec<RawTransaction>, String> {
     let mut tx_stmt = if has_slots {
         conn.prepare(
             "SELECT t.guid, t.post_date, t.num, t.description, s.string_val
@@ -557,7 +635,6 @@ pub fn parse_gnucash_sqlite(
         "Failed to parse transactions from SQLite file".to_string()
     })?;
 
-    let mut raw_transactions = Vec::new();
     let tx_rows = tx_stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -571,12 +648,12 @@ pub fn parse_gnucash_sqlite(
         "Failed to parse transactions from SQLite file".to_string()
     })?;
 
+    let mut raw_transactions = Vec::new();
     for r in tx_rows.flatten() {
         let (guid, post_date_str, num, desc, notes) = r;
-        let post_date = parse_gnucash_date(&post_date_str);
         raw_transactions.push(RawTransaction {
             guid,
-            post_date,
+            post_date: parse_gnucash_date(&post_date_str),
             num: num.filter(|s| !s.trim().is_empty()),
             description: desc
                 .filter(|s| !s.trim().is_empty())
@@ -584,8 +661,11 @@ pub fn parse_gnucash_sqlite(
             notes: notes.filter(|s| !s.trim().is_empty()),
         });
     }
+    Ok(raw_transactions)
+}
 
-    // Read Splits (Issue #9: query both value and quantity; Issue #27: reconcile_date)
+/// Splits with both value and quantity (Issue #9) and reconcile date (Issue #27).
+fn read_sqlite_splits(conn: &Connection) -> Result<Vec<RawSplit>, String> {
     let mut split_stmt = conn.prepare(
         "SELECT guid, tx_guid, account_guid, memo, reconcile_state, value_num, value_denom, quantity_num, quantity_denom, reconcile_date FROM splits"
     ).map_err(|e| {
@@ -593,7 +673,6 @@ pub fn parse_gnucash_sqlite(
         "Failed to parse splits from SQLite file".to_string()
     })?;
 
-    let mut raw_splits = Vec::new();
     let split_rows = split_stmt.query_map([], |row| {
         let rec_date_val: rusqlite::types::Value = row.get(9).unwrap_or(rusqlite::types::Value::Null);
         let rec_date_str = match rec_date_val {
@@ -619,6 +698,7 @@ pub fn parse_gnucash_sqlite(
         "Failed to parse splits from SQLite file".to_string()
     })?;
 
+    let mut raw_splits = Vec::new();
     for r in split_rows.flatten() {
         let (guid, tx_guid, account_guid, memo, rec_state, val_num, val_denom, qty_num, qty_denom, rec_date_str) = r;
         let denom = if val_denom == 0 { 100 } else { val_denom };
@@ -630,16 +710,15 @@ pub fn parse_gnucash_sqlite(
             amount
         };
 
-        let reconciled_state = match rec_state.as_deref().unwrap_or("n").to_lowercase().as_str() {
-            "y" => "y".to_string(),
-            "c" => "c".to_string(),
-            _ => "n".to_string(),
-        };
-        let reconcile_date = if reconciled_state == "y" {
-            rec_date_str.as_deref().and_then(parse_gnucash_datetime).or_else(|| Some(Utc::now()))
+        // Only parse the date for reconciled splits, as before
+        let is_reconciled = rec_state.as_deref().unwrap_or("n").eq_ignore_ascii_case("y");
+        let parsed_date = if is_reconciled {
+            rec_date_str.as_deref().and_then(parse_gnucash_datetime)
         } else {
             None
         };
+        let (reconciled_state, reconcile_date) =
+            normalize_reconcile(rec_state.as_deref().unwrap_or("n"), parsed_date);
 
         raw_splits.push(RawSplit {
             guid,
@@ -652,46 +731,35 @@ pub fn parse_gnucash_sqlite(
             reconcile_date,
         });
     }
+    Ok(raw_splits)
+}
 
-    // Exclude scheduled-transaction template accounts and transactions (Issue #7)
-    let mut template_guids = HashSet::new();
-    if let Some(ref rtg) = root_template_guid {
-        template_guids.insert(rtg.clone());
-    }
-    for a in &raw_accounts {
-        if a.account_type.eq_ignore_ascii_case("ROOT") {
-            if let Some(ref rag) = root_account_guid {
-                if &a.guid != rag {
-                    template_guids.insert(a.guid.clone());
-                }
-            }
-        }
-    }
+pub fn parse_gnucash_sqlite(
+    file_bytes: &[u8],
+    default_curr: &str,
+) -> Result<ParsedGnuCashData, String> {
+    let (_temp_file, conn) = open_sqlite(file_bytes)?;
 
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for a in &raw_accounts {
-            if let Some(ref pg) = a.parent_guid {
-                if template_guids.contains(pg) && !template_guids.contains(&a.guid) {
-                    template_guids.insert(a.guid.clone());
-                    changed = true;
-                }
-            }
-        }
+    let table_names = read_sqlite_table_names(&conn)?;
+    let has_table = |name: &str| table_names.iter().any(|t| t == name);
+    if !has_table("accounts") || !has_table("transactions") || !has_table("splits") {
+        return Err("Uploaded database is not a valid GnuCash SQLite file (missing accounts, transactions, or splits tables).".to_string());
     }
 
-    if !template_guids.is_empty() {
-        let template_tx_guids: HashSet<String> = raw_splits
-            .iter()
-            .filter(|s| template_guids.contains(&s.account_guid))
-            .map(|s| s.tx_guid.clone())
-            .collect();
+    let commodity_map = read_sqlite_commodities(&conn);
+    let (root_account_guid, root_template_guid) = read_sqlite_book_roots(&conn);
 
-        raw_accounts.retain(|a| !template_guids.contains(&a.guid));
-        raw_splits.retain(|s| !template_tx_guids.contains(&s.tx_guid));
-        raw_transactions.retain(|t| !template_tx_guids.contains(&t.guid));
-    }
+    let mut raw_accounts = read_sqlite_accounts(&conn, &commodity_map, default_curr)?;
+    let mut raw_transactions = read_sqlite_transactions(&conn, has_table("slots"))?;
+    let mut raw_splits = read_sqlite_splits(&conn)?;
+
+    remove_template_entries(
+        &mut raw_accounts,
+        &mut raw_transactions,
+        &mut raw_splits,
+        root_account_guid.as_deref(),
+        root_template_guid.as_deref(),
+    );
 
     Ok((raw_accounts, raw_transactions, raw_splits))
 }
