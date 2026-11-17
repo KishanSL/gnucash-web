@@ -1,6 +1,6 @@
 # GnuCash Web: Requirements
 
-**Status:** Source of truth for expected behaviour. Last updated 2026-11-16.
+**Status:** Source of truth for expected behaviour. Last updated 2026-11-17.
 
 This file defines what GnuCash Web must do. When it disagrees with the code, README.md, AGENTS.md
 or a Forgejo issue, this file wins: either the code has a bug, or the requirement here must be
@@ -38,6 +38,10 @@ Requirement IDs (e.g. `INV-2`) are stable. Reference them in issues, commits and
   password checking (no user enumeration through response or timing).
 - **SEC-5** Sessions are JWTs valid for 30 days. Changing a password or an admin password reset
   must invalidate every token issued before it.
+- **SEC-14** Clients send the session token as an `Authorization: Bearer <JWT>` header. The web app
+  keeps the token in `localStorage`; the API must not switch to cookie-only authentication, because
+  native clients (the Kotlin Android app) authenticate with the header. XSS risk on the web is
+  limited by SEC-15 instead. (Decided 2026-11-17; revisit only together with the Android app.)
 - **SEC-6** Password reset is CLI-only (`scripts/reset_password.sh`, admin key). The public
   `POST /api/auth/reset-password` returns `403` to anonymous callers before touching the database.
 - **SEC-7** Changing a password requires the current password.
@@ -59,6 +63,9 @@ Requirement IDs (e.g. `INV-2`) are stable. Reference them in issues, commits and
   PostgreSQL 5432). External access goes only through a tunnel or reverse proxy.
 - **SEC-12** Client-supplied identifiers are never used as primary keys for new rows.
 - **SEC-13** Error responses must not echo raw database errors.
+- **SEC-15** The web frontend is served with a Content-Security-Policy whose `script-src` is
+  `'self'` only (no `'unsafe-inline'`, no external script hosts), so injected scripts cannot run and
+  read the stored token (SEC-14).
 
 ## 3. Accounting core
 

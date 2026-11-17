@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState } from 'react';
 import { Navbar, ActiveTab } from './components/Navbar';
 import { AccountsTree } from './components/AccountsTree';
 import { AccountRegister } from './components/AccountRegister';
@@ -7,206 +7,75 @@ import { TransactionModal } from './components/TransactionModal';
 import { NewAccountModal } from './components/NewAccountModal';
 import { ReconcileModal } from './components/ReconcileModal';
 import { ImportModal } from './components/ImportModal';
-import { BalanceSheetView } from './components/reports/BalanceSheetView';
-import { IncomeStatementView } from './components/reports/IncomeStatementView';
-import { TrialBalanceView } from './components/reports/TrialBalanceView';
+import { ReportsView, ReportTab } from './components/reports/ReportsView';
 import { AuthView } from './components/AuthView';
 import {
   Account,
-  AccountTreeNode,
   CreateAccountPayload,
   CreateTransactionPayload,
-  RegisterEntry,
-  Transaction,
   UpdateAccountPayload,
   UpdateTransactionPayload,
-  User,
 } from './types';
 import {
-  checkHealth,
   createAccount,
   createTransaction,
   deleteAccount,
   deleteTransaction,
-  fetchAccounts,
-  fetchAccountTree,
-  fetchAccountRegister,
-  fetchTransactions,
   fetchTransactionById,
   exportGnucashSqlite,
   seedDatabase,
   resetDataset,
   updateAccount,
   updateTransaction,
-  getStoredUser,
-  getStoredToken,
-  logout,
-  fetchCurrentUser,
+  getErrorMessage,
 } from './api';
-import { Scale, TrendingUp, BookCheck, AlertCircle } from 'lucide-react';
+import { AlertCircle } from 'lucide-react';
+import { useLedgerData } from './app/useLedgerData';
+import { useAuthSession } from './app/useAuthSession';
+import { useAppModals } from './app/useAppModals';
+import { useStatusMessage } from './app/useStatusMessage';
+import { useCurrencyPreference } from './app/useCurrencyPreference';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>('accounts');
-  const [reportTab, setReportTab] = useState<'balance-sheet' | 'income-statement' | 'trial-balance'>(
-    'balance-sheet'
-  );
+  const [reportTab, setReportTab] = useState<ReportTab>('balance-sheet');
 
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [tree, setTree] = useState<AccountTreeNode[]>([]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
-  const [registerEntries, setRegisterEntries] = useState<RegisterEntry[]>([]);
-
-  // Authentication state
-  const [currentUser, setCurrentUser] = useState<User | null>(() => getStoredUser());
-
-  const [backendOnline, setBackendOnline] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
-
-  // Currency preference (defaults to INR)
-  const [currency, setCurrency] = useState<string>(() => {
-    return localStorage.getItem('gnucash_currency') || 'INR';
+  const ledger = useLedgerData();
+  const {
+    accounts,
+    tree,
+    transactions,
+    selectedAccount,
+    registerEntries,
+    backendOnline,
+    loading,
+    setLoading,
+    refreshData,
+  } = ledger;
+  const { currentUser, handleLogout, handleAuthSuccess } = useAuthSession({
+    clearData: ledger.clearData,
+    loadInitialData: ledger.loadInitialData,
+    setLoading,
   });
+  const modals = useAppModals();
+  const { statusMessage, setStatusMessage, flashStatus } = useStatusMessage();
+  const { currency, changeCurrency } = useCurrencyPreference();
 
-  const handleCurrencyChange = (newCurrency: string) => {
-    setCurrency(newCurrency);
-    localStorage.setItem('gnucash_currency', newCurrency);
-  };
-
-  // Modals
-  const [isTxModalOpen, setIsTxModalOpen] = useState(false);
-  const [defaultTxAccountId, setDefaultTxAccountId] = useState<string | undefined>();
-  const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
-  const [newAccountParentId, setNewAccountParentId] = useState<string | undefined>();
-  const [editingAccount, setEditingAccount] = useState<Account | null>(null);
-  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
-  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
-
-  // Logout handler
-  const handleLogout = useCallback(() => {
-    logout();
-    setCurrentUser(null);
-    setAccounts([]);
-    setTree([]);
-    setTransactions([]);
-    setSelectedAccount(null);
-    setRegisterEntries([]);
-  }, []);
-
-  // Listen for 401 unauthorized token invalidation
-  useEffect(() => {
-    const handleAuthInvalid = () => {
-      handleLogout();
-    };
-    window.addEventListener('gnucash_auth_invalid', handleAuthInvalid);
-    return () => {
-      window.removeEventListener('gnucash_auth_invalid', handleAuthInvalid);
-    };
-  }, [handleLogout]);
-
-  // Load all foundational data for current user
-  const loadInitialData = useCallback(async () => {
-    if (!getStoredToken()) {
-      setLoading(false);
-      return;
-    }
-    try {
-      setLoading(true);
-      await checkHealth();
-      setBackendOnline(true);
-
-      const [accountsData, treeData, txsData] = await Promise.all([
-        fetchAccounts(),
-        fetchAccountTree(),
-        fetchTransactions(),
-      ]);
-
-      setAccounts(accountsData);
-      setTree(treeData);
-      setTransactions(txsData);
-
-      // Default select a Checking or first Bank account
-      if (accountsData.length > 0) {
-        const defaultAcc =
-          accountsData.find(
-            (a) => !a.placeholder && a.name.toLowerCase().includes('checking')
-          ) || accountsData.find((a) => !a.placeholder);
-
-        if (defaultAcc) {
-          setSelectedAccount(defaultAcc);
-          const reg = await fetchAccountRegister(defaultAcc.id);
-          setRegisterEntries(reg);
-        }
-      }
-    } catch (err: any) {
-      console.error('Failed to load data from backend:', err);
-      setBackendOnline(false);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // Sync / verify current user on mount if token exists
-  useEffect(() => {
-    if (getStoredToken()) {
-      fetchCurrentUser()
-        .then((user) => {
-          setCurrentUser(user);
-          loadInitialData();
-        })
-        .catch(() => {
-          handleLogout();
-        });
-    } else {
-      setLoading(false);
-    }
-  }, [handleLogout, loadInitialData]);
-
-  // Load register when selectedAccount changes
   const handleSelectAccountForRegister = async (account: Account) => {
-    setSelectedAccount(account);
     setActiveTab('register');
-    try {
-      const reg = await fetchAccountRegister(account.id);
-      setRegisterEntries(reg);
-    } catch (err) {
-      console.error('Failed to load register:', err);
-    }
+    await ledger.openRegister(account);
   };
 
   const handleSelectAccountForReconcile = (account: Account) => {
-    setSelectedAccount(account);
+    ledger.setSelectedAccount(account);
     setActiveTab('reconcile');
   };
 
-  // Reload current view
-  const refreshData = async () => {
-    const [accountsData, treeData, txsData] = await Promise.all([
-      fetchAccounts(),
-      fetchAccountTree(),
-      fetchTransactions(),
-    ]);
-
-    setAccounts(accountsData);
-    setTree(treeData);
-    setTransactions(txsData);
-
-    if (selectedAccount) {
-      const updatedSelected = accountsData.find((a) => a.id === selectedAccount.id);
-      if (updatedSelected) setSelectedAccount(updatedSelected);
-      const reg = await fetchAccountRegister(selectedAccount.id);
-      setRegisterEntries(reg);
-    }
-  };
-
-  // Create Transaction
   const handleCreateTransaction = async (payload: CreateTransactionPayload) => {
     await createTransaction(payload);
     await refreshData();
   };
 
-  // Open Edit Transaction Modal
   const handleOpenEditTransaction = async (txId: string) => {
     let tx = transactions.find((t) => t.id === txId);
     if (!tx) {
@@ -217,30 +86,25 @@ export const App: React.FC = () => {
       }
     }
     if (tx) {
-      setEditingTransaction(tx);
-      setIsTxModalOpen(true);
+      modals.openEditTransaction(tx);
     }
   };
 
-  // Update Transaction
   const handleUpdateTransaction = async (id: string, payload: UpdateTransactionPayload) => {
     await updateTransaction(id, payload);
     await refreshData();
   };
 
-  // Delete Transaction
   const handleDeleteTransaction = async (txId: string) => {
     await deleteTransaction(txId);
     await refreshData();
   };
 
-  // Create Account
   const handleCreateAccount = async (payload: CreateAccountPayload) => {
     await createAccount(payload);
     await refreshData();
   };
 
-  // Update Account
   const handleUpdateAccount = async (id: string, payload: UpdateAccountPayload) => {
     await updateAccount(id, payload);
     await refreshData();
@@ -251,19 +115,11 @@ export const App: React.FC = () => {
     try {
       await updateAccount(acc.id, { hidden: !acc.hidden });
       await refreshData();
-    } catch (err: any) {
-      alert(err.message || 'Failed to update account');
+    } catch (err: unknown) {
+      alert(getErrorMessage(err));
     }
   };
 
-  // Open Edit Account Modal
-  const handleOpenEditAccount = (acc: Account) => {
-    setEditingAccount(acc);
-    setNewAccountParentId(acc.parent_id || undefined);
-    setIsAccountModalOpen(true);
-  };
-
-  // Delete Account
   const handleDeleteAccount = async (id: string) => {
     if (confirm('Are you sure you want to delete this account?')) {
       await deleteAccount(id);
@@ -271,34 +127,29 @@ export const App: React.FC = () => {
     }
   };
 
-  // Seed Data
   const handleSeedData = async () => {
     if (confirm('Seed standard GnuCash Chart of Accounts and realistic sample transactions?')) {
       try {
         const res = await seedDatabase();
-        setStatusMessage(res.message);
-        setTimeout(() => setStatusMessage(null), 5000);
+        flashStatus(res.message, 5000);
         await refreshData();
-      } catch (err: any) {
-        alert(err.message || 'Failed to seed');
+      } catch (err: unknown) {
+        alert(getErrorMessage(err));
       }
     }
   };
 
-  // Export GnuCash SQLite
   const handleExport = async () => {
     try {
       setStatusMessage('Generating GnuCash SQLite export (.gnucash)...');
       await exportGnucashSqlite();
-      setStatusMessage('GnuCash SQLite file exported successfully!');
-      setTimeout(() => setStatusMessage(null), 3500);
-    } catch (err: any) {
-      alert(err.message || 'Export failed');
+      flashStatus('GnuCash SQLite file exported successfully!', 3500);
+    } catch (err: unknown) {
+      alert(getErrorMessage(err));
       setStatusMessage(null);
     }
   };
 
-  // Reset Entire Database
   const handleResetDataset = async () => {
     const confirmed = confirm(
       '⚠️ Reset Entire Database?\n\n' +
@@ -310,16 +161,11 @@ export const App: React.FC = () => {
     try {
       setLoading(true);
       const res = await resetDataset();
-      setStatusMessage(res.message);
-      setTimeout(() => setStatusMessage(null), 5000);
-      setSelectedAccount(null);
-      setAccounts([]);
-      setTree([]);
-      setTransactions([]);
-      setRegisterEntries([]);
+      flashStatus(res.message, 5000);
+      ledger.clearData();
       await refreshData();
-    } catch (err: any) {
-      alert(err.message || 'Failed to reset database');
+    } catch (err: unknown) {
+      alert(getErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -327,14 +173,7 @@ export const App: React.FC = () => {
 
   // If user is not authenticated, display login / signup view
   if (!currentUser) {
-    return (
-      <AuthView
-        onAuthSuccess={(user) => {
-          setCurrentUser(user);
-          loadInitialData();
-        }}
-      />
-    );
+    return <AuthView onAuthSuccess={handleAuthSuccess} />;
   }
 
   return (
@@ -344,23 +183,16 @@ export const App: React.FC = () => {
         setActiveTab={setActiveTab}
         currentUser={currentUser}
         onLogout={handleLogout}
-        onOpenNewTx={() => {
-          setDefaultTxAccountId(selectedAccount?.id);
-          setIsTxModalOpen(true);
-        }}
-        onOpenNewAccount={() => {
-          setEditingAccount(null);
-          setNewAccountParentId(undefined);
-          setIsAccountModalOpen(true);
-        }}
-        onOpenImport={() => setIsImportModalOpen(true)}
+        onOpenNewTx={() => modals.openNewTransaction(selectedAccount?.id)}
+        onOpenNewAccount={() => modals.openNewAccount()}
+        onOpenImport={modals.openImport}
         onExport={handleExport}
         onSeedData={handleSeedData}
         onResetDataset={handleResetDataset}
         backendOnline={backendOnline}
         selectedAccountName={selectedAccount?.name}
         currency={currency}
-        onCurrencyChange={handleCurrencyChange}
+        onCurrencyChange={changeCurrency}
       />
 
       {statusMessage && (
@@ -391,12 +223,8 @@ export const App: React.FC = () => {
                 onSelectAccountForRegister={handleSelectAccountForRegister}
                 onSelectAccountForReconcile={handleSelectAccountForReconcile}
                 onDeleteAccount={handleDeleteAccount}
-                onOpenNewAccount={(parentId) => {
-                  setEditingAccount(null);
-                  setNewAccountParentId(parentId);
-                  setIsAccountModalOpen(true);
-                }}
-                onEditAccount={handleOpenEditAccount}
+                onOpenNewAccount={modals.openNewAccount}
+                onEditAccount={modals.openEditAccount}
                 onToggleHideAccount={handleToggleHideAccount}
               />
             )}
@@ -411,11 +239,7 @@ export const App: React.FC = () => {
                     allAccounts={accounts}
                     currentCurrency={currency}
                     onSelectAccount={handleSelectAccountForRegister}
-                    onOpenNewTx={(accId) => {
-                      setDefaultTxAccountId(accId);
-                      setEditingTransaction(null);
-                      setIsTxModalOpen(true);
-                    }}
+                    onOpenNewTx={modals.openNewTransaction}
                     onOpenReconcile={handleSelectAccountForReconcile}
                     onDeleteTransaction={handleDeleteTransaction}
                     onEditTransaction={handleOpenEditTransaction}
@@ -435,11 +259,7 @@ export const App: React.FC = () => {
               <TransactionsJournal
                 transactions={transactions}
                 currentCurrency={currency}
-                onOpenNewTx={() => {
-                  setDefaultTxAccountId(undefined);
-                  setEditingTransaction(null);
-                  setIsTxModalOpen(true);
-                }}
+                onOpenNewTx={() => modals.openNewTransaction()}
                 onDeleteTransaction={handleDeleteTransaction}
                 onEditTransaction={handleOpenEditTransaction}
               />
@@ -457,50 +277,7 @@ export const App: React.FC = () => {
 
             {/* Tab 5: Financial Reports */}
             {activeTab === 'reports' && (
-              <div className="space-y-6">
-                {/* Reports Sub-nav buttons */}
-                <div className="flex space-x-2 border-b border-slate-200 pb-3 overflow-x-auto no-scrollbar">
-                  <button
-                    onClick={() => setReportTab('balance-sheet')}
-                    className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition ${
-                      reportTab === 'balance-sheet'
-                        ? 'bg-emerald-600 text-white shadow-sm'
-                        : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                    }`}
-                  >
-                    <Scale className="w-4 h-4" />
-                    <span>Balance Sheet</span>
-                  </button>
-
-                  <button
-                    onClick={() => setReportTab('income-statement')}
-                    className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition ${
-                      reportTab === 'income-statement'
-                        ? 'bg-emerald-600 text-white shadow-sm'
-                        : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                    }`}
-                  >
-                    <TrendingUp className="w-4 h-4" />
-                    <span>Income Statement (P&L)</span>
-                  </button>
-
-                  <button
-                    onClick={() => setReportTab('trial-balance')}
-                    className={`flex items-center space-x-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition ${
-                      reportTab === 'trial-balance'
-                        ? 'bg-emerald-600 text-white shadow-sm'
-                        : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                    }`}
-                  >
-                    <BookCheck className="w-4 h-4" />
-                    <span>Trial Balance</span>
-                  </button>
-                </div>
-
-                {reportTab === 'balance-sheet' && <BalanceSheetView currentCurrency={currency} />}
-                {reportTab === 'income-statement' && <IncomeStatementView currentCurrency={currency} />}
-                {reportTab === 'trial-balance' && <TrialBalanceView currentCurrency={currency} />}
-              </div>
+              <ReportsView reportTab={reportTab} onReportTabChange={setReportTab} currentCurrency={currency} />
             )}
           </>
         )}
@@ -508,43 +285,36 @@ export const App: React.FC = () => {
 
       {/* Transaction Modal */}
       <TransactionModal
-        isOpen={isTxModalOpen}
-        onClose={() => {
-          setIsTxModalOpen(false);
-          setEditingTransaction(null);
-        }}
+        isOpen={modals.isTxModalOpen}
+        onClose={modals.closeTransactionModal}
         onSubmit={handleCreateTransaction}
         onUpdate={handleUpdateTransaction}
-        editingTransaction={editingTransaction}
+        editingTransaction={modals.editingTransaction}
         accounts={accounts}
-        defaultAccountId={defaultTxAccountId}
+        defaultAccountId={modals.defaultTxAccountId}
         currentCurrency={currency}
         transactions={transactions}
       />
 
       {/* New / Edit Account Modal */}
       <NewAccountModal
-        isOpen={isAccountModalOpen}
-        onClose={() => {
-          setIsAccountModalOpen(false);
-          setEditingAccount(null);
-        }}
+        isOpen={modals.isAccountModalOpen}
+        onClose={modals.closeAccountModal}
         onSubmit={handleCreateAccount}
         onUpdate={handleUpdateAccount}
-        editingAccount={editingAccount}
+        editingAccount={modals.editingAccount}
         accounts={accounts}
-        defaultParentId={newAccountParentId}
+        defaultParentId={modals.newAccountParentId}
         currentCurrency={currency}
       />
 
       {/* Import GnuCash SQLite Modal */}
       <ImportModal
-        isOpen={isImportModalOpen}
-        onClose={() => setIsImportModalOpen(false)}
+        isOpen={modals.isImportModalOpen}
+        onClose={modals.closeImport}
         onImportSuccess={async () => {
           await refreshData();
-          setStatusMessage('GnuCash SQLite database imported successfully!');
-          setTimeout(() => setStatusMessage(null), 5000);
+          flashStatus('GnuCash SQLite database imported successfully!', 5000);
         }}
         currentCurrency={currency}
       />

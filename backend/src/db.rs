@@ -2,7 +2,103 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use std::time::Duration;
 use tracing::info;
+#[cfg(any(test, feature = "test-utils"))]
+use url::Url;
 use uuid::Uuid;
+
+/// Resolves a guaranteed safe test database URL.
+/// Strictly asserts that the target database name ends with '_test' to prevent any possibility
+/// of tests executing against production or live application data.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn get_test_database_url() -> String {
+    let raw = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash_test".to_string()
+        })
+    });
+
+    let mut parsed = Url::parse(&raw).unwrap_or_else(|e| {
+        panic!("Invalid database connection URL '{}': {}", raw, e)
+    });
+
+    let path_segments: Vec<&str> = parsed.path().trim_start_matches('/').split('/').collect();
+    let db_name = path_segments.first().copied().unwrap_or("gnucash");
+    let test_db_name = if db_name.ends_with("_test") {
+        db_name.to_string()
+    } else {
+        format!("{}_test", db_name)
+    };
+
+    parsed.set_path(&format!("/{}", test_db_name));
+    let final_url = parsed.to_string();
+
+    assert!(
+        test_db_name.ends_with("_test"),
+        "Safety guard violation: test database name '{}' must end with '_test'",
+        test_db_name
+    );
+
+    final_url
+}
+
+/// Ensures the test database exists on the PostgreSQL server, automatically creating it
+/// via the maintenance 'postgres' database if running against a brand-new instance.
+#[cfg(any(test, feature = "test-utils"))]
+pub async fn ensure_test_database_exists(test_url: &str) {
+    let mut admin_url = match Url::parse(test_url) {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!("Failed to parse test database URL '{}': {}", test_url, e);
+            return;
+        }
+    };
+
+    let test_db_name = admin_url.path().trim_start_matches('/').to_string();
+    if test_db_name.is_empty() {
+        return;
+    }
+
+    admin_url.set_path("/postgres");
+    match sqlx::PgPool::connect(admin_url.as_str()).await {
+        Ok(admin_pool) => {
+            let exists: Result<(bool,), sqlx::Error> = sqlx::query_as(
+                "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)"
+            )
+            .bind(&test_db_name)
+            .fetch_one(&admin_pool)
+            .await;
+
+            match exists {
+                Ok((false,)) => {
+                    let create_sql = format!("CREATE DATABASE \"{}\"", test_db_name.replace('"', "\"\""));
+                    if let Err(e) = sqlx::query(&create_sql).execute(&admin_pool).await {
+                        tracing::warn!("Could not auto-create test database '{}': {}", test_db_name, e);
+                    } else {
+                        tracing::info!("Auto-created test database '{}'", test_db_name);
+                    }
+                }
+                Ok((true,)) => {
+                    // Database already exists
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to check if database '{}' exists: {}", test_db_name, e);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "Failed to connect to maintenance postgres DB at '{}' to ensure '{}' exists: {}",
+                admin_url, test_db_name, e
+            );
+            tracing::warn!(
+                "Failed to connect to maintenance postgres DB at '{}' to ensure '{}' exists: {}",
+                admin_url,
+                test_db_name,
+                e
+            );
+        }
+    }
+}
 
 pub async fn init_db(database_url: &str) -> Result<PgPool, sqlx::Error> {
     info!("Connecting to database...");
@@ -25,14 +121,7 @@ pub async fn init_db(database_url: &str) -> Result<PgPool, sqlx::Error> {
     };
 
     info!("Running database schema migrations...");
-    let migration_1 = include_str!("../migrations/001_initial_schema.sql");
-    sqlx::raw_sql(migration_1).execute(&pool).await?;
-
-    let migration_2 = include_str!("../migrations/002_multi_user.sql");
-    sqlx::raw_sql(migration_2).execute(&pool).await?;
-
-    let migration_3 = include_str!("../migrations/003_optimizations_and_constraints.sql");
-    sqlx::raw_sql(migration_3).execute(&pool).await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
 
     // Ensure at least one default user exists for pre-existing or imported data
     let user_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
@@ -84,10 +173,10 @@ pub async fn init_db(database_url: &str) -> Result<PgPool, sqlx::Error> {
 
         let password_hash = tokio::task::spawn_blocking(move || {
             bcrypt::hash(&raw_password, bcrypt::DEFAULT_COST)
-                .unwrap_or_else(|_| "$2b$12$e8YgN17Pj9QGqZ2eCq.X3OMWj944j/mYFkU5nZ7cI19j1r5u0gJvG".to_string())
+                .expect("Failed to hash initial admin password")
         })
         .await
-        .unwrap_or_else(|_| "$2b$12$e8YgN17Pj9QGqZ2eCq.X3OMWj944j/mYFkU5nZ7cI19j1r5u0gJvG".to_string());
+        .expect("Password hashing task panicked");
 
         let email = format!("{}@localhost", initial_username);
         sqlx::query(

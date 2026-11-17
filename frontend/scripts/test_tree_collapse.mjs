@@ -1,4 +1,7 @@
 import puppeteer from 'puppeteer';
+import { BASE_URL, requireIsolatedEnv } from './lib/e2e.mjs';
+
+requireIsolatedEnv('test_tree_collapse');
 
 (async () => {
   const browser = await puppeteer.launch({
@@ -10,7 +13,7 @@ import puppeteer from 'puppeteer';
   await page.setViewport({ width: 1440, height: 900 });
 
   // 1. Login
-  await page.goto('http://localhost:8081');
+  await page.goto(BASE_URL);
   await page.type('input[type="text"]', 'kishan');
   await page.type('input[type="password"]', 'Kishan@123');
   await page.click('button[type="submit"]');

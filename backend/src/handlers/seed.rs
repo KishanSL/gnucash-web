@@ -442,11 +442,16 @@ pub async fn run_seed_tx(
 mod tests {
     use super::*;
 
+    async fn get_seed_test_db_pool() -> (String, sqlx::PgPool) {
+        let db_url = crate::db::get_test_database_url();
+        crate::db::ensure_test_database_exists(&db_url).await;
+        let pool = crate::db::init_db(&db_url).await.expect("Failed to initialize test database schema");
+        (db_url, pool)
+    }
+
     #[tokio::test]
     async fn test_run_seed_tx_rollback_on_failure() {
-        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run DB tests in seed.rs");
-        crate::db::init_db(&db_url).await.expect("Failed to initialize test database schema");
-        let pool = sqlx::PgPool::connect(&db_url).await.expect("Failed to connect to test database");
+        let (_db_url, pool) = get_seed_test_db_pool().await;
         let mut tx = pool.begin().await.expect("begin tx");
 
         let test_user_id = Uuid::new_v4();
@@ -482,9 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reconciled_state_constraint_exists() {
-        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run DB tests in seed.rs");
-        crate::db::init_db(&db_url).await.expect("Failed to initialize test database schema");
-        let pool = sqlx::PgPool::connect(&db_url).await.expect("Failed to connect to test database");
+        let (_db_url, pool) = get_seed_test_db_pool().await;
         let exists: (bool,) = sqlx::query_as(
             "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state')"
         )
@@ -496,9 +499,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_seed_database_wipe_and_insert_atomic_rollback() {
-        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run DB tests in seed.rs");
-        crate::db::init_db(&db_url).await.expect("Failed to initialize test database schema");
-        let pool = sqlx::PgPool::connect(&db_url).await.expect("Failed to connect to test database");
+        let (_db_url, pool) = get_seed_test_db_pool().await;
         let test_user_id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO users (id, username, email, password_hash) VALUES ($1, $2, $3, 'hash')"

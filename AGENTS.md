@@ -30,14 +30,28 @@ Puppeteer testing suites are configured in `frontend/scripts/`:
 - `frontend/scripts/test_register_autocomplete.mjs` — Complete account history autocomplete & autofill verification.
 - `frontend/scripts/test_register_enhancements.mjs` — Register 2-line mode, inline blank row, and transaction edit modal.
 - `frontend/scripts/test_reset_password.mjs` — Server-secured password reset flow, server notice file extraction, and logged-in password update.
+- `frontend/scripts/test_fund_account_decimals.mjs` — Fund account (commodity fraction 1000) entry still sends 2-decimal amounts (ACC-3, INV-5).
+- Other suites: `test_ui_comprehensive`, `test_reports_tab`, `test_reconcile_view`, `test_autocomplete_autofill`, `test_tree_collapse`, `test_currency_dropdown`, `test_export_gnucash`.
 
 - **Default Test Credentials**: `kishan` / `Kishan@123`
 - **Frontend URL**: `http://localhost:8081`
-- **Run the test script**:
+- **Isolated test environment (never test against live data)**:
+  `npm run test:e2e` (`frontend/scripts/run_e2e.sh`) creates a throwaway `gnucash_e2e_test` database, starts a debug backend on `127.0.0.1:8092` and a preview build on `127.0.0.1:8093` (localhost only), runs the suites, then stops everything and drops the database.
+  Scripts that create, change or delete data (`test_register_enhancements`, `test_ui_comprehensive`, `test_autocomplete_autofill`, `test_tree_collapse`, `test_fund_account_decimals`, `test_reset_password`) call `requireIsolatedEnv()` and refuse to run outside it.
+  ```bash
+  cd frontend && npm run test:e2e                                   # all suites, isolated
+  cd frontend && npm run test:e2e -- test_register_enhancements     # selected suites, isolated
+  ```
+- **CI**: the `e2e` job in `.forgejo/workflows/ci.yml` runs the same suites against a Postgres service (`E2E_DB_PROVISIONED=1`, no `psql` needed). The fund-account fixture is imported through the import API from `frontend/scripts/fixtures/fund_account.gnucash.xml`.
+- **Full pipeline locally** (same steps as CI; use it before pushing while no Forgejo runner is registered):
+  ```bash
+  ./scripts/ci_local.sh            # clippy, cargo test, typecheck, ESLint, unit tests, build, Puppeteer
+  ./scripts/ci_local.sh --no-e2e   # without the Puppeteer suites
+  ```
+- **Read-only smoke checks against the deployed app** (default `http://localhost:8081`, override with `E2E_BASE_URL`):
   ```bash
   cd frontend && node scripts/test_ui.mjs
   cd frontend && node scripts/test_register_autocomplete.mjs
-  cd frontend && node scripts/test_reset_password.mjs
   ```
 - **Screenshots Directory**: `frontend/screenshots/`
 

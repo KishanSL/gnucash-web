@@ -86,11 +86,12 @@ Always run the automated Puppeteer suites to prevent regressions:
    ```
    *Verifies complete historical payee autocomplete sourcing, dropdown display with occurrence counts, and full split autofill.*
 
-3. **Register 2-Line Mode, Inline Entry & Transaction Edit Modal**:
+3. **Full suite in an isolated environment** (includes every script that changes data):
    ```bash
-   cd frontend && node scripts/test_register_enhancements.mjs
+   cd frontend && npm run test:e2e
+   cd frontend && npm run test:e2e -- test_register_enhancements   # one suite
    ```
-   *Verifies 2-line notes/memo row, pencil edit button, and transaction update workflow.*
+   *Runs against a throwaway `gnucash_e2e_test` database and backend, so live data is never modified. Scripts that change data refuse to run against the live app.*
 
 ---
 

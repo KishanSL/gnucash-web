@@ -43,9 +43,11 @@ if [[ "$BACKEND_HEALTH" != *"ok"* || "$FRONTEND_HEALTH" != *"ok"* ]]; then
 fi
 
 echo "🎭 [4/4] Executing Puppeteer Verification Suites..."
+# Read-only smoke checks against the freshly deployed app
 (cd frontend && node scripts/test_ui.mjs)
 (cd frontend && node scripts/test_register_autocomplete.mjs)
-(cd frontend && node scripts/test_reset_password.mjs)
+# Full suite (including scripts that change data) in an isolated, throwaway environment
+(cd frontend && npm run test:e2e)
 
 echo "========================================================"
 echo "  ✅ All Deployment & Verification Steps Succeeded!"

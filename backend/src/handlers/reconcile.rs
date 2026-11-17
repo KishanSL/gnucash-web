@@ -15,7 +15,7 @@ use crate::auth::AuthUser;
 use crate::handlers::internal_error;
 use crate::models::{
     calculate_display_balance, is_asset_type, is_expense_type, Account, AccountRow,
-    FinishReconcileRequest, ReconcileData, ReconcileSplitItem,
+    FinishReconcileRequest, ReconcileData, ReconcileSplitItem, UnreconciledSplitRow,
 };
 
 #[derive(Debug, Deserialize)]
@@ -33,7 +33,7 @@ pub async fn get_reconcile_info(
 
     // 1. Fetch account ensuring ownership
     let acc_row = sqlx::query_as::<_, AccountRow>(
-        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, created_at, updated_at
+        "SELECT id, name, code, account_type, parent_id, currency, description, placeholder, hidden, commodity_fraction, created_at, updated_at
          FROM accounts WHERE id = $1 AND user_id = $2",
     )
     .bind(account_id)
@@ -49,34 +49,31 @@ pub async fn get_reconcile_info(
     })?;
 
     // 2. Fetch starting balance (sum of splits that are already reconciled 'y')
-    let start_row: Option<(Decimal,)> = sqlx::query_as(
+    let raw_starting_balance = sqlx::query_scalar::<_, Decimal>(
         r#"SELECT COALESCE(SUM(amount), 0)
            FROM splits
            WHERE account_id = $1 AND reconciled_state = 'y'"#
     )
     .bind(account_id)
-    .fetch_optional(&pool)
+    .fetch_one(&pool)
     .await
-    .unwrap_or(None);
-
-    let raw_starting_balance = start_row.map(|r| r.0).unwrap_or(Decimal::ZERO);
+    .map_err(|e| internal_error("Failed to compute reconcile starting balance", e))?;
     let starting_balance = calculate_display_balance(&acc_row.account_type, raw_starting_balance);
 
     // Total direct balance
-    let total_row: Option<(Decimal,)> = sqlx::query_as(
+    let raw_total = sqlx::query_scalar::<_, Decimal>(
         "SELECT COALESCE(SUM(amount), 0) FROM splits WHERE account_id = $1",
     )
     .bind(account_id)
-    .fetch_optional(&pool)
+    .fetch_one(&pool)
     .await
-    .unwrap_or(None);
+    .map_err(|e| internal_error("Failed to compute account balance for reconcile", e))?;
 
-    let raw_total = total_row.map(|r| r.0).unwrap_or(Decimal::ZERO);
     let ending_balance = calculate_display_balance(&acc_row.account_type, raw_total);
 
     // 3. Fetch unreconciled splits (reconciled_state != 'y') up to statement date
-    let unreconciled_splits = sqlx::query_as::<_, (Uuid, Uuid, NaiveDate, Option<String>, String, Decimal, String)>(
-        r#"SELECT s.id, t.id, t.post_date, t.num, t.description, s.amount, s.reconciled_state
+    let unreconciled_splits = sqlx::query_as::<_, UnreconciledSplitRow>(
+        r#"SELECT s.id, t.id as transaction_id, t.post_date, t.num, t.description, s.amount, s.reconciled_state
            FROM splits s
            JOIN transactions t ON s.transaction_id = t.id
            WHERE s.account_id = $1 AND s.reconciled_state != 'y' AND t.post_date <= $2 AND t.user_id = $3
@@ -95,27 +92,27 @@ pub async fn get_reconcile_info(
     let mut deposits = Vec::new();
     let mut withdrawals = Vec::new();
 
-    for (s_id, tx_id, post_date, num, description, amount, rec_state) in unreconciled_splits {
-        let display_amount = amount.abs();
+    for s in unreconciled_splits {
+        let display_amount = s.amount.abs();
         let item = ReconcileSplitItem {
-            split_id: s_id,
-            transaction_id: tx_id,
-            post_date,
-            num,
-            description,
-            amount,
+            split_id: s.id,
+            transaction_id: s.transaction_id,
+            post_date: s.post_date,
+            num: s.num,
+            description: s.description,
+            amount: s.amount,
             display_amount,
-            reconciled_state: rec_state,
+            reconciled_state: s.reconciled_state,
         };
 
         if is_asset || is_expense {
-            if amount >= Decimal::ZERO {
+            if s.amount >= Decimal::ZERO {
                 deposits.push(item);
             } else {
                 withdrawals.push(item);
             }
         } else {
-            if amount < Decimal::ZERO {
+            if s.amount < Decimal::ZERO {
                 withdrawals.push(item);
             } else {
                 deposits.push(item);
@@ -133,6 +130,7 @@ pub async fn get_reconcile_info(
         description: acc_row.description,
         placeholder: acc_row.placeholder,
         hidden: acc_row.hidden,
+        commodity_fraction: acc_row.commodity_fraction,
         balance: raw_total,
         total_balance: raw_total,
         display_balance: ending_balance,
@@ -166,7 +164,7 @@ pub async fn finish_reconcile(
     .bind(auth.id)
     .fetch_one(&pool)
     .await
-    .unwrap_or(0);
+    .map_err(|e| internal_error("Failed to verify account for reconcile", e))?;
 
     if acc_exists == 0 {
         return Err((

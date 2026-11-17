@@ -6,7 +6,12 @@
   "scripts": {
     "dev": "vite --port 8081 --host",
     "build": "tsc && vite build",
-    "preview": "vite preview --port 8081 --host"
+    "preview": "vite preview --port 8081 --host",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"tests/**/*.test.ts\"",
+    "test:fund": "bash scripts/run_e2e.sh test_fund_account_decimals",
+    "test:e2e": "bash scripts/run_e2e.sh"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",
@@ -14,14 +19,19 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
     "autoprefixer": "^10.4.20",
+    "eslint": "^10.15.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.8",
     "postcss": "^8.4.47",
     "puppeteer": "^25.17.0",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",
-    "vite": "^5.4.10"
+    "typescript-eslint": "^8.73.0",
+    "vite": "^6.4.6"
   }
 }

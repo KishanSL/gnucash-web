@@ -7,15 +7,32 @@ use axum::{
     routing::{delete, get, post, put},
     Json, Router,
 };
+use axum::http::HeaderValue;
 use serde_json::json;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 pub fn create_app(pool: sqlx::PgPool) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = if let Ok(origins) = std::env::var("CORS_ALLOWED_ORIGINS") {
+        if origins.trim() == "*" {
+            CorsLayer::new().allow_origin(Any)
+        } else {
+            let parsed: Vec<HeaderValue> = origins
+                .split(',')
+                .filter_map(|s| s.trim().parse::<HeaderValue>().ok())
+                .collect();
+            CorsLayer::new().allow_origin(parsed)
+        }
+    } else {
+        CorsLayer::new().allow_origin([
+            "http://localhost:8081".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1:8081".parse::<HeaderValue>().unwrap(),
+            "http://localhost:5173".parse::<HeaderValue>().unwrap(),
+            "http://127.0.0.1:5173".parse::<HeaderValue>().unwrap(),
+        ])
+    }
+    .allow_methods(Any)
+    .allow_headers(Any);
 
     Router::new()
         // Health check

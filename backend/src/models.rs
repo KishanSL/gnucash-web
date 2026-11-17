@@ -15,6 +15,7 @@ pub struct AccountRow {
     pub description: Option<String>,
     pub placeholder: bool,
     pub hidden: bool,
+    pub commodity_fraction: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -30,6 +31,7 @@ pub struct Account {
     pub description: Option<String>,
     pub placeholder: bool,
     pub hidden: bool,
+    pub commodity_fraction: Option<i64>,
     pub balance: Decimal,        // direct balance of this account
     pub total_balance: Decimal,  // includes all children recursively
     pub display_balance: Decimal,// formatted accounting balance according to account normal balance
@@ -101,7 +103,7 @@ pub struct SplitRow {
     pub reconciled_date: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct SplitWithAccount {
     pub id: Uuid,
     pub transaction_id: Uuid,
@@ -305,7 +307,67 @@ pub fn is_expense_type(t: &str) -> bool {
 pub fn calculate_display_balance(account_type: &str, raw_balance: Decimal) -> Decimal {
     if is_asset_type(account_type) || is_expense_type(account_type) {
         raw_balance
+    } else if raw_balance.is_zero() {
+        // Negating zero would produce "-0", shown as "-₹0.00"
+        Decimal::ZERO
     } else {
         -raw_balance
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn display_balance_flips_sign_for_credit_normal_accounts() {
+        assert_eq!(calculate_display_balance("bank", dec!(100.50)), dec!(100.50));
+        assert_eq!(calculate_display_balance("credit", dec!(-29.98)), dec!(29.98));
+        assert_eq!(calculate_display_balance("income", dec!(-7000)), dec!(7000));
+    }
+
+    #[test]
+    fn zero_display_balance_is_never_negative_zero() {
+        for account_type in ["credit", "liability", "payable", "equity", "income", "bank"] {
+            let display = calculate_display_balance(account_type, dec!(0.00));
+            assert!(display.is_zero());
+            assert!(display.is_sign_positive(), "{} gave {}", account_type, display);
+            assert_eq!(display.to_string().chars().next(), Some('0'), "{} gave {}", account_type, display);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared Typed Database Query Rows (eliminates raw copied tuples)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct RegisterEntryRow {
+    pub tx_id: Uuid,
+    pub split_id: Uuid,
+    pub post_date: NaiveDate,
+    pub num: Option<String>,
+    pub description: String,
+    pub notes: Option<String>,
+    pub memo: Option<String>,
+    pub reconciled_state: String,
+    pub amount: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AccountBalanceRow {
+    pub account_id: Uuid,
+    pub balance: Decimal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct UnreconciledSplitRow {
+    pub id: Uuid,
+    pub transaction_id: Uuid,
+    pub post_date: NaiveDate,
+    pub num: Option<String>,
+    pub description: String,
+    pub amount: Decimal,
+    pub reconciled_state: String,
 }

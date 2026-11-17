@@ -11,6 +11,7 @@ import {
 import {
   importGnuCashSqlite,
   SUPPORTED_CURRENCIES,
+  getErrorMessage,
 } from '../api';
 
 interface ImportModalProps {
@@ -82,8 +83,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         message: res.message,
       });
       onImportSuccess();
-    } catch (err: any) {
-      setError(err.message || 'Failed to import GnuCash database');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err));
     } finally {
       setSubmitting(false);
     }

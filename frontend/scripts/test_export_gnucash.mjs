@@ -1,7 +1,9 @@
 import puppeteer from 'puppeteer';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { execSync } from 'child_process';
+import { BASE_URL } from './lib/e2e.mjs';
 
 (async () => {
   const screenshotsDir = path.resolve('screenshots');
@@ -17,8 +19,8 @@ import { execSync } from 'child_process';
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900 });
 
-  console.log('1. Navigating to http://localhost:8081...');
-  await page.goto('http://localhost:8081', { waitUntil: 'networkidle0' });
+  console.log(`1. Navigating to ${BASE_URL}...`);
+  await page.goto(BASE_URL, { waitUntil: 'networkidle0' });
 
   // Login
   const isAuth = await page.$('input[placeholder="Enter your username or email"]');
@@ -103,11 +105,19 @@ import { execSync } from 'child_process';
   }
 
   // 5. Verify SQLite binary header and content using python3
-  const tempExportPath = '/tmp/test_downloaded.gnucash';
+  const tempExportPath = path.join(os.tmpdir(), `test_downloaded_${process.pid}.gnucash`);
   // Re-fetch full file to disk for sqlite3 analysis
-  execSync(
-    `curl -s -H "Authorization: Bearer $(curl -s -X POST http://localhost:8081/api/auth/login -H 'Content-Type: application/json' -d '{"username":"kishan","password":"Kishan@123"}' | jq -r '.token')" http://localhost:8081/api/export/gnucash-sqlite -o ${tempExportPath}`
-  );
+  const loginRes = await fetch(`${BASE_URL}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'kishan', password: 'Kishan@123' }),
+  });
+  const { token } = await loginRes.json();
+  const exportRes = await fetch(`${BASE_URL}/api/export/gnucash-sqlite`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!exportRes.ok) throw new Error(`Export download failed with status ${exportRes.status}`);
+  fs.writeFileSync(tempExportPath, Buffer.from(await exportRes.arrayBuffer()));
 
   console.log('5. Verifying SQLite database structure in downloaded file...');
   const pyVerify = execSync(
@@ -128,6 +138,7 @@ print(f'VALID SQLITE: accounts={acc_count}, transactions={tx_count}, splits={sp_
     { encoding: 'utf-8' }
   );
   console.log(`✓ Python SQLite verification: ${pyVerify.trim()}`);
+  fs.unlinkSync(tempExportPath);
 
   // 6. Test Mobile View (375x667)
   console.log('6. Testing Mobile View (375x667)...');

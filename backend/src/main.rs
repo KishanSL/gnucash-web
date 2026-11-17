@@ -89,12 +89,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8082);
 
+    // 0.0.0.0 is needed inside the container; local tools such as the e2e runner bind 127.0.0.1
+    let bind_ip: std::net::IpAddr = std::env::var("BIND_ADDR")
+        .ok()
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(std::net::IpAddr::from([0, 0, 0, 0]));
+
     let app = create_app(pool);
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let addr = SocketAddr::new(bind_ip, port);
     info!("GnuCash Backend server listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
+    info!("GnuCash Backend server stopped");
     Ok(())
+}
+
+/// Resolves on Ctrl+C or SIGTERM (sent by `podman stop` / `podman restart`), letting in-flight
+/// requests such as imports finish instead of being killed after the stop timeout.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!("Failed to listen for Ctrl+C: {}", e);
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                tracing::error!("Failed to listen for SIGTERM: {}", e);
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    info!("Shutdown signal received, finishing in-flight requests...");
 }

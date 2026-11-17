@@ -1,4 +1,5 @@
 import puppeteer from 'puppeteer';
+import { BASE_URL } from './lib/e2e.mjs';
 
 (async () => {
   const browser = await puppeteer.launch({
@@ -9,8 +10,8 @@ import puppeteer from 'puppeteer';
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 900 });
 
-  console.log('Navigating to http://localhost:8081...');
-  await page.goto('http://localhost:8081', { waitUntil: 'networkidle0' });
+  console.log(`Navigating to ${BASE_URL}...`);
+  await page.goto(BASE_URL, { waitUntil: 'networkidle0' });
 
   // 1. Take Desktop Auth Screenshot
   await page.screenshot({ path: '/tmp/desktop-auth.png', fullPage: true });

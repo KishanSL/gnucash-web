@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, FolderPlus, Edit3, AlertCircle, EyeOff } from 'lucide-react';
 import { Account, CreateAccountPayload, UpdateAccountPayload } from '../types';
-import { SUPPORTED_CURRENCIES } from '../api';
+import { SUPPORTED_CURRENCIES, getErrorMessage } from '../api';
 
 interface NewAccountModalProps {
   isOpen: boolean;
@@ -120,8 +120,8 @@ export const NewAccountModal: React.FC<NewAccountModalProps> = ({
         });
       }
       onClose();
-    } catch (err: any) {
-      setError(err.message || (isEditing ? 'Failed to update account' : 'Failed to create account'));
+    } catch (err: unknown) {
+      setError(getErrorMessage(err) || (isEditing ? 'Failed to update account' : 'Failed to create account'));
     } finally {
       setSubmitting(false);
     }

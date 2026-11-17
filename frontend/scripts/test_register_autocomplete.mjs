@@ -2,6 +2,7 @@ import puppeteer from 'puppeteer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { BASE_URL } from './lib/e2e.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,8 +23,8 @@ async function testRegisterAutocomplete() {
     const page = await browser.newPage();
     await page.setViewport({ width: 1440, height: 900 });
 
-    console.log('1. Navigating to http://localhost:8081...');
-    await page.goto('http://localhost:8081', { waitUntil: 'networkidle2' });
+    console.log(`1. Navigating to ${BASE_URL}...`);
+    await page.goto(BASE_URL, { waitUntil: 'networkidle2' });
 
     const loginInput = await page.$('input[type="text"]');
     if (loginInput) {
