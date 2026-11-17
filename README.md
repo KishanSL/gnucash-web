@@ -196,10 +196,10 @@ docker compose down -v
 ### Backend Test Suite (Rust):
 ```bash
 cd backend
-cargo test -- --test-threads=1
+cargo test
 ```
 
-Includes **37 automated tests** (35 integration tests in `tests/api_tests.rs` and 2 unit tests in `src/lib.rs`):
+Runs against a separate, automatically created `gnucash_test` database (never the live one). Includes **77 automated tests**: 25 unit tests in `src/` and 52 integration tests in `tests/` (`accounts_tests.rs`, `auth_tests.rs`, `transactions_tests.rs`, `reports_tests.rs`, `import_export_tests.rs`, `tenancy_data_tests.rs`, sharing `tests/common/mod.rs`):
 - Health check verification
 - Double-entry imbalance rejection ($400 Bad Request) with exact zero tolerance
 - Minimum 2 splits and maximum 100 splits validation
