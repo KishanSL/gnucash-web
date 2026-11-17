@@ -11,6 +11,14 @@ use axum::{http::StatusCode, Json};
 use serde_json::{json, Value};
 use std::fmt::Display;
 
+/// Error response used by all handlers: a status code and a `{"error": ...}` body.
+pub type ApiError = (StatusCode, Json<Value>);
+
+/// 400 Bad Request with the given message.
+pub fn bad_request(message: impl Into<String>) -> ApiError {
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": message.into() })))
+}
+
 /// Sanitizes backend errors for API responses while logging the underlying cause server-side (SEC-13).
 pub fn internal_error<E: Display>(context: &str, err: E) -> (StatusCode, Json<Value>) {
     tracing::error!("{}: {}", context, err);
