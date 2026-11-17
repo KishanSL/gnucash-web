@@ -49,29 +49,26 @@ pub async fn get_reconcile_info(
     })?;
 
     // 2. Fetch starting balance (sum of splits that are already reconciled 'y')
-    let start_row: Option<(Decimal,)> = sqlx::query_as(
+    let raw_starting_balance = sqlx::query_scalar::<_, Decimal>(
         r#"SELECT COALESCE(SUM(amount), 0)
            FROM splits
            WHERE account_id = $1 AND reconciled_state = 'y'"#
     )
     .bind(account_id)
-    .fetch_optional(&pool)
+    .fetch_one(&pool)
     .await
-    .unwrap_or(None);
-
-    let raw_starting_balance = start_row.map(|r| r.0).unwrap_or(Decimal::ZERO);
+    .map_err(|e| internal_error("Failed to compute reconcile starting balance", e))?;
     let starting_balance = calculate_display_balance(&acc_row.account_type, raw_starting_balance);
 
     // Total direct balance
-    let total_row: Option<(Decimal,)> = sqlx::query_as(
+    let raw_total = sqlx::query_scalar::<_, Decimal>(
         "SELECT COALESCE(SUM(amount), 0) FROM splits WHERE account_id = $1",
     )
     .bind(account_id)
-    .fetch_optional(&pool)
+    .fetch_one(&pool)
     .await
-    .unwrap_or(None);
+    .map_err(|e| internal_error("Failed to compute account balance for reconcile", e))?;
 
-    let raw_total = total_row.map(|r| r.0).unwrap_or(Decimal::ZERO);
     let ending_balance = calculate_display_balance(&acc_row.account_type, raw_total);
 
     // 3. Fetch unreconciled splits (reconciled_state != 'y') up to statement date
@@ -167,7 +164,7 @@ pub async fn finish_reconcile(
     .bind(auth.id)
     .fetch_one(&pool)
     .await
-    .unwrap_or(0);
+    .map_err(|e| internal_error("Failed to verify account for reconcile", e))?;
 
     if acc_exists == 0 {
         return Err((

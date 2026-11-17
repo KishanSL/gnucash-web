@@ -110,15 +110,14 @@ pub async fn get_account(
         )
     })?;
 
-    let balance_row: Option<(Decimal,)> = sqlx::query_as(
+    let balance = sqlx::query_scalar::<_, Decimal>(
         "SELECT COALESCE(SUM(amount), 0) FROM splits WHERE account_id = $1",
     )
     .bind(id)
-    .fetch_optional(&pool)
+    .fetch_one(&pool)
     .await
-    .unwrap_or(None);
+    .map_err(|e| internal_error("Failed to compute account balance", e))?;
 
-    let balance = balance_row.map(|r| r.0).unwrap_or(Decimal::ZERO);
     let display_balance = calculate_display_balance(&row.account_type, balance);
 
     let account = Account {
