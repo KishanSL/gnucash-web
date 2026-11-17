@@ -45,6 +45,7 @@ ALL_TESTS=(
     test_autocomplete_autofill
     test_register_enhancements
     test_ui_comprehensive
+    test_reports_tab
     test_fund_account_decimals
     test_export_gnucash
     test_reset_password # last: it resets and restores the password

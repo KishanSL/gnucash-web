@@ -9,6 +9,7 @@
     "preview": "vite preview --port 8081 --host",
     "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc --noEmit",
+    "test": "node --test \"tests/**/*.test.ts\"",
     "test:fund": "bash scripts/run_e2e.sh test_fund_account_decimals",
     "test:e2e": "bash scripts/run_e2e.sh"
   },

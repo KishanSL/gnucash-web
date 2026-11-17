@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { Account, CreateTransactionPayload, Transaction, UpdateTransactionPayload } from '../../types';
 import { formatCurrency, getErrorMessage } from '../../api';
+import { balancingFields, centsToAmount, netCents, splitTotals, toCents, toDebitCredit } from '../../lib/money';
 
 export interface SplitRowState {
   id: string;
@@ -138,13 +139,11 @@ export function useTransactionModal({
         if (editingTransaction.splits && editingTransaction.splits.length >= 2) {
           setSplits(
             editingTransaction.splits.map((s, idx) => {
-              const amt = parseFloat(s.amount) || 0;
               return {
                 id: s.id || String(idx + 1),
                 account_id: s.account_id,
                 memo: s.memo || '',
-                debit: amt > 0 ? amt.toFixed(2) : '',
-                credit: amt < 0 ? Math.abs(amt).toFixed(2) : '',
+                ...toDebitCredit(s.amount),
                 reconciled_state: s.reconciled_state,
                 reconciled_date: s.reconciled_date,
               };
@@ -188,11 +187,9 @@ export function useTransactionModal({
     // Autofill splits from latest transaction of this payee
     if (item.latestTx.splits && item.latestTx.splits.length >= 2) {
       const newSplits: SplitRowState[] = item.latestTx.splits.map((s) => {
-        const val = parseFloat(s.amount) || 0;
         const exists = validAccounts.some((a) => a.id === s.account_id);
         const finalAccId = exists ? s.account_id : validAccounts[0]?.id || '';
-        const debit = val > 0 ? val.toFixed(2) : '';
-        const credit = val < 0 ? Math.abs(val).toFixed(2) : '';
+        const { debit, credit } = toDebitCredit(s.amount);
 
         return {
           id: Math.random().toString(),
@@ -277,37 +274,22 @@ export function useTransactionModal({
     setSplits((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // Calculate totals
-  let totalDebits = 0;
-  let totalCredits = 0;
-
-  for (const s of splits) {
-    if (s.debit) totalDebits += parseFloat(s.debit) || 0;
-    if (s.credit) totalCredits += parseFloat(s.credit) || 0;
-  }
-
-  const imbalance = Math.round((totalDebits - totalCredits) * 100) / 100;
-  const isBalanced = Math.abs(imbalance) < 0.001 && totalDebits > 0;
+  // Calculate totals in integer cents, from the same rounded amounts that are submitted
+  const { totalDebitCents, totalCreditCents, imbalanceCents, isBalanced } = splitTotals(splits);
+  const totalDebits = totalDebitCents / 100;
+  const totalCredits = totalCreditCents / 100;
+  const imbalance = imbalanceCents / 100;
 
   // Auto-balance button: adjusts or fills the remaining difference
   const handleAutoBalance = () => {
-    if (Math.abs(imbalance) < 0.001) return;
+    if (imbalanceCents === 0) return;
 
     setSplits((prev) => {
       const next = [...prev];
       const lastIndex = next.length - 1;
 
-      if (imbalance > 0) {
-        // Debits exceed credits: add/increase credit on last row
-        const currentCredit = parseFloat(next[lastIndex].credit) || 0;
-        next[lastIndex].credit = (currentCredit + imbalance).toFixed(2);
-        next[lastIndex].debit = '';
-      } else {
-        // Credits exceed debits: add/increase debit on last row
-        const currentDebit = parseFloat(next[lastIndex].debit) || 0;
-        next[lastIndex].debit = (currentDebit + Math.abs(imbalance)).toFixed(2);
-        next[lastIndex].credit = '';
-      }
+      // Adjust the last row's net amount by the imbalance (works whichever side it is on)
+      next[lastIndex] = { ...next[lastIndex], ...balancingFields(next[lastIndex], imbalanceCents) };
       return next;
     });
   };
@@ -341,21 +323,19 @@ export function useTransactionModal({
 
     // Build payload ensuring 2 decimal places (ACC-3)
     const payloadSplits = splits.map((s) => {
-      const debitVal = parseFloat(s.debit) || 0;
-      const creditVal = parseFloat(s.credit) || 0;
-      const netAmount = debitVal > 0 ? debitVal : -creditVal;
+      const amountCents = netCents(s.debit, s.credit);
 
       // Find original split from editingTransaction
       const origSplit = editingTransaction?.splits?.find((orig) => orig.id === s.id);
       const isUnchanged =
         origSplit &&
         origSplit.account_id === s.account_id &&
-        Math.abs(parseFloat(origSplit.amount) - netAmount) < 0.001;
+        toCents(origSplit.amount) === amountCents;
 
       return {
         id: s.id && s.id.length === 36 ? s.id : undefined,
         account_id: s.account_id,
-        amount: netAmount.toFixed(2),
+        amount: centsToAmount(amountCents),
         memo: s.memo.trim() ? s.memo.trim() : null,
         reconciled_state: isUnchanged ? s.reconciled_state : 'n',
       };

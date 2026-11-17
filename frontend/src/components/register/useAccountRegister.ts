@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { Account, CreateTransactionPayload, RegisterEntry } from '../../types';
 import { getErrorMessage } from '../../api';
+import { absAmount, centsToAmount, toCents, twoSplitAmounts } from '../../lib/money';
 
 export interface UseAccountRegisterProps {
   account: Account;
@@ -154,14 +155,16 @@ export function useAccountRegister({
     }
 
     // Autofill debit/credit amount and mobile amount based on previous entry
-    if (entry.debit && Math.abs(parseFloat(entry.debit)) > 0.0001) {
-      const val = Math.abs(parseFloat(entry.debit)).toFixed(2);
+    const debitAmount = absAmount(entry.debit);
+    const creditAmount = absAmount(entry.credit);
+    if (debitAmount) {
+      const val = debitAmount;
       setNewDebit(val);
       setNewCredit('');
       setMobileAmount(val);
       setMobileAmountType('debit');
-    } else if (entry.credit && Math.abs(parseFloat(entry.credit)) > 0.0001) {
-      const val = Math.abs(parseFloat(entry.credit)).toFixed(2);
+    } else if (creditAmount) {
+      const val = creditAmount;
       setNewCredit(val);
       setNewDebit('');
       setMobileAmount(val);
@@ -203,10 +206,10 @@ export function useAccountRegister({
       return;
     }
 
-    const debitNum = parseFloat(newDebit) || 0;
-    const creditNum = parseFloat(newCredit) || 0;
+    const debitCents = toCents(newDebit);
+    const creditCents = toCents(newCredit);
 
-    if (debitNum <= 0 && creditNum <= 0) {
+    if (debitCents <= 0 && creditCents <= 0) {
       setNewRowError(`Please enter an amount in either ${debitHeader} or ${creditHeader}`);
       return;
     }
@@ -216,12 +219,11 @@ export function useAccountRegister({
       return;
     }
 
-    const isDeposit = debitNum > 0;
-    const amountVal = isDeposit ? debitNum : creditNum;
+    const isDeposit = debitCents > 0;
+    const amountVal = centsToAmount(isDeposit ? debitCents : creditCents);
 
     // Strict double-entry: 2 splits, sum must equal 0.00
-    const currentSplitAmount = isDeposit ? amountVal : -amountVal;
-    const transferSplitAmount = isDeposit ? -amountVal : amountVal;
+    const [currentSplitAmount, transferSplitAmount] = twoSplitAmounts(amountVal, isDeposit);
 
     const payload: CreateTransactionPayload = {
       post_date: newDate,
@@ -231,12 +233,12 @@ export function useAccountRegister({
       splits: [
         {
           account_id: account.id,
-          amount: currentSplitAmount.toFixed(2),
+          amount: currentSplitAmount,
           memo: newMemo.trim() || undefined,
         },
         {
           account_id: newTransferAccountId,
-          amount: transferSplitAmount.toFixed(2),
+          amount: transferSplitAmount,
           memo: newMemo.trim() || undefined,
         },
       ],
@@ -259,8 +261,7 @@ export function useAccountRegister({
   const handleSaveMobileNewCard = async () => {
     if (!onCreateTransaction) return;
 
-    const amtNum = parseFloat(mobileAmount) || 0;
-    if (amtNum <= 0) {
+    if (toCents(mobileAmount) <= 0) {
       setNewRowError('Please enter a valid transaction amount');
       return;
     }
@@ -271,8 +272,7 @@ export function useAccountRegister({
     }
 
     const isDeposit = mobileAmountType === 'debit';
-    const currentSplitAmount = isDeposit ? amtNum : -amtNum;
-    const transferSplitAmount = isDeposit ? -amtNum : amtNum;
+    const [currentSplitAmount, transferSplitAmount] = twoSplitAmounts(mobileAmount, isDeposit);
 
     const payload: CreateTransactionPayload = {
       post_date: newDate,
@@ -282,12 +282,12 @@ export function useAccountRegister({
       splits: [
         {
           account_id: account.id,
-          amount: currentSplitAmount.toFixed(2),
+          amount: currentSplitAmount,
           memo: newMemo.trim() || undefined,
         },
         {
           account_id: newTransferAccountId,
-          amount: transferSplitAmount.toFixed(2),
+          amount: transferSplitAmount,
           memo: newMemo.trim() || undefined,
         },
       ],
