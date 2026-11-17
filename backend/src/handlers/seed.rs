@@ -442,9 +442,22 @@ pub async fn run_seed_tx(
 mod tests {
     use super::*;
 
+    fn get_seed_test_db_url() -> String {
+        std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
+            let default_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+                "postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash".to_string()
+            });
+            if default_url.ends_with("/gnucash") {
+                format!("{}_test", default_url)
+            } else {
+                default_url
+            }
+        })
+    }
+
     #[tokio::test]
     async fn test_run_seed_tx_rollback_on_failure() {
-        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run DB tests in seed.rs");
+        let db_url = get_seed_test_db_url();
         crate::db::init_db(&db_url).await.expect("Failed to initialize test database schema");
         let pool = sqlx::PgPool::connect(&db_url).await.expect("Failed to connect to test database");
         let mut tx = pool.begin().await.expect("begin tx");
@@ -482,7 +495,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reconciled_state_constraint_exists() {
-        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run DB tests in seed.rs");
+        let db_url = get_seed_test_db_url();
         crate::db::init_db(&db_url).await.expect("Failed to initialize test database schema");
         let pool = sqlx::PgPool::connect(&db_url).await.expect("Failed to connect to test database");
         let exists: (bool,) = sqlx::query_as(
@@ -496,7 +509,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_seed_database_wipe_and_insert_atomic_rollback() {
-        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set to run DB tests in seed.rs");
+        let db_url = get_seed_test_db_url();
         crate::db::init_db(&db_url).await.expect("Failed to initialize test database schema");
         let pool = sqlx::PgPool::connect(&db_url).await.expect("Failed to connect to test database");
         let test_user_id = Uuid::new_v4();

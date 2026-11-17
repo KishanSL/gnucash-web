@@ -25,14 +25,29 @@ pub async fn init_db(database_url: &str) -> Result<PgPool, sqlx::Error> {
     };
 
     info!("Running database schema migrations...");
-    let migration_1 = include_str!("../migrations/001_initial_schema.sql");
-    sqlx::raw_sql(migration_1).execute(&pool).await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
 
-    let migration_2 = include_str!("../migrations/002_multi_user.sql");
-    sqlx::raw_sql(migration_2).execute(&pool).await?;
-
-    let migration_3 = include_str!("../migrations/003_optimizations_and_constraints.sql");
-    sqlx::raw_sql(migration_3).execute(&pool).await?;
+    // Post-migration data integrity & constraint enforcement (Issue #30, REC-1, DATA-3)
+    sqlx::query("UPDATE splits SET reconciled_state = LOWER(reconciled_state) WHERE reconciled_state <> LOWER(reconciled_state)")
+        .execute(&pool)
+        .await?;
+    sqlx::query("UPDATE splits SET reconciled_state = 'n', reconciled_date = NULL WHERE reconciled_state NOT IN ('n', 'c', 'y')")
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        r#"DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_splits_reconciled_state') THEN
+                BEGIN
+                    ALTER TABLE splits ADD CONSTRAINT chk_splits_reconciled_state CHECK (reconciled_state IN ('n', 'c', 'y'));
+                EXCEPTION
+                    WHEN duplicate_object THEN NULL;
+                END;
+            END IF;
+        END $$;"#
+    )
+    .execute(&pool)
+    .await?;
 
     // Ensure at least one default user exists for pre-existing or imported data
     let user_count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
@@ -84,10 +99,10 @@ pub async fn init_db(database_url: &str) -> Result<PgPool, sqlx::Error> {
 
         let password_hash = tokio::task::spawn_blocking(move || {
             bcrypt::hash(&raw_password, bcrypt::DEFAULT_COST)
-                .unwrap_or_else(|_| "$2b$12$e8YgN17Pj9QGqZ2eCq.X3OMWj944j/mYFkU5nZ7cI19j1r5u0gJvG".to_string())
+                .expect("Failed to hash initial admin password")
         })
         .await
-        .unwrap_or_else(|_| "$2b$12$e8YgN17Pj9QGqZ2eCq.X3OMWj944j/mYFkU5nZ7cI19j1r5u0gJvG".to_string());
+        .expect("Password hashing task panicked");
 
         let email = format!("{}@localhost", initial_username);
         sqlx::query(

@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "vite --port 8081 --host",
     "build": "tsc && vite build",
-    "preview": "vite preview --port 8081 --host"
+    "preview": "vite preview --port 8081 --host",
+    "typecheck": "tsc --noEmit",
+    "test:register": "node scripts/test_register_enhancements.mjs",
+    "test:ui": "node scripts/test_ui_comprehensive.mjs",
+    "test:e2e": "node scripts/test_register_enhancements.mjs && node scripts/test_ui_comprehensive.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.453.0",

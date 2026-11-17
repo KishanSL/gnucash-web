@@ -12,12 +12,36 @@ use gnucash_backend::create_app;
 async fn get_test_pool() -> PgPool {
     std::env::set_var("GNUCASH_TEST_MODE", "1");
     std::env::set_var("JWT_SECRET", "test-secret-key-must-be-at-least-32-chars-long!");
-    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash".to_string()
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
+        let default_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash_test".to_string()
+        });
+        if default_url.ends_with("/gnucash") {
+            format!("{}_test", default_url)
+        } else {
+            default_url
+        }
     });
-    gnucash_backend::db::init_db(&database_url)
+    let pool = gnucash_backend::db::init_db(&database_url)
         .await
-        .expect("Failed to connect to and init test database")
+        .expect("Failed to connect to and init test database");
+
+    // Ensure baseline fixtures exist for primary test user on a fresh database
+    let default_user = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
+    let acc_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM accounts WHERE user_id = $1")
+        .bind(default_user)
+        .fetch_one(&pool)
+        .await
+        .unwrap_or((0,));
+
+    if acc_count.0 == 0 {
+        if let Ok(mut tx) = pool.begin().await {
+            let _ = gnucash_backend::handlers::seed::run_seed_tx(&mut tx, default_user).await;
+            let _ = tx.commit().await;
+        }
+    }
+
+    pool
 }
 
 #[tokio::test]
@@ -259,7 +283,7 @@ async fn test_account_register_running_balance() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri(&format!("/api/accounts/{}/register", checking.0))
+                .uri(format!("/api/accounts/{}/register", checking.0))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -293,7 +317,7 @@ async fn test_reconciliation_endpoint() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri(&format!("/api/reconcile/{}", checking.0))
+                .uri(format!("/api/reconcile/{}", checking.0))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1299,7 +1323,7 @@ async fn test_update_transaction_preserves_reconciled_state() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(&format!("/api/reconcile/{}", acc1))
+                .uri(format!("/api/reconcile/{}", acc1))
                 .header("content-type", "application/json")
                 .body(Body::from(rec_payload.to_string()))
                 .unwrap(),
@@ -1318,7 +1342,7 @@ async fn test_update_transaction_preserves_reconciled_state() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(&format!("/api/reconcile/{}", acc2))
+                .uri(format!("/api/reconcile/{}", acc2))
                 .header("content-type", "application/json")
                 .body(Body::from(rec_payload2.to_string()))
                 .unwrap(),
@@ -1333,7 +1357,7 @@ async fn test_update_transaction_preserves_reconciled_state() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(&format!("/api/transactions/{}", tx_id))
+                .uri(format!("/api/transactions/{}", tx_id))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1362,7 +1386,7 @@ async fn test_update_transaction_preserves_reconciled_state() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(&format!("/api/transactions/{}", tx_id))
+                .uri(format!("/api/transactions/{}", tx_id))
                 .header("content-type", "application/json")
                 .body(Body::from(update_payload.to_string()))
                 .unwrap(),
@@ -1412,7 +1436,7 @@ async fn test_update_transaction_preserves_reconciled_state() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(&format!("/api/transactions/{}", tx_id))
+                .uri(format!("/api/transactions/{}", tx_id))
                 .header("content-type", "application/json")
                 .body(Body::from(change_amount_payload.to_string()))
                 .unwrap(),
@@ -1498,7 +1522,7 @@ async fn test_update_transaction_with_multiple_splits_sharing_same_account() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(&format!("/api/transactions/{}", tx_id))
+                .uri(format!("/api/transactions/{}", tx_id))
                 .header("content-type", "application/json")
                 .body(Body::from(update_payload.to_string()))
                 .unwrap(),
@@ -1707,7 +1731,7 @@ async fn test_account_and_transaction_update_field_clearing_and_validation() {
     let resp = app.oneshot(
         Request::builder()
             .method("PUT")
-            .uri(&format!("/api/accounts/{}", child_id))
+            .uri(format!("/api/accounts/{}", child_id))
             .header("content-type", "application/json")
             .body(Body::from(invalid_type_payload.to_string()))
             .unwrap()
@@ -1724,7 +1748,7 @@ async fn test_account_and_transaction_update_field_clearing_and_validation() {
     let resp = app.oneshot(
         Request::builder()
             .method("PUT")
-            .uri(&format!("/api/accounts/{}", child_id))
+            .uri(format!("/api/accounts/{}", child_id))
             .header("content-type", "application/json")
             .body(Body::from(clear_parent_payload.to_string()))
             .unwrap()
@@ -1767,7 +1791,7 @@ async fn test_account_and_transaction_update_field_clearing_and_validation() {
     let resp = app.oneshot(
         Request::builder()
             .method("PUT")
-            .uri(&format!("/api/transactions/{}", tx_id))
+            .uri(format!("/api/transactions/{}", tx_id))
             .header("content-type", "application/json")
             .body(Body::from(empty_desc_payload.to_string()))
             .unwrap()
@@ -1783,7 +1807,7 @@ async fn test_account_and_transaction_update_field_clearing_and_validation() {
     let resp = app.oneshot(
         Request::builder()
             .method("PUT")
-            .uri(&format!("/api/transactions/{}", tx_id))
+            .uri(format!("/api/transactions/{}", tx_id))
             .header("content-type", "application/json")
             .body(Body::from(clear_tx_payload.to_string()))
             .unwrap()
@@ -2595,7 +2619,7 @@ async fn test_cross_tenant_endpoint_isolation() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(&format!("/api/accounts/{}", acc1_id))
+                .uri(format!("/api/accounts/{}", acc1_id))
                 .header("authorization", format!("Bearer {}", token_b))
                 .body(Body::empty())
                 .unwrap(),
@@ -2609,7 +2633,7 @@ async fn test_cross_tenant_endpoint_isolation() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(&format!("/api/accounts/{}", acc1_id))
+                .uri(format!("/api/accounts/{}", acc1_id))
                 .header("authorization", format!("Bearer {}", token_b))
                 .header("content-type", "application/json")
                 .body(Body::from(json!({ "name": "Hacked Name" }).to_string()))
@@ -2624,7 +2648,7 @@ async fn test_cross_tenant_endpoint_isolation() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(&format!("/api/accounts/{}", acc1_id))
+                .uri(format!("/api/accounts/{}", acc1_id))
                 .header("authorization", format!("Bearer {}", token_b))
                 .body(Body::empty())
                 .unwrap(),
@@ -2639,7 +2663,7 @@ async fn test_cross_tenant_endpoint_isolation() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(&format!("/api/accounts/{}/register", acc1_id))
+                .uri(format!("/api/accounts/{}/register", acc1_id))
                 .header("authorization", format!("Bearer {}", token_b))
                 .body(Body::empty())
                 .unwrap(),
@@ -2654,7 +2678,7 @@ async fn test_cross_tenant_endpoint_isolation() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(&format!("/api/transactions/{}", tx_id))
+                .uri(format!("/api/transactions/{}", tx_id))
                 .header("authorization", format!("Bearer {}", token_b))
                 .body(Body::empty())
                 .unwrap(),
@@ -2668,7 +2692,7 @@ async fn test_cross_tenant_endpoint_isolation() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(&format!("/api/transactions/{}", tx_id))
+                .uri(format!("/api/transactions/{}", tx_id))
                 .header("authorization", format!("Bearer {}", token_b))
                 .header("content-type", "application/json")
                 .body(Body::from(json!({ "description": "Hacked Transaction" }).to_string()))
@@ -2683,7 +2707,7 @@ async fn test_cross_tenant_endpoint_isolation() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(&format!("/api/transactions/{}", tx_id))
+                .uri(format!("/api/transactions/{}", tx_id))
                 .header("authorization", format!("Bearer {}", token_b))
                 .body(Body::empty())
                 .unwrap(),
@@ -4127,8 +4151,15 @@ async fn test_issue_37_reject_root_account_type() {
 #[tokio::test]
 async fn test_issue_30_reconciled_state_migration_idempotent() {
     let pool = get_test_pool().await;
-    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash".to_string()
+    let database_url = std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
+        let default_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://gnucash:gnucash_secret@127.0.0.1:5432/gnucash_test".to_string()
+        });
+        if default_url.ends_with("/gnucash") {
+            format!("{}_test", default_url)
+        } else {
+            default_url
+        }
     });
 
     let user_id = uuid::Uuid::new_v4();
