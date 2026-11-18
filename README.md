@@ -88,7 +88,7 @@ A modern, high-performance web clone of **GnuCash** built with **Rust (Axum + SQ
 
 9. **Clean Desktop & Mobile UI**:
    - Desktop header contains only: New Account, New Entry, and the User Menu.
-   - User dropdown menu provides: Profile details, Currency preference, Import .gnucash, Export .gnucash, Seed Sample Data, Change Password, Reset Entire Database, and Log Out.
+   - User dropdown menu provides: Profile details, Currency preference, Import .gnucash, Export .gnucash, Seed Sample Data, Change Password, API Tokens, Reset Entire Database, and Log Out.
    - Mobile responsive drawer with full access to actions.
 
 ---
@@ -194,13 +194,17 @@ To deploy changes into the running containers without rebuilding images, follow 
 
 ### Authentication & User Management
 - **Every endpoint except login, health and the admin-key endpoints requires `Authorization: Bearer <JWT>`** (SEC-14). The web app keeps the token in `localStorage`; native clients (e.g. the Android app) send the same header. Cookie-only auth is deliberately not used.
+- Service clients can also send `Authorization: Bearer gcw_…` (SEC-16–SEC-20): a long-lived API token, created in the user menu, stored only as a SHA-256 hash, and limited to the ledger API. Tokens are refused (`403`) on password change, token management, seed, reset and import.
 - Public sign-up is disabled by default (`ALLOW_SIGNUP=false`).
 - Password reset is CLI-only to prevent user enumeration and account lockout.
 - `POST /api/auth/login` - Authenticate via username or email (constant-time check); returns a 30-day JWT and the user.
-- `POST /api/auth/change-password` - Update password (requires current password; revokes all older tokens).
+- `POST /api/auth/change-password` - Update password (requires current password; revokes older session JWTs but keeps API tokens).
 - `GET /api/auth/me` - Get profile for currently authenticated user.
+- `GET /api/auth/tokens` - List the caller's API tokens (metadata only; never the token or its hash).
+- `POST /api/auth/tokens` - Create an API token (`{"name": "...", "expires_in_days": null}`); the plaintext token appears only in this response.
+- `DELETE /api/auth/tokens/:id` - Revoke one of the caller's tokens (`404` for another user's token).
 - `POST /api/auth/signup` - Create a user. Requires the admin key (`X-Admin-Key` header, used by `create_user.sh`) unless `ALLOW_SIGNUP=true`.
-- `POST /api/auth/reset-password` - Admin-key only (`X-Admin-Key`, used by `reset_password.sh`); anonymous callers get `403` before any database query.
+- `POST /api/auth/reset-password` - Admin-key only (`X-Admin-Key`, used by `reset_password.sh`); anonymous callers get `403` before any database query. Revokes the user's session JWTs and API tokens.
 - **Admin CLI Scripts**:
   ```bash
   # Create new user via admin key:

@@ -30,6 +30,7 @@ Puppeteer testing suites are configured in `frontend/scripts/`:
 - `frontend/scripts/test_register_autocomplete.mjs` — Complete account history autocomplete & autofill verification.
 - `frontend/scripts/test_register_enhancements.mjs` — Register 2-line mode, inline blank row, and transaction edit modal.
 - `frontend/scripts/test_reset_password.mjs` — Server-secured password reset flow, server notice file extraction, and logged-in password update.
+- `frontend/scripts/test_api_tokens.mjs` — API token create/show-once/revoke flow, menu placement, token auth on the ledger API and 403s on protected endpoints (SEC-16–SEC-20, UI-2, UI-8).
 - `frontend/scripts/test_fund_account_decimals.mjs` — Fund account (commodity fraction 1000) entry still sends 2-decimal amounts (ACC-3, INV-5).
 - Other suites: `test_ui_comprehensive`, `test_reports_tab`, `test_reconcile_view`, `test_autocomplete_autofill`, `test_tree_collapse`, `test_currency_dropdown`, `test_export_gnucash`.
 
@@ -120,8 +121,9 @@ Puppeteer testing suites are configured in `frontend/scripts/`:
     4. **Export .gnucash** (downloads database as standard SQLite file formatted `username_yyyyMMddhhmmss.gnucash`)
     5. **Seed Sample Data** (seeds chart of accounts & realistic sample transactions)
     6. **Change Password** (opens credentials modal)
-    7. **Reset Entire Database** (warning amber button with `RotateCcw` icon)
-    8. **Log Out**
+    7. **API Tokens** (opens the token modal: list, create/show-once, revoke)
+    8. **Reset Entire Database** (warning amber button with `RotateCcw` icon)
+    9. **Log Out**
 - **Mobile Slide-down Drawer**:
   - Must mirror all actions and preferences available in the desktop user dropdown.
 

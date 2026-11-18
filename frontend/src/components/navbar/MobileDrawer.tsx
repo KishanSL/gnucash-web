@@ -1,5 +1,5 @@
 import React from 'react';
-import { FolderPlus, RefreshCw, Coins, Upload, Download, LogOut, KeyRound, RotateCcw } from 'lucide-react';
+import { FolderPlus, RefreshCw, Coins, Upload, Download, LogOut, KeyRound, RotateCcw, ShieldCheck } from 'lucide-react';
 import { SUPPORTED_CURRENCIES } from '../../api';
 import { User } from '../../types';
 import { Setter } from './types';
@@ -17,6 +17,7 @@ interface MobileDrawerProps {
   onLogout?: () => void;
   setIsMobileMenuOpen: Setter<boolean>;
   setIsChangePasswordOpen: Setter<boolean>;
+  setIsApiTokensOpen: Setter<boolean>;
 }
 
 /** Mobile slide-down drawer; mirrors every action in the desktop user menu. */
@@ -33,6 +34,7 @@ export const MobileDrawer: React.FC<MobileDrawerProps> = ({
   onLogout,
   setIsMobileMenuOpen,
   setIsChangePasswordOpen,
+  setIsApiTokensOpen,
 }) => (
   <div className="md:hidden border-t border-slate-800 bg-slate-900 px-4 py-3 space-y-3 animate-in slide-in-from-top-2 duration-150">
     <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
@@ -125,6 +127,17 @@ export const MobileDrawer: React.FC<MobileDrawerProps> = ({
           >
             <KeyRound className="w-3.5 h-3.5 text-emerald-400" />
             <span>Change Password</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setIsMobileMenuOpen(false);
+              setIsApiTokensOpen(true);
+            }}
+            className="flex items-center justify-center space-x-1.5 text-xs text-slate-200 hover:text-white py-2 px-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition"
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            <span>API Tokens</span>
           </button>
 
           <button

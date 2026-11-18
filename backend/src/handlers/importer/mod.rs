@@ -17,7 +17,7 @@ use axum::{
 use serde_json::json;
 use sqlx::PgPool;
 
-use crate::auth::AuthUser;
+use crate::auth::{require_session, AuthUser};
 use crate::handlers::internal_error;
 
 pub async fn import_gnucash_sqlite(
@@ -26,6 +26,8 @@ pub async fn import_gnucash_sqlite(
     Query(query): Query<ImportQuery>,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    require_session(&auth)?;
+
     let wipe = query.wipe.unwrap_or(false);
     let default_curr = query.default_currency.unwrap_or_else(|| "INR".to_string());
 

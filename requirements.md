@@ -1,6 +1,6 @@
 # GnuCash Web: Requirements
 
-**Status:** Source of truth for expected behaviour. Last updated 2026-11-17.
+**Status:** Source of truth for expected behaviour. Last updated 2026-11-18.
 
 This file defines what GnuCash Web must do. When it disagrees with the code, README.md, AGENTS.md
 or a Forgejo issue, this file wins: either the code has a bug, or the requirement here must be
@@ -37,7 +37,8 @@ Requirement IDs (e.g. `INV-2`) are stable. Reference them in issues, commits and
   `401 {"error": "Invalid username or password"}` whether or not the user exists, with constant-time
   password checking (no user enumeration through response or timing).
 - **SEC-5** Sessions are JWTs valid for 30 days. Changing a password or an admin password reset
-  must invalidate every token issued before it.
+  must invalidate every session JWT issued before it. API tokens (SEC-16–SEC-20) are separate
+  credentials with their own revocation rules; they are not JWTs. (Decided 2026-11-18.)
 - **SEC-14** Clients send the session token as an `Authorization: Bearer <JWT>` header. The web app
   keeps the token in `localStorage`; the API must not switch to cookie-only authentication, because
   native clients (the Kotlin Android app) authenticate with the header. XSS risk on the web is
@@ -66,6 +67,34 @@ Requirement IDs (e.g. `INV-2`) are stable. Reference them in issues, commits and
 - **SEC-15** The web frontend is served with a Content-Security-Policy whose `script-src` is
   `'self'` only (no `'unsafe-inline'`, no external script hosts), so injected scripts cannot run and
   read the stored token (SEC-14).
+
+### API tokens
+
+Service clients (for example the `sms_webhook` integration) authenticate with a token instead of a
+username and password.
+
+- **SEC-16** A token is `gcw_` followed by 32 random bytes from a CSPRNG, encoded as lowercase hex.
+  It is shown once, in the creation response, and never again. Only its SHA-256 hash (hex, unique)
+  is stored, alongside a short display prefix (`gcw_` + 6 hex characters). Tokens live in an
+  `api_tokens` table whose `user_id` is a foreign key with `ON DELETE CASCADE`, created by an
+  idempotent migration (DATA-3).
+- **SEC-17** A request whose `Authorization: Bearer` value starts with `gcw_` is looked up by hash;
+  any other value is verified as a JWT, exactly as before (SEC-14). An unknown, revoked or expired
+  token is rejected with the same generic `401` body as an invalid JWT, so nothing can be probed. A
+  token authenticates as its owning user, so SEC-10 applies unchanged. `last_used_at` is updated at
+  most once a minute per token.
+- **SEC-18** A token may use the ledger API (accounts, transactions, register, reconcile, reports,
+  export). It must be refused with `403` on `/api/auth/change-password`, every token-management
+  endpoint, `/api/reset-data`, `/api/seed` and `/api/import/*`: a token cannot change credentials,
+  mint or revoke tokens, or destroy or import data.
+- **SEC-19** Tokens are managed over JWT sessions only: `GET /api/auth/tokens` (list),
+  `POST /api/auth/tokens` (create; the only response that ever contains `token`), and
+  `DELETE /api/auth/tokens/:id` (revoke). Every operation is scoped to the caller, and another
+  user's token returns `404` (SEC-10). List and create responses never include the token or its
+  hash.
+- **SEC-20** A user's own password change does not revoke API tokens; each token is revoked
+  individually with `DELETE /api/auth/tokens/:id`. An admin password reset
+  (`scripts/reset_password.sh`) revokes all of that user's tokens. (Decided 2026-11-18.)
 
 ## 3. Accounting core
 
@@ -216,8 +245,8 @@ recorded at transaction value. Units, prices and market value are not tracked.
 
 - **UI-1** The desktop header contains only: New Account, New Entry, and the user menu.
 - **UI-2** The user menu contains, in this order: profile (username, email); currency preference
-  (white text); Import .gnucash; Export .gnucash; Seed Sample Data; Change Password; Reset Entire
-  Database (amber, `RotateCcw` icon); Log Out. Import is never on the main navbar.
+  (white text); Import .gnucash; Export .gnucash; Seed Sample Data; Change Password; API Tokens;
+  Reset Entire Database (amber, `RotateCcw` icon); Log Out. Import is never on the main navbar.
 - **UI-3** The mobile drawer offers every action and preference in the desktop user menu.
 - **UI-4** Auth page: two columns on desktop (1440×900 and wider), with branding and a 2×2
   feature grid next to the login card. On mobile (375×667) it collapses to a single card.
@@ -226,6 +255,9 @@ recorded at transaction value. Units, prices and market value are not tracked.
 - **UI-6** Currency preference changes formatting only; amounts are not converted (see Q4).
 - **UI-7** Every UI change is checked with the Puppeteer scripts in `frontend/scripts/` before it
   is considered done.
+- **UI-8** The API Tokens modal lists the user's tokens (name, prefix, created, last used, expiry,
+  status), creates one from a name and optional expiry, shows the new token once with a copy button
+  and a "you will not see this again" note, and revokes a token after confirmation.
 
 ## 10. Open questions
 

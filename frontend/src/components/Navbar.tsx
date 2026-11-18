@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { User } from '../types';
 import { ChangePasswordModal } from './ChangePasswordModal';
+import { ApiTokensModal } from './ApiTokensModal';
 import { UserMenuDropdown } from './navbar/UserMenuDropdown';
 import { MobileDrawer } from './navbar/MobileDrawer';
 import { MobileBottomNav } from './navbar/MobileBottomNav';
@@ -57,6 +58,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
+  const [isApiTokensOpen, setIsApiTokensOpen] = useState(false);
 
   const userMenuRef = useRef<HTMLDivElement>(null);
 
@@ -182,6 +184,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       onLogout={onLogout}
                       setIsUserMenuOpen={setIsUserMenuOpen}
                       setIsChangePasswordOpen={setIsChangePasswordOpen}
+                      setIsApiTokensOpen={setIsApiTokensOpen}
                     />
                   )}
                 </div>
@@ -214,6 +217,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             onLogout={onLogout}
             setIsMobileMenuOpen={setIsMobileMenuOpen}
             setIsChangePasswordOpen={setIsChangePasswordOpen}
+            setIsApiTokensOpen={setIsApiTokensOpen}
           />
         )}
       </header>
@@ -223,6 +227,15 @@ export const Navbar: React.FC<NavbarProps> = ({
         <ChangePasswordModal
           isOpen={isChangePasswordOpen}
           onClose={() => setIsChangePasswordOpen(false)}
+          username={currentUser.username}
+        />
+      )}
+
+      {/* API Tokens Modal */}
+      {currentUser && (
+        <ApiTokensModal
+          isOpen={isApiTokensOpen}
+          onClose={() => setIsApiTokensOpen(false)}
           username={currentUser.username}
         />
       )}

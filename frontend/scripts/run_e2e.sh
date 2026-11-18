@@ -56,6 +56,7 @@ ALL_TESTS=(
     test_reconcile_view
     test_fund_account_decimals
     test_export_gnucash
+    test_api_tokens
     test_reset_password # last: it resets and restores the password
 )
 if [ "$#" -gt 0 ]; then
