@@ -85,7 +85,7 @@ To attach labels and post comments via API, a Forgejo Personal Access Token with
 ### Step 1: List and Triage Open Unsolved Issues
 Run the list command with the specified kind, severity, and limit (already solved issues are excluded by default):
 ```bash
-python3 /home/kishan/.gemini/config/skills/forgejo-issue-resolver/scripts/forgejo_issues.py \
+python3 ~/.gemini/config/skills/forgejo-issue-resolver/scripts/forgejo_issues.py \
   list --kind <bug|performance|data-integrity|security|all> \
        --severity <low|medium|high|all> \
        --limit <N>
@@ -95,7 +95,7 @@ Output returns structured JSON with issue numbers, titles, detected kind, detect
 ### Step 2: Fetch Context for Each Selected Issue
 Inspect the full issue description, reproduction steps, and discussion:
 ```bash
-python3 /home/kishan/.gemini/config/skills/forgejo-issue-resolver/scripts/forgejo_issues.py \
+python3 ~/.gemini/config/skills/forgejo-issue-resolver/scripts/forgejo_issues.py \
   get <issue_number>
 ```
 
@@ -147,7 +147,7 @@ Refs #<issue_number> (status/solved)"
 ### Step 7: Tag Issue with status/solved on Forgejo (DO NOT CLOSE)
 Attach the `status/solved` label and post the verification summary using the `solve` command, explicitly including the Requirement ID:
 ```bash
-python3 /home/kishan/.gemini/config/skills/forgejo-issue-resolver/scripts/forgejo_issues.py \
+python3 ~/.gemini/config/skills/forgejo-issue-resolver/scripts/forgejo_issues.py \
   solve <issue_number> \
   --comment "Status: Solved via commit $(git rev-parse --short HEAD).
 
