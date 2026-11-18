@@ -1,15 +1,19 @@
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
+use chrono::{Duration, Utc};
 use serde_json::json;
 use sqlx::PgPool;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
-use crate::auth::{create_jwt, AuthResponse, AuthUser, LoginRequest, SignupRequest, User, UserWithPassword};
+use crate::auth::{
+    api_token_prefix, create_jwt, generate_api_token, hash_api_token, require_session,
+    ApiTokenSummary, AuthResponse, AuthUser, LoginRequest, SignupRequest, User, UserWithPassword,
+};
 use crate::handlers::internal_error;
 
 fn verify_admin_key(header_key: Option<&str>) -> bool {
@@ -384,6 +388,13 @@ pub async fn reset_password(
 
     let password_hash = hash_password_async(target_password.clone()).await?;
 
+    // An admin reset implies the account may be compromised: revoke every session JWT (SEC-5) and
+    // every API token (SEC-20) for this user in one transaction.
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| internal_error("Database error starting password reset", e))?;
+
     sqlx::query(
         r#"UPDATE users
            SET password_hash = $1, token_version = token_version + 1, updated_at = NOW()
@@ -391,9 +402,23 @@ pub async fn reset_password(
     )
     .bind(password_hash)
     .bind(user.id)
-    .execute(&pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| internal_error("Database error updating password", e))?;
+
+    sqlx::query(
+        r#"UPDATE api_tokens
+           SET revoked_at = NOW()
+           WHERE user_id = $1 AND revoked_at IS NULL"#
+    )
+    .bind(user.id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| internal_error("Database error revoking API tokens", e))?;
+
+    tx.commit()
+        .await
+        .map_err(|e| internal_error("Database error committing password reset", e))?;
 
     // 3. Write new password notice to secure file on server only if temporary password was generated
     if is_temporary {
@@ -441,6 +466,8 @@ pub async fn change_password(
     State(pool): State<PgPool>,
     Json(payload): Json<ChangePasswordRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    require_session(&auth)?;
+
     let current_password = payload.current_password;
     let new_password = payload.new_password;
 
@@ -494,6 +521,8 @@ pub async fn change_password(
 
     let password_hash = hash_password_async(new_password).await?;
 
+    // SEC-20: a user's own password change keeps API tokens working; it only revokes session JWTs
+    // (the token_version bump below). Each API token is revoked individually.
     sqlx::query(
         "UPDATE users SET password_hash = $1, token_version = token_version + 1, updated_at = NOW() WHERE id = $2"
     )
@@ -507,6 +536,134 @@ pub async fn change_password(
         "success": true,
         "message": "Password changed successfully"
     })))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct CreateApiTokenRequest {
+    pub name: String,
+    pub expires_in_days: Option<i64>,
+}
+
+/// Lists the caller's API tokens (SEC-19). Never returns the token or its hash.
+pub async fn list_api_tokens(
+    auth: AuthUser,
+    State(pool): State<PgPool>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    require_session(&auth)?;
+
+    let tokens = sqlx::query_as::<_, ApiTokenSummary>(
+        r#"SELECT id, name, token_prefix, created_at, last_used_at, expires_at, revoked_at
+           FROM api_tokens
+           WHERE user_id = $1
+           ORDER BY created_at DESC"#,
+    )
+    .bind(auth.id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| internal_error("Failed to list API tokens", e))?;
+
+    Ok(Json(tokens))
+}
+
+/// Creates an API token for the caller (SEC-16, SEC-19). This is the only response that contains
+/// the plaintext token, so the UI must show it once and never fetch it again.
+pub async fn create_api_token(
+    auth: AuthUser,
+    State(pool): State<PgPool>,
+    Json(payload): Json<CreateApiTokenRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    require_session(&auth)?;
+
+    let name = payload.name.trim();
+    if name.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Token name is required" })),
+        ));
+    }
+    if name.chars().count() > 100 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Token name cannot exceed 100 characters" })),
+        ));
+    }
+
+    let expires_at = match payload.expires_in_days {
+        Some(days) if days <= 0 => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Expiry must be at least 1 day" })),
+            ));
+        }
+        Some(days) if days > 3650 => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Expiry cannot exceed 3650 days" })),
+            ));
+        }
+        Some(days) => Some(Utc::now() + Duration::days(days)),
+        None => None,
+    };
+
+    let token = generate_api_token();
+    let token_prefix = api_token_prefix(&token);
+    let token_hash = hash_api_token(&token);
+
+    let row = sqlx::query_as::<_, (Uuid, chrono::DateTime<Utc>, Option<chrono::DateTime<Utc>>)>(
+        r#"INSERT INTO api_tokens (user_id, name, token_prefix, token_hash, expires_at)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, created_at, expires_at"#,
+    )
+    .bind(auth.id)
+    .bind(name)
+    .bind(&token_prefix)
+    .bind(&token_hash)
+    .bind(expires_at)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| internal_error("Failed to create API token", e))?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "id": row.0,
+            "name": name,
+            "token": token,
+            "token_prefix": token_prefix,
+            "created_at": row.1,
+            "expires_at": row.2,
+        })),
+    ))
+}
+
+/// Revokes one of the caller's API tokens (SEC-19). Another user's token is a 404, not a 403, so
+/// its existence is not leaked (SEC-10).
+pub async fn revoke_api_token(
+    auth: AuthUser,
+    State(pool): State<PgPool>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    require_session(&auth)?;
+
+    let result = sqlx::query(
+        r#"UPDATE api_tokens
+           SET revoked_at = NOW()
+           WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL"#,
+    )
+    .bind(id)
+    .bind(auth.id)
+    .execute(&pool)
+    .await
+    .map_err(|e| internal_error("Failed to revoke API token", e))?;
+
+    if result.rows_affected() == 0 {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Token not found" })),
+        ));
+    }
+
+    Ok(Json(json!({ "success": true })))
 }
 
 /// Provisions standard GnuCash root accounts for new user

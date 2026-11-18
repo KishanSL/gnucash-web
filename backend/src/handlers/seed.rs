@@ -5,13 +5,15 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::auth::AuthUser;
+use crate::auth::{require_session, AuthUser};
 use crate::handlers::internal_error;
 
 pub async fn seed_database(
     auth: AuthUser,
     State(pool): State<PgPool>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    require_session(&auth)?;
+
     let mut tx = pool.begin().await.map_err(|e| internal_error("Database error starting seed", e))?;
 
     // Clear existing user transactions & accounts before seeding
@@ -43,6 +45,8 @@ pub async fn reset_dataset(
     auth: AuthUser,
     State(pool): State<PgPool>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    require_session(&auth)?;
+
     let mut tx = pool.begin().await.map_err(|e| internal_error("Database transaction error starting reset", e))?;
 
     // 1. Delete all transactions for this user (cascades to splits)

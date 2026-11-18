@@ -1,5 +1,5 @@
 import React from 'react';
-import { RefreshCw, Coins, Upload, Download, LogOut, KeyRound, RotateCcw } from 'lucide-react';
+import { RefreshCw, Coins, Upload, Download, LogOut, KeyRound, RotateCcw, ShieldCheck } from 'lucide-react';
 import { SUPPORTED_CURRENCIES } from '../../api';
 import { User } from '../../types';
 import { Setter } from './types';
@@ -15,6 +15,7 @@ interface UserMenuDropdownProps {
   onLogout?: () => void;
   setIsUserMenuOpen: Setter<boolean>;
   setIsChangePasswordOpen: Setter<boolean>;
+  setIsApiTokensOpen: Setter<boolean>;
 }
 
 /** Desktop user menu: profile, currency, import/export, seed, password, reset and logout (AGENTS.md section 3). */
@@ -29,6 +30,7 @@ export const UserMenuDropdown: React.FC<UserMenuDropdownProps> = ({
   onLogout,
   setIsUserMenuOpen,
   setIsChangePasswordOpen,
+  setIsApiTokensOpen,
 }) => (
   <div className="absolute right-0 mt-2 w-56 bg-slate-900 border border-slate-700/90 rounded-xl shadow-2xl py-1.5 z-50 animate-in fade-in slide-in-from-top-1 duration-150">
     {/* User Info Header */}
@@ -127,6 +129,19 @@ export const UserMenuDropdown: React.FC<UserMenuDropdownProps> = ({
       >
         <KeyRound className="w-4 h-4 text-emerald-400 shrink-0" />
         <span>Change Password</span>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => {
+          setIsUserMenuOpen(false);
+          setIsApiTokensOpen(true);
+        }}
+        className="w-full flex items-center space-x-2 px-3.5 py-2 text-xs text-slate-300 hover:text-white hover:bg-slate-800 transition text-left"
+        title="Create and revoke API tokens for service clients"
+      >
+        <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+        <span>API Tokens</span>
       </button>
 
       {onResetDataset && (

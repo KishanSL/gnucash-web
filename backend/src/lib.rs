@@ -44,6 +44,15 @@ pub fn create_app(pool: sqlx::PgPool) -> Router {
         .route("/api/auth/reset-password", post(handlers::auth::reset_password))
         .route("/api/auth/change-password", post(handlers::auth::change_password))
         .route("/api/auth/me", get(handlers::auth::get_current_user))
+        // API tokens for service clients (SEC-16 to SEC-20)
+        .route(
+            "/api/auth/tokens",
+            get(handlers::auth::list_api_tokens).post(handlers::auth::create_api_token),
+        )
+        .route(
+            "/api/auth/tokens/:id",
+            delete(handlers::auth::revoke_api_token),
+        )
         // Accounts
         .route("/api/accounts", get(handlers::accounts::list_accounts))
         .route("/api/accounts/tree", get(handlers::accounts::get_account_tree))

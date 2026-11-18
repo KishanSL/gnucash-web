@@ -1,10 +1,12 @@
 import {
   Account,
   AccountTreeNode,
+  ApiToken,
   AuthResponse,
   BalanceSheetReport,
   CreateAccountPayload,
   CreateTransactionPayload,
+  CreatedApiToken,
   IncomeStatementReport,
   LoginPayload,
   ReconcileData,
@@ -126,6 +128,42 @@ export async function fetchCurrentUser(): Promise<User> {
   const user: User = await res.json();
   setStoredUser(user);
   return user;
+}
+
+// --- API Tokens (SEC-16 to SEC-20) ---
+
+export async function fetchApiTokens(): Promise<ApiToken[]> {
+  const res = await fetchWithAuth(`${API_BASE}/auth/tokens`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to load API tokens');
+  }
+  return res.json();
+}
+
+export async function createApiToken(payload: {
+  name: string;
+  expires_in_days: number | null;
+}): Promise<CreatedApiToken> {
+  const res = await fetchWithAuth(`${API_BASE}/auth/tokens`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to create API token');
+  }
+  return res.json();
+}
+
+export async function revokeApiToken(id: string): Promise<{ success: boolean }> {
+  const res = await fetchWithAuth(`${API_BASE}/auth/tokens/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || 'Failed to revoke API token');
+  }
+  return res.json();
 }
 
 export function logout() {

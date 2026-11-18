@@ -48,8 +48,16 @@ const activeReportButton = (page) =>
       await page.type('input[type="text"]', 'kishan');
       await page.type('input[type="password"]', 'Kishan@123');
       await page.click('button[type="submit"]');
-      await new Promise((r) => setTimeout(r, 2000));
     }
+    // Wait for the authenticated shell to render instead of a fixed sleep: under the load of the
+    // full suite the ledger can take longer than 2s to show the navigation.
+    await page.waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll('button')).some(
+          (b) => b.innerText.trim() === 'Reports'
+        ),
+      { timeout: 15000 }
+    );
 
     console.log('2. Opening the Reports tab...');
     if (!(await clickButtonWithText(page, 'Reports'))) throw new Error('Reports nav button not found');

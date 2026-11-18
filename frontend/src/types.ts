@@ -22,6 +22,26 @@ export interface SignupPayload {
   password: string;
 }
 
+/** A listed API token (SEC-19). The plaintext is only ever returned at creation. */
+export interface ApiToken {
+  id: string;
+  name: string;
+  token_prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface CreatedApiToken {
+  id: string;
+  name: string;
+  token: string;
+  token_prefix: string;
+  created_at: string;
+  expires_at: string | null;
+}
+
 export interface Account {
   id: string;
   name: string;
